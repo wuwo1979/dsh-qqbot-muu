@@ -139,18 +139,25 @@
 
 ## 安装
 
-**方式一 · npm**（包名 [`dsh-qqbot-muu`](https://www.npmjs.com/package/dsh-qqbot-muu)，发布前有隐私自检，不含任何 Cookie/台账/openid）：
-
-```powershell
-npm i -g dsh-qqbot-muu
-dsh-qqbot-muu-install --data-root "D:\你的bot数据目录"
-```
-
-**方式二 · 插件市场 / GitHub 装壳**（让 DSH 能识别并加载本包）：
+**方式一 · 直接从 GitHub 装**（现在就能用，推荐）：
 
 ```powershell
 dsh plugin add github:wuwo1979/dsh-qqbot-muu#main
 ```
+
+**方式二 · 从 GitHub 的发布包装**（等价，适合离线/内网）：
+
+```powershell
+npm i -g https://github.com/wuwo1979/dsh-qqbot-muu/archive/refs/heads/main.tar.gz
+dsh-qqbot-muu-install --data-root "D:\你的bot数据目录"
+```
+
+**方式三 · npm 源**（包名 `dsh-qqbot-muu`）：
+
+> ⚠️ 目前**还没有正式发布到 npm**（`npm view dsh-qqbot-muu` 会 404）。发布前必须先有 npm 凭证：
+> `npm login` 之后 `npm publish`（仓库里 `scripts/check-pack-privacy.mjs` 会先跑一遍隐私闸门，
+> 发布内容只有代码 + `*.example.json` + vendor，不含任何 Cookie/台账/openid/人格真身）。
+> 在那之前请用方式一或方式二。
 
 **装扩展本体**（把能力文件铺进 bot 数据根）：
 
