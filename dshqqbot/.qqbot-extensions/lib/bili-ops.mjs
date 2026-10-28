@@ -597,6 +597,17 @@ export function listJobs(dataRoot, { limit = 20 } = {}) {
     const j = getJob(dataRoot, n);
     if (j) out.push(j);
   }
+  // [qqbot-mod] stalled-render sweep 2026-10-28：宿主重启/渲染进程被杀后，rendering 状态
+  //   会永久卡住（历史任务里永远转圈、重试按钮不出现）。列表时把 updatedAt 超 30 分钟的
+  //   rendering 任务标成 failed，浮窗就能对它重试。
+  const now = Date.now();
+  for (const j of out) {
+    if (j.status === 'rendering' && now - Number(j.updatedAt || j.createdAt || 0) > 30 * 60 * 1000) {
+      updateJob(dataRoot, j.id, { status: 'failed', stage: 'failed', error: '渲染中断（进程退出或宿主重启），点重试重新出片' });
+      j.status = 'failed';
+      j.error = '渲染中断（进程退出或宿主重启），点重试重新出片';
+    }
+  }
   out.sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
   return out.slice(0, Math.max(1, Number(limit) || 20));
 }
@@ -1066,6 +1077,35 @@ export async function renderJob(job, cfg = {}, deps = {}) {
     tags: job.tags || [],
     panels: (job.panels || []).map((p) => ({ narration: p.narration, imagePrompt: p.imagePrompt })),
   };
+  if (!script.panels.length) {
+    // [qqbot-mod] auto-script 2026-10-28：只有选题没有分镜的半截任务（如 DSH 工单直开渲染），
+    //   不再直接报错——用 writeScript 补一份（云端→本地→模板三级兜底，模板永远能出片）。
+    const topic = String(job.topic || job.title || '').trim();
+    if (topic) {
+      try {
+        let briefing = '';
+        try {
+          const VB = await import('./video-briefing.mjs');
+          const b = await VB.buildBriefing(job.dataRoot);
+          if (b && b.ok && b.text) briefing = b.text;
+        } catch { /* ignore */ }
+        let apiKey = '';
+        try { apiKey = String(readSecret(job.dataRoot)?.apiKey || ''); } catch { /* ignore */ }
+        const s = await writeScript(
+          { topic, style: job.style || 'default', panels: cfg.video?.panels || 6, seconds: job.durationSec || undefined, briefing },
+          cfg.llm,
+          { dataRoot: job.dataRoot, apiKey }
+        );
+        if (s && s.ok && Array.isArray(s.panels) && s.panels.length) {
+          script.title = s.title || job.title || topic;
+          script.desc = s.desc || '';
+          script.tags = s.tags || [];
+          script.panels = s.panels;
+          updateJob(job.dataRoot, job.id, { title: script.title, desc: script.desc, tags: script.tags, panels: s.panels, llm: s.llm || 'template' });
+        }
+      } catch { /* 兜底失败照旧报错 */ }
+    }
+  }
   if (!script.panels.length) return { ok: false, error: '任务没有分镜（先写脚本）', detail };
 
   // ── 分镜编排（纯函数）：节拍 / 形态 / 转场 / 音效 / 时长预算 ──

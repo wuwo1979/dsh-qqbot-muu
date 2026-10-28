@@ -189,26 +189,34 @@ export async function run(args = {}, env = {}) {
 
       // 2026-10-24：主模型（云端）可以直接把脚本交进来 —— 她自己在对话里就想好了
       // 标题/简介/分镜，没必要再花一次 LLM 调用（也避免本地 7b 写得很干）。
-      let s;
-      if (String(args.scriptJson || '').trim()) {
+      // [qqbot-mod] 2026-10-28：scriptJson 也接受**已解析的对象**（DSH 工单直传对象时
+      //   String(obj) 会变成 "[object Object]" 导致 JSON.parse 必败 —— h3ot 任务的死因）。
+      let rawScript = null;
+      if (args.scriptJson != null && typeof args.scriptJson === 'object') {
+        rawScript = args.scriptJson;
+      } else if (String(args.scriptJson || '').trim()) {
         try {
-          const raw = JSON.parse(String(args.scriptJson));
-          const ps = Array.isArray(raw.panels) ? raw.panels : [];
-          if (ps.length < 2 || ps.length > 12) throw new Error('panels 需要 2~12 屏');
-          s = {
-            ok: true,
-            llm: 'agent',
-            title: String(raw.title || topic).slice(0, 80),
-            desc: String(raw.desc || '').slice(0, 900),
-            tags: (Array.isArray(raw.tags) ? raw.tags : []).map((x) => String(x).slice(0, 20)).slice(0, 8),
-            panels: ps.map((p, i) => ({
-              narration: String(p?.narration || p?.text || '').trim().slice(0, 200) || `第 ${i + 1} 屏`,
-              imagePrompt: String(p?.imagePrompt || p?.image || p?.prompt || '').trim().slice(0, 500) || String(p?.narration || topic).slice(0, 200),
-            })),
-          };
+          rawScript = JSON.parse(String(args.scriptJson));
         } catch (e) {
           return { ok: false, error: 'scriptJson 不是合法脚本：' + (e instanceof Error ? e.message : String(e)) };
         }
+      }
+      let s;
+      if (rawScript) {
+        const raw = rawScript;
+        const ps = Array.isArray(raw.panels) ? raw.panels : [];
+        if (ps.length < 2 || ps.length > 12) return { ok: false, error: 'panels 需要 2~12 屏' };
+        s = {
+          ok: true,
+          llm: 'agent',
+          title: String(raw.title || topic).slice(0, 80),
+          desc: String(raw.desc || '').slice(0, 900),
+          tags: (Array.isArray(raw.tags) ? raw.tags : []).map((x) => String(x).slice(0, 20)).slice(0, 8),
+          panels: ps.map((p, i) => ({
+            narration: String(p?.narration || p?.text || '').trim().slice(0, 200) || `第 ${i + 1} 屏`,
+            imagePrompt: String(p?.imagePrompt || p?.image || p?.prompt || '').trim().slice(0, 500) || String(p?.narration || topic).slice(0, 200),
+          })),
+        };
       } else {
         s = await sw.writeScript(
           { topic, style: args.style || 'default', panels, seconds: args.seconds },
