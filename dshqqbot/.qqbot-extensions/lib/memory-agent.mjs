@@ -118,6 +118,39 @@ function chatLine(row) {
 }
 
 /** 从模型回复里抠 JSON（兼容 ```json / 前后废话 / 直接数组） */
+// [qqbot-mod] truncation-repair 2026-10-28：maxTokens 截断的长 JSON（{"facts":[{...}, 半截），
+//   直接 parse 必败 → 整轮记忆丢弃。这里贪心截到"最后一个完整成员"，按栈补齐右括号后重试；
+//   丢掉的是最后半条记忆，换回整轮不白跑。
+function repairTruncatedJson(s) {
+  const a = s.indexOf('{');
+  if (a < 0) return s;
+  s = s.slice(a);
+  let stack = [];
+  let inStr = false, esc = false;
+  let cand = -1, candStack = null; // 截点 = 最后一个"完整成员"结束处；candStack = 该时刻的括号栈
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{' || ch === '[') { stack.push(ch); continue; }
+    if (ch === '}' || ch === ']') { stack.pop(); cand = i + 1; candStack = stack.slice(); continue; }
+    if (ch === ',' && stack.length >= 2) { cand = i; candStack = stack.slice(); continue; }
+  }
+  if (!stack.length) return s; // 括号本来就平，不是截断
+  let out = s.slice(0, cand > 0 ? cand : s.length).replace(/,\s*$/, '');
+  const closeStack = (cand > 0 && candStack) ? candStack : stack;
+  // cand>0：截点在结构边界（} 或 , 处，必不在字符串内），按截点时刻的栈补括号；
+  // cand<=0：一个完整成员都没有，截点就是原文末尾（可能在字符串里），补引号再收口。
+  if (inStr && cand <= 0) out += '"';
+  for (let i = closeStack.length - 1; i >= 0; i -= 1) out += closeStack[i] === '{' ? '}' : ']';
+  return out;
+}
+
 export function parseAgentJson(text) {
   let raw = String(text == null ? '' : text).trim();
   if (!raw) return null;
@@ -131,6 +164,7 @@ export function parseAgentJson(text) {
     const b = raw.lastIndexOf('}');
     if (a >= 0 && b > a) obj = tryParse(raw.slice(a, b + 1));
   }
+  if (obj == null) obj = tryParse(repairTruncatedJson(raw));
   if (obj == null) {
     const a = raw.indexOf('[');
     const b = raw.lastIndexOf(']');
@@ -340,6 +374,15 @@ export async function runTurnAgent({
     // 普通群不读也不写个人卡（水群不区分成员，省 token）
     let knownCards = [];
     const profileOn = c.writeProfile !== false && policy.agentCards;
+    // 上一次心情：给模型当"别写成一样"的参照（主人 2026-10-27：状态一直重复）
+    // [qqbot-mod] scope-fix 2026-10-28：原来这段被插进了 if (profileOn) 块内，
+    //   let 是块级作用域 → 363 行的 buildPrompt 永远拿不到 prevMood，
+    //   整个 runTurnAgent 每回合必抛 ReferenceError（记忆分身全体停摆的根因）。挪到函数作用域。
+    let prevMood = '';
+    try {
+      const pm = getMood(root, sc, (cfg && cfg.mood) || {});
+      if (pm && pm.text) prevMood = String(pm.text).slice(0, 40);
+    } catch { prevMood = '' }
     if (profileOn) {
       try {
         knownCards = (getPersona(root, GLOBAL_SCOPE) || [])
@@ -351,13 +394,6 @@ export async function runTurnAgent({
           .slice(0, 6)
           .map((p) => clean(p.cvalue, 80));
       } catch { knownCards = []; }
-
-    // 上一次心情：给模型当"别写成一样"的参照（主人 2026-10-27：状态一直重复）
-    let prevMood = '';
-    try {
-      const pm = getMood(root, sc, (cfg && cfg.mood) || {});
-      if (pm && pm.text) prevMood = String(pm.text).slice(0, 40);
-    } catch { prevMood = '' }
     }
 
     const messages = buildPrompt({ rows, knownFacts, knownCards, prevMood, cfg: c });
@@ -554,14 +590,17 @@ export async function runTurnAgent({
             study = d && d.text ? d.text : '';
           } catch { study = ''; }
           reflected = await runSelfReflection({ dataRoot: root, cfg, chatImpl: typeof chatImpl === 'function' ? chatImpl : null, biliDigest: study, now });
-          if (reflected && reflected.ok) setChatState(root, stateKey, { ...state, lastTs, lastRun: now, growthTs: now });
         } catch { /* 反思失败不影响本轮 */ }
       }
     }
 
-    // [qqbot-mod] growthTs 保留 2026-10-28：原来这里用新对象覆盖会话状态，把 growthTs 一起抹掉
-    //   ⇒ 每次跑完都像"从没反思过"，下一轮又满足条件再次整块反思（模型被反复调用，token/显存一直掉）。
-    setChatState(root, stateKey, { ...state, lastTs, lastRun: now, growthTs: state.growthTs });
+    // [qqbot-mod] stateOut 2026-10-28：统一在函数末尾写一次会话状态。
+    //   原来反思成功分支先写 {growthTs: now}，紧接着无条件 setChatState 又用
+    //   **旧的 state 对象**（growthTs=undefined）覆盖回去 ⇒ growthTs 每次被抹掉，
+    //   下一轮反思门重新满足，本地模型被反复整块调用（token/显存掉、面板卡）。
+    //   修复：反思成功就在 stateOut 里带上 now，最终只写这一次。
+    const stateOut = { ...state, lastTs, lastRun: now, growthTs: (reflected && reflected.ok) ? now : state.growthTs };
+    setChatState(root, stateKey, stateOut);
     const out = {
       ok: true, ms: Date.now() - started, newMessages: fresh.length,
       facts, cards, mood, relation, traits, insights, reflected, consolidated,
