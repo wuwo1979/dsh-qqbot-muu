@@ -4310,6 +4310,25 @@ function extCfgPath(root, which) {
         r = openInExplorer(job.dir);
       } else if (!jobId) {
         return writeJson(res, 200, { ok: false, error: '缺少 jobId 或 draftId' });
+      } else if (action === 'retry') {
+        // [qqbot-mod] 2026-10-28：失败任务就地重试——保留原任务 id，重新走渲染管线
+        //   （有分镜直接渲染；只有选题的半截任务 renderJob 内部会自动补脚本）。
+        const job = lib.getJob(root, jobId);
+        if (!job) return writeJson(res, 200, { ok: false, error: '任务不存在' });
+        if (job.status === 'rendering') return writeJson(res, 200, { ok: false, error: '正在渲染中，别急' });
+        if (job.status === 'awaiting_review') return writeJson(res, 200, { ok: false, error: '已在待审核，直接投稿即可' });
+        if (job.published && job.published.bvid) return writeJson(res, 200, { ok: false, error: '这条已经发布过了（' + job.published.bvid + '）' });
+        lib.updateJob(root, jobId, { status: 'rendering', stage: 'render', error: '', updatedAt: Date.now() });
+        const job2 = lib.getJob(root, jobId);
+        lib
+          .renderJob(job2, cfg, { dataRoot: root })
+          .then((x) => {
+            if (!x || x.ok === false) {
+              lib.updateJob(root, jobId, { status: 'failed', stage: 'failed', error: String((x && (x.error || x.reason)) || '渲染失败') });
+            }
+          })
+          .catch((e) => lib.updateJob(root, jobId, { status: 'failed', stage: 'failed', error: String((e && e.message) || e) }));
+        r = { ok: true, msg: '已重新开始渲染（3~8 分钟，刷新看进度）' };
       } else if (action === 'approve') r = await lib.approveJob(root, jobId, cfg);
       else if (action === 'publish') r = await lib.publishJob(root, jobId, { mode: 'web' }, cfg);
       else if (action === 'reject') {
