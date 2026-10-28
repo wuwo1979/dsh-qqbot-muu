@@ -155,9 +155,13 @@ dsh-qqbot-muu-install --data-root "D:\你的bot数据目录"
 **方式三 · npm 源**（包名 `dsh-qqbot-muu`）：
 
 > ⚠️ 目前**还没有正式发布到 npm**（`npm view dsh-qqbot-muu` 会 404）。发布前必须先有 npm 凭证：
-> `npm login` 之后 `npm publish`（仓库里 `scripts/check-pack-privacy.mjs` 会先跑一遍隐私闸门，
-> 发布内容只有代码 + `*.example.json` + vendor，不含任何 Cookie/台账/openid/人格真身）。
-> 在那之前请用方式一或方式二。
+> 在本机跑一次 `npm login`（或把 granular token 写进 `secrets/npm-token.txt`），然后
+> ```powershell
+> node scripts/publish-npm.mjs --dry-run   # 先体检：隐私闸门 + 包内容 + 身份
+> node scripts/publish-npm.mjs             # 真发
+> ```
+> 脚本会先跑 `scripts/check-pack-privacy.mjs`（Cookie/令牌/真名/openid/非 ASCII 文件名），
+> 不过就不发。在那之前请用方式一或方式二。
 
 **装扩展本体**（把能力文件铺进 bot 数据根）：
 
