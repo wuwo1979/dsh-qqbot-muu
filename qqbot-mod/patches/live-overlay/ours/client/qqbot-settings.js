@@ -5032,14 +5032,33 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           if (!topic) { alert('先在输入框写一句要求，再点这个按钮'); return }
           var panelsEl2 = document.querySelector('#dk-bili-panels')
           var panels = Number((panelsEl2 && panelsEl2.value) || 0) || 7
+          // [qqbot-mod] hf-bridge v2 2026-10-28：不再推 HyperFrames（DSH 侧调不通/质量不稳），
+          //   改走本项目 bili_ops 工具的整条管线（脚本→分镜出图→GSV 配音→字幕→拼片，全部修复可用）。
+          //   让 DSH 主模型自己写 scriptJson（对象直传）——文案质量由它保证，比本地 7b 模板强得多。
           var brief = [
-            '请用 HyperFrames / Remotion 技能做一支高质量视频（不要用简单图文拼接）：',
+            '请用 bili_ops 工具生成一支视频（action=plan，走本项目整条管线：脚本→分镜出图→GSV配音→字幕→拼片；不要用其它图文拼接路径）：',
+            '',
             '选题：' + topic,
-            '规格：' + panels + ' 屏，B 站竖屏 1080×1920（或横屏 1280×720），有开场动效、转场和字幕动画，配 BGM。',
-            '角色设定（必须严格按这个形象出镜）：F:/qqbot/设定/小蓝_2D三视图_建模基准.png —— 深海鲸鱼娘小蓝：圆脸、浅钢蓝长卷发、白褶边头箍配蓝蝴蝶结、深蓝白女仆裙、鲸尾。',
-            '立绘素材（透明 PNG，可直接合成）：F:/qqbot/assets/char/pose/{idle,talk,wave,happy,point}.png',
-            '画面质量要求：背景用“深海蓝+月白”柔和色调、有景深与地面带，禁止空旷渐变底和恐怖谷脸；文字排版用大字号短句。',
-            '成片交付：MP4，写清楚每屏旁白（每屏≤26字），旁白用 TTS 配音（音色 xiaolan_cute）。',
+            '',
+            '请你先把脚本想好，随 plan 一起传 scriptJson（直接传对象，不要转成字符串）：',
+            '{',
+            '  "title": "≤20字，有钩子",',
+            '  "desc": "≤80字简介",',
+            '  "tags": ["标签最多4个"],',
+            '  "panels": [  // 共 ' + panels + ' 屏',
+            '    { "narration": "每屏≤26字口播，口语化、有情绪",',
+            '      "imagePrompt": "英文画面描述。只写场景/构图/氛围（如: underwater whale library, glowing jellyfish lamps, moonlight shafts through water），不要写人物外观——人物由管线按立绘自动合成" }',
+            '  ]',
+            '}',
+            '',
+            '画面硬规则（imagePrompt 必须遵守）：',
+            '· 背景统一"深海蓝+月白"柔和色调，有景深层次与地面投影带；',
+            '· 禁止空旷渐变底、禁止恐怖谷脸、禁手部特写；大字号短句排版由管线字幕负责，画面里不要塞文字；',
+            '· 角色形象基准：F:/qqbot/设定/小蓝_2D三视图_建模基准.png（透明立绘 pose/{idle,talk,wave,happy,point}.png 管线自动用）。',
+            '',
+            '规格：orientation=vertical（B站竖屏 1080×1920），共 ' + panels + ' 屏。',
+            '音频：管线自动用 xiaolan_cute（GSV）配音，不用你管 TTS。',
+            '提交后用任务列表跟踪进度；失败了直接对那条任务发起重试。',
           ].join('\n')
           try {
             await navigator.clipboard.writeText(brief)
