@@ -147,6 +147,23 @@ function worthRemembering(text, cfg) {
   return true;
 }
 
+  // ── [qqbot-mod] slow-block 节流（2026-10-28 主人定：长期可能变的块不必每条消息重复）──
+// 现状浪费：印象卡/旧识/学/约定/性格观察这些慢变量（分钟~天级才变）以前**每条消息都全文重发**，
+// 且历史里永久留存 → N 条消息 N 份，token 线性上涨。
+// 改法：按 scope+tag 记住上次注入的内容指纹，**内容没变就不再注入**——历史里上一份还在，
+// 模型照样看得见（语义不变）；只有真变了才注入一份新的（新版在后，模型取最新）。
+// 快块（[记忆]召回/[状态]/[echo]）是为当前句服务的，保持每条，但连续相同内容也跳过。
+const _slowBlockMemo = new Map(); // key: scope+'|'+tag → 上次注入文本
+function blockIfChanged(scope, tag, text) {
+  const key = String(scope || '') + '|' + String(tag || '');
+  const prev = _slowBlockMemo.get(key) || '';
+  const cur = String(text || '');
+  if (cur === prev) return '';            // 内容没变 → 不注入（历史里那份仍可见）
+  _slowBlockMemo.set(key, cur);
+  return cur;
+}
+
+
 export async function onInbound(ctx, next) {
   let cfg;
   try {
@@ -244,6 +261,8 @@ export async function onInbound(ctx, next) {
     ctx?.logger?.debug?.(`[memory] 召回失败(已忽略): ${recallErr}`);
   }
   }
+  // [记忆] 召回结果连续相同（连着聊同一话题）也不再重复注入——历史里那份还在
+  memBlock = blockIfChanged(scope, 'mem', memBlock);
   // 轨迹只记摘要（不存全文），给浮窗看"这条消息到底有没有查库、查到几条"
   try {
     traceMemory(dataRoot, {
@@ -253,12 +272,15 @@ export async function onInbound(ctx, next) {
     });
   } catch { /* ignore */ }
 
+
   // ── ①b 世界书：命中关键词才带 1~2 条设定（Neuro 式，设定不进常驻 prompt）──
+  //   slow-block：同一关键词组合连续命中时不再重复注入
   let loreBlock = '';
   try {
     const l = loreFor(dataRoot, original, cfg.lore || {});
-    loreBlock = l.block;
-    if (loreBlock) ctx?.logger?.debug?.(`[lore] 注入 ${l.hits.map((h) => h.id).join(',')}`);
+    loreBlock = blockIfChanged(scope, 'lore', l.block);
+    if (l.block && loreBlock) ctx?.logger?.debug?.(`[lore] 注入 ${l.hits.map((h) => h.id).join(',')}`);
+    else if (l.block) ctx?.logger?.debug?.(`[lore] 命中但与上次相同，跳过`);
   } catch (e) {
     ctx?.logger?.debug?.(`[lore] 注入失败(已忽略): ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -295,9 +317,11 @@ export async function onInbound(ctx, next) {
         const gv = getPersonaValue(dataRoot, '__global__', 'growth:latest');
         if (gv && gv.value) profileBlock += '\n[成长]' + String(gv.value).replace(/\s+/g, ' ').trim().slice(0, 90) + '[/成长]';
       } catch { /* 成长块失败不影响印象块 */ }
+      // slow-block：印象卡/性格/成长都是慢变量，内容没变就不再每条重发
+      profileBlock = blockIfChanged(scope, 'profile', profileBlock);
       if (profileBlock) ctx?.logger?.debug?.(`[profile] 已注入完整印象+熟识度 (tier=${tier})`);
     } else if (policy.profile === 'compact') {
-      profileBlock = compactBlockFor(dataRoot, scope, who, profileCfg);
+      profileBlock = blockIfChanged(scope, 'profile-compact', compactBlockFor(dataRoot, scope, who, profileCfg));
       if (profileBlock) ctx?.logger?.debug?.(`[profile] 已注入精简认人块 (tier=${tier})`);
     }
   } catch (e) {
@@ -325,8 +349,9 @@ export async function onInbound(ctx, next) {
       if (p && p.ok && p.impression) {
         // 画像本身已经是一句统计结论（≤120 字），这里只做截断，不改写语义
         const line = p.impression.replace(/\s+/g, ' ').slice(0, 120);
-        pastBlock = `\n[旧识]${line}[/旧识]`;
-        ctx?.logger?.debug?.(`[past] 已注入旧识画像 (${p.say} 条)`);
+        // slow-block：旧识画像也是慢变量，没变不重发
+        pastBlock = blockIfChanged(scope, 'past', `\n[旧识]${line}[/旧识]`);
+        if (pastBlock) ctx?.logger?.debug?.(`[past] 已注入旧识画像 (${p.say} 条)`);
       }
     } catch (e) {
       ctx?.logger?.debug?.(`[past] 旧识画像失败(已忽略): ${e instanceof Error ? e.message : String(e)}`);
@@ -338,7 +363,7 @@ export async function onInbound(ctx, next) {
   if (cfg.imitate?.inject !== false) {
     try {
       const st = currentStyle(dataRoot);
-      if (st) styleBlock = `\n[学]${String(st).slice(0, 90)}[/学]`;
+      if (st) styleBlock = blockIfChanged(scope, 'style', `\n[学]${String(st).slice(0, 90)}[/学]`); // slow-block
     } catch { /* 学不到就算了 */ }
   }
 
@@ -362,7 +387,7 @@ export async function onInbound(ctx, next) {
   // ── ①d5 [约定]（2026-10-27 mmtr）：到期的承诺/约定自己浮上来——
   //   事实锁定原文、越接近截止越清晰、超宽限自动 broken 并付关系代价。
   let promiseB = '';
-  try { promiseB = promiseBlockFor(dataRoot, scope); } catch { /* 约定块失败不影响对话 */ }
+  try { promiseB = blockIfChanged(scope, 'promise', promiseBlockFor(dataRoot, scope)); } catch { /* 约定块失败不影响对话 */ } // slow-block
 
   // 所有块合并成一次 rewrite（改两次会让中间态被别的扩展看见）
   // [信条]（2026-10-26）：底层刻写常驻块，全静态、跨群不变（prompt 缓存友好）；
@@ -372,7 +397,6 @@ export async function onInbound(ctx, next) {
   if (extra && typeof ctx.rewrite === 'function') {
     ctx.rewrite({ text: String(ctx.text || '') + extra });
   }
-
   // ── ② 再沉淀（用"原文本"，不含刚注入的记忆块）──
   //   普通群不沉淀长期记忆：水群只看信息本身，不把闲聊塞进向量库（省本地算力）
   if (policy.capture && cfg.capture !== false && worthRemembering(original, cfg)) {

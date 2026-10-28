@@ -109,7 +109,7 @@ function personaBrief(root) {
   return _personaCache;
 }
 
-async function genReply(root, { platform, title, gist, user, comment }) {
+async function genReply(root, { platform, title, gist, user, comment, via = 'cloud' } = {}) {
   const pb = personaBrief(root);
   const rel = (pb.relations || []).find((r) => r && (r.who === user || r.name === user));
   const where = platform === 'douyin' ? '抖音' : 'B站';
@@ -128,32 +128,51 @@ async function genReply(root, { platform, title, gist, user, comment }) {
   ].filter(Boolean).join('\n');
   const t0 = Date.now();
 
-  // ① 云端 DeepSeek（唯一首选；不退回本地模型）
-  try {
+  // ① 指定通道优先（主人 2026-10-28：要能选本地/云端），失败退另一条，再退模板
+  const viaLocal = via === 'local';
+  const tryCloud = async () => {
     const sec = readSecret(root);
-    if (sec && sec.apiKey) {
-      const r = await cloudChat({
-        model: 'deepseek-flash',
+    if (!sec || !sec.apiKey) return null;
+    const r = await cloudChat({
+      model: 'deepseek-flash',
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }],
+      temperature: 0.85,
+      max_tokens: 160,
+      stream: false,
+    }, { timeoutMs: 45000, tag: 'comment-reply' }, { apiKey: sec.apiKey });
+    const text = String((r && r.text) || '').trim().replace(/^["「『]|["」』]$/g, '');
+    return r && r.ok && text ? { ok: true, text: text.slice(0, 120), ms: Date.now() - t0, via: 'cloud' } : null;
+  };
+  const tryLocal = async () => {
+    try {
+      const L = await import('./local-llm.mjs');
+      const r = await L.chat({
         messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }],
         temperature: 0.85,
-        max_tokens: 160,
-        stream: false,
-      }, { timeoutMs: 45000, tag: 'comment-reply' }, { apiKey: sec.apiKey });
-      const text = String((r && r.text) || '').trim().replace(/^["「『]|["」』]$/g, '');
-      if (r && r.ok && text) return { ok: true, text: text.slice(0, 120), ms: Date.now() - t0, via: 'cloud' };
-    }
-  } catch { /* 落兜底 */ }
+        maxTokens: 160,
+        timeoutMs: 60000,
+      });
+      const text = String((r && r.text) || (r && r.message && r.message.content) || '').trim().replace(/^["「『]|["」』]$/g, '');
+      return text ? { ok: true, text: text.slice(0, 120), ms: Date.now() - t0, via: 'local' } : null;
+    } catch { return null; }
+  };
+  const first = await (viaLocal ? tryLocal() : tryCloud());
+  if (first) return first;
+  const second = await (viaLocal ? tryCloud() : tryLocal());
+  if (second) return second;
 
   const fb = FALLBACKS[Math.floor(Math.random() * FALLBACKS.length)];
   return { ok: true, text: fb, ms: Date.now() - t0, fallback: true, via: 'template' };
 }
 
-// ── B 站：只读评论列表（面板「出评论」用，不调 LLM，秒回）───────────────
-export async function biliList(root, { limit = 10 } = {}) {
+// ── B 站：只读评论列表（面板「出评论」用，不调 LLM，秒回）────────────────
+// 2026-10-28 加楼中楼：rcount>0 的顶层评论拉子评论（每条限 10 条），子评论可单独回复
+export async function biliList(root, { limit = 10, withSub = true } = {}) {
   const vids = ownBiliVideos(root);
   if (!vids.length) return { ok: true, items: [], note: '还没有已发布的 B 站视频' };
   const store = loadReplied(root);
   const items = [];
+  const mine = () => { try { const c = B.loadCookie ? B.loadCookie(root) : null; return String(c?.cookies?.DedeUserID || ''); } catch { return ''; } };
   for (const v of vids.slice(0, 5)) {
     let aid = v.aid;
     if (!aid && v.bvid) {
@@ -169,20 +188,45 @@ export async function biliList(root, { limit = 10 } = {}) {
       items.push({
         aid, bvid: v.bvid, title: v.title || v.bvid, rpid: c.rpid,
         user: c.user, comment: String(c.text || '').slice(0, 160), likes: Number(c.likes) || 0,
+        rcount: Number(c.replies) || 0,
         status: prev ? (prev.kind === 'reply' ? '已回复' : prev.kind === 'shadowed' ? '已回复(被折叠)' : '有草稿') : '未回复',
         prevReply: prev ? String(prev.text || '') : '',
       });
+      // 楼中楼：有子评论就拉一页（最多 10 条），子评论条目扁平插入，带 root/parent 供回复定位
+      if (withSub && c.rcount > 0) {
+        try {
+          const sr = await B.subReplies(root, { aid, root: c.rpid, limit: 10, mine: mine() });
+          if (sr.ok) {
+            for (const s of sr.replies) {
+              if (s.isSelf) continue;
+              const skey = 'bili:' + aid + ':' + s.rpid;
+              const sprev = store[skey];
+              items.push({
+                aid, bvid: v.bvid, title: v.title || v.bvid,
+                rpid: s.rpid, rootRpid: String(s.root || c.rpid), parentRpid: String(s.parent || c.rpid),
+                isSub: true, parentUser: c.user,
+                user: s.user, comment: String(s.text || '').slice(0, 160), likes: Number(s.likes) || 0,
+                status: sprev ? (sprev.kind === 'reply' ? '已回复' : sprev.kind === 'shadowed' ? '已回复(被折叠)' : '有草稿') : '未回复',
+                prevReply: sprev ? String(sprev.text || '') : '',
+              });
+            }
+          }
+        } catch { /* 楼中楼拉不到就只出顶层 */ }
+      }
     }
   }
   return { ok: true, items };
 }
 
 // ── B 站：单条操作（直接回复 / 重新生成草稿）────────────────────────────
-// mode: 'send'=把 message 真发出去；'draft'=不管 message，用本地模型重新生成一条并存草稿
-export async function biliReply(root, { aid, bvid, rpid, message, mode = 'send', user, comment, title } = {}) {
+// mode: 'send'=把 message 真发出去；'draft'=不管 message，用模型重新生成一条并存草稿
+// 2026-10-28：支持回复楼中楼（parentRpid/rootRpid）、via 选本地/云端模型、直接评论视频（commentVideo）
+export async function biliReply(root, { aid, bvid, rpid, parentRpid, rootRpid, message, mode = 'send', user, comment, title, via = 'cloud', commentVideo = false } = {}) {
   aid = Number(aid) || 0;
-  if (!aid || !rpid) return { ok: false, error: '缺 aid 或 rpid' };
-  const key = 'bili:' + aid + ':' + rpid;
+  const directVideo = commentVideo || !rpid;      // 不带 rpid = 直接评论视频本体
+  if (!aid || (!rpid && !directVideo)) return { ok: false, error: '缺 aid 或 rpid' };
+  const targetRpid = directVideo ? '' : String(rpid);
+  const key = 'bili:' + aid + ':' + (targetRpid || 'video');
   const store = loadReplied(root);
   // 面板里"重新生成草稿"只传了 title，这里把这条视频的标题/一句话内容补上
   let vGist = '';
@@ -195,7 +239,7 @@ export async function biliReply(root, { aid, bvid, rpid, message, mode = 'send',
   } catch { /* 查不到就只用传进来的 */ }
   let text = String(message || '').trim();
   if (!text && mode === 'draft') {
-    const g = await genReply(root, { platform: 'bili', title, gist: vGist, user, comment });
+    const g = await genReply(root, { platform: 'bili', title, gist: vGist, user, comment, via });
     text = g.text;
   }
   if (!text) return { ok: false, error: mode === 'send' ? '先写一句回复再发' : '生成失败' };
@@ -204,12 +248,15 @@ export async function biliReply(root, { aid, bvid, rpid, message, mode = 'send',
     saveReplied(root, store);
     return { ok: true, draft: true, text };
   }
-  const pr = await B.postComment(root, { aid, bvid, message: text, root: rpid, parent: rpid });
+  // 楼中楼定位：root=顶层 rpid（必需），parent=被回复的那条（回顶层子楼时 = root）
+  const rootId = directVideo ? '' : String(rootRpid || targetRpid);
+  const parentId = directVideo ? '' : String(parentRpid || rootId || targetRpid);
+  const pr = await B.postComment(root, { aid, bvid, message: text, root: rootId || undefined, parent: parentId || undefined });
   const posted = !!(pr.ok || pr.posted);
   if (posted) {
     store[key] = { kind: pr.verified ? 'reply' : 'shadowed', text, at: Date.now() };
     saveReplied(root, store);
-    try { appendRecord(root, { type: 'comment-watch', platform: 'bili', manual: true, rpid, at: Date.now() }); } catch { /* ignore */ }
+    try { appendRecord(root, { type: 'comment-watch', platform: 'bili', manual: true, rpid: targetRpid || 'video', at: Date.now() }); } catch { /* ignore */ }
   }
   return { ok: posted, verified: !!pr.verified, shadowed: !!pr.shadowed, error: pr.error || '', text };
 }

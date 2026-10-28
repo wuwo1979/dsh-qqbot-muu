@@ -446,8 +446,37 @@ export async function comments(dataRoot, { aid, limit = 10, sort = 'latest' } = 
   return legacyComments(dataRoot, { aid, limit: ps, mine });
 }
 
-async function legacyComments(dataRoot, { aid, limit = 10, mine = '' } = {}) {
+/**
+ * 拉某条顶层评论的楼中楼（子评论列表）——主人 2026-10-28：要能回复「评论的评论」。
+ * 端点 /x/v2/reply/reply（带 WBI 更稳）；返回扁平子评论数组，parent 恒为顶层 rpid 下的
+ * 被回复对象（B 站楼中楼里 parent = 实际被回复的子评论，回复顶层子楼时 = root）。
+ */
+export async function subReplies(dataRoot, { aid, root, limit = 10, mine = '' } = {}) {
+  if (!aid || !root) return { ok: false, error: '缺 aid 或 root' };
   const c = loadCookie(dataRoot);
+  const ps = Math.max(1, Math.min(20, limit));
+  const q = await wbiQuery(dataRoot, { oid: Number(aid), type: 1, root: Number(root), pn: 1, ps, plat: 1 });
+  const url = q.ok ? `${API}/x/v2/reply/reply?${q.query}` : `${API}/x/v2/reply/reply?oid=${Number(aid)}&type=1&root=${Number(root)}&pn=1&ps=${ps}`;
+  const r = await request(url, { cookie: c?.cookies });
+  if (!r.ok) return { ok: false, error: r.error };
+  const j = r.json;
+  if (needLogin(j)) return { ok: false, needLogin: true, error: '登录已失效，请重新扫码' };
+  if (j.code !== 0) return { ok: false, error: j.message || `code ${j.code}` };
+  const replies = (j.data?.replies || []).map((x) => ({
+    rpid: String(x.rpid_str || x.rpid || ''),
+    parent: String(x.parent_str || x.parent || root),   // 被回复的那条（楼中楼内）
+    root: String(x.root_str || x.root || root),          // 所在顶层评论
+    user: x.member?.uname,
+    mid: String(x.mid || ''),
+    text: x.content?.message,
+    likes: x.like,
+    isSelf: (mine || String(c?.cookies?.DedeUserID || '')) && String(x.mid) === (mine || String(c?.cookies?.DedeUserID || '')),
+    time: x.ctime,
+  }));
+  return { ok: true, replies, total: j.data?.page?.count ?? replies.length };
+}
+
+async function legacyComments(dataRoot, { aid, limit = 10, mine = '' } = {}) {  const c = loadCookie(dataRoot);
   const r = await request(`${API}/x/v2/reply?type=1&oid=${encodeURIComponent(aid)}&sort=2&ps=${Math.max(1, Math.min(20, limit))}&pn=1`, { cookie: c?.cookies });
   if (!r.ok) return r;
   const j = r.json;
