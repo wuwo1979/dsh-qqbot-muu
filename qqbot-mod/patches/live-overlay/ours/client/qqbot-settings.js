@@ -6254,7 +6254,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         h.innerHTML = '<img src="data:image/png;base64,' + QQS_WHALE_B64 + '" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover;flex:none;background:#e3f4ff"><span>QQ 群管理台</span>'
           + '<select class="qqs-sel" id="dk-ns" style="max-width:220px">' + (opts || '<option value="">无账号(去账号页添加)</option>') + '</select>'
           + '<span style="flex:1"></span>'
-          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1027c</span>'
+          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1028a</span>'
           + '<button class="dk-btn" id="dk-full" title="全屏/还原">⛶</button>'
           + '<button class="dk-btn" id="dk-close" title="收回成球">➖</button>'
         var fb = h.querySelector('#dk-full')
