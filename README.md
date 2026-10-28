@@ -282,6 +282,12 @@ node qqbot-mod/patches/live-overlay/capture.mjs           # 定制有更新后�
 `install.mjs` 在目标没有配置时自动铺出）；发布前跑 `node scripts/check-pack-privacy.mjs` 自动把关，
 CI（`.github/workflows/ci.yml`）每次推送都会再查一遍。
 
+**包内文件名必须是纯 ASCII**（2026-10-28 实测踩到）：Windows 上 `npm pack` 会按系统 ANSI 码页
+重新编码非 ASCII 文件名，产出的 tarball 里名字变成乱码、甚至整份文件丢失
+（`commands/子会话.mjs` 就这样在包里出现过 0 字节缺失）。所以仓库里一律用英文文件名，
+命令的中文名写在文件内的 `name: [...]` 里（`/唤醒` `/会话列表` `/子会话` 都还能用）。
+`scripts/check-pack-privacy.mjs` 现在会额外拦一道「非 ASCII 文件名」。
+
 导入历史聊天记录时，**脱敏发生在入库之前**（不是事后补救）：手机号保留前 3 后 4、身份证前 6 后 4、
 邮箱只留首字符、银行卡只留后 4 位、裸数字串按 QQ 号打码（年份与小额金额不受影响）。
 可以先用 `--dry-run` 看筛出来哪些句子，确认后再写库。

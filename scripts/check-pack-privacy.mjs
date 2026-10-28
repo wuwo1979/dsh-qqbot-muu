@@ -120,6 +120,17 @@ try {
 console.log(`npm 包共 ${files.length} 个文件，开始隐私扫描…`);
 const withNames = scanText(files, 'npm 包');
 
+// ── 阶段 1.5：包内文件名必须是纯 ASCII ───────────────────────────────────
+// 原因（2026-10-28 实测）：Windows 上 `npm pack` 会把非 ASCII 文件名按系统 ANSI 码页
+// 重新编码，产出的 tarball 里名字变成乱码，甚至整个文件丢失（`子会话.mjs` 就这样消失过）。
+// 所以仓库里一律不放中文文件名，命令的中文名写在文件内的 `name: [...]` 里。
+const nonAscii = files.filter((f) => /[^\x00-\x7F]/.test(f));
+const mangled = files.filter((f) => f.includes('\uFFFD'));
+if (nonAscii.length || mangled.length) {
+  fail('npm 包里出现了非 ASCII 文件名（npm 在 Windows 上会把它们打成乱码 / 丢文件）：', [...nonAscii, ...mangled].slice(0, 10));
+}
+console.log('文件名全部为 ASCII ✅');
+
 // ── 阶段 2：仓库跟踪的源码 ───────────────────────────────────────────────
 let repoFiles = [];
 try {
