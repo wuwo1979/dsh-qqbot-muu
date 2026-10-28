@@ -1,0 +1,23 @@
+{
+  "name": "vertical",
+  "w": 1080,
+  "h": 1920,
+  "safe": { "x": 72, "top": 220, "bottom": 340 },
+  "title_px": 96,
+  "sub_px": 46,
+  "h2_px": 64,
+  "body_px": 56,
+  "quote_px": 64,
+  "num_px": 260,
+  "line_gap": 1.55,
+  "title_y": 840,
+  "quote_y": 880,
+  "num_y": 780,
+  "subtitle_y": 1540,
+  "subtitle_px": 46,
+  "subtitle_max_lines": 2,
+  "letter_spacing": 0.02,
+  "font_bold": "C:/Windows/Fonts/msyhbd.ttc",
+  "font_regular": "C:/Windows/Fonts/msyh.ttc",
+  "theme": { "bg": "#0B1020", "fg": "#FFFFFF", "accent": "#4EA1FF", "muted": "#A9B6CC" }
+}

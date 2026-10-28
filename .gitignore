@@ -1,0 +1,112 @@
+# 白名单式 .gitignore：只放扩展源码 / 补丁 / 文档，运行时数据一律不进仓库
+*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/package.json
+!/install.mjs
+# 插件入口与 bundle patch：package.json 的 main 与 dsh.bundle.patch 都指向它们，
+# 缺了任何一个，`dsh plugin add dsh-qqbot-muu` 都会装不上（2026-10-26 市场审核打回的原因）
+!/index.js
+!/cordis.patch.yml
+
+# README 截图 / 图标（插件市场 icon 与 screenshots.json 都指向这里）
+!/assets/
+!/assets/**
+!/screenshots.json
+# 截图是脱敏设计稿（只留字号/结构，不带真实群名、昵称、群号），市场条目要引用这些 URL，必须公开
+# 以后要放带真实数据的截图，先脱敏再覆盖，不要直接提交原始截图
+
+# 扩展源码（含默认配置）
+!/dshqqbot/
+!/dshqqbot/.qqbot-extensions/
+!/dshqqbot/.qqbot-extensions/**
+# 但排除：运行时数据、审计日志、备份
+/dshqqbot/.qqbot-extensions/data/
+/dshqqbot/.qqbot-extensions/inbound/.state/
+/dshqqbot/.qqbot-extensions/**/data/
+/dshqqbot/.qqbot-extensions/**/.state/
+/dshqqbot/.qqbot-extensions/**/*.bak
+/dshqqbot/.qqbot-extensions/**/*.bak-*
+
+# 插件补丁与开发脚本
+!/qqbot-mod/
+!/qqbot-mod/patches/
+!/qqbot-mod/patches/**
+!/qqbot-mod/scripts/
+!/qqbot-mod/scripts/**
+/qqbot-mod/scripts/*.log
+# 人格 / 世界书（唯一事实源；不含 openid）
+!/qqbot-mod/persona/
+!/qqbot-mod/persona/**
+
+# skills（逐帧视频 / 本地 TTS / Office 交付的 skill 正文与脚本）
+!/skills/
+!/skills/**
+# Python 缓存不进库
+/skills/**/__pycache__/
+**/*.pyc
+
+
+# 本地密钥（整个目录不入库）
+/secrets/
+
+# 文档只留本地，不上传 GitHub（含聊天节选/隐私）
+/docs/
+
+# 运维脚本
+!/scripts/
+!/scripts/**
+
+# GitHub Actions CI（市场提交预检 + npm 包隐私自检）
+!/.github/
+!/.github/**
+
+
+# 插件市场提交条目（只有这一个 YAML，不含隐私）
+!/submission/
+!/submission/**
+
+# ── 最高级保密（2026-10-28）：真实人格/世界书只活在本地与 secrets/，仓库与 npm 包只进 example ──
+/qqbot-mod/persona/character.json
+/qqbot-mod/persona/worldbook.json
+/qqbot-mod/persona/group-prompt.md
+/dshqqbot/.qqbot-extensions/worldbook.json
+
+# B 站运营配置含主人 openid，不入库（干净模板 bili-ops-config.example.json 随仓库/npm 发布）
+/dshqqbot/.qqbot-extensions/bili-ops-config.json
+!/dshqqbot/.qqbot-extensions/bili-ops-config.example.json
+!/dshqqbot/.qqbot-extensions/.npmignore
+
+# 本地隐私 / 大文件（显式再确认一次）
+dshqqbot/.qqbot/
+dshqqbot/表情包/
+dshqqbot/bili-cookie.json
+dshqqbot/bili-config.json
+dshqqbot/bili-ops-secret.json
+dshqqbot/botplay-events.json
+dshqqbot/schedule-state.json
+两段会话消息.md
+.tmp-*
+tmp/
+测试产物/
+记忆分身/
+
+# 开源项目常规忽略
+node_modules/
+.venv*/
+.models/
+.hf/
+.ollama/
+__pycache__/
+*.pyc
+*.log
+
+# 补丁脚本自己的备份（ui-theme-v2.mjs 等生成）
+*.orig-theme2
+*.orig-*
+
+# 首跑流程文档要进仓库（/docs/ 整体忽略，单文件放行）
+!/docs/
+!/docs/publish-flow.md
+/data/

@@ -1,0 +1,30 @@
+{
+  "preset": "vertical",
+  "fps": 30,
+  "theme": { "bg": "#0B1020", "fg": "#FFFFFF", "accent": "#4EA1FF", "muted": "#A9B6CC" },
+  "subtitles": [
+    { "from": 0.0, "to": 2.0, "text": "先说结论：逐帧渲染才是省 token 的路" },
+    { "from": 2.0, "to": 4.6, "text": "模板固定，只有文案是变量" },
+    { "from": 4.6, "to": 6.6, "text": "一帧 23 毫秒，一条片子几十秒" }
+  ],
+  "scenes": [
+    {
+      "template": "title",
+      "dur": 2.0,
+      "text": { "title": "逐帧渲染", "sub": "为什么比录屏省 token" }
+    },
+    {
+      "template": "bullet",
+      "dur": 2.6,
+      "text": {
+        "title": "三个关键点",
+        "lines": ["模板固定，只有文案是变量", "动画是时间的纯函数", "一行 JSON 换一条片子"]
+      }
+    },
+    {
+      "template": "bignum",
+      "dur": 2.0,
+      "text": { "num": "23", "unit": "毫秒/帧", "caption": "1080x1920 单帧渲染耗时" }
+    }
+  ]
+}

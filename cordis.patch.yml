@@ -1,0 +1,23 @@
+# dsh bundle patch —— dsh-qqbot-muu
+#
+# 这是什么：`@zaofan/dsh-qqbot` 的扩展包 + 补丁集（统一记忆库、群分级、印象卡、
+# 浮窗 UI、B 站运营、本地语音、逐帧视频）。它自己**不重复加载 QQ 通道**，
+# 只注册一个插件行，把 `.qqbot-extensions/` 与 `qqbot-mod/patches/` 的补丁装进
+# 机器人的数据根。
+#
+# 安装：
+#   dsh plugin --profile <name> add dsh-qqbot-muu
+#   dsh-qqbot-muu-install        # 把扩展与补丁落进 {dataRoot}
+#
+# 依赖：`@zaofan/dsh-qqbot` 已锁版本 1.10.39（见 package.json 的 dependencies）。
+# 上游版本变了要先 `node qqbot-mod/patches/live-overlay/install.mjs --apply`
+# 做一次三路合并，再升级，否则定制补丁会被新 generation 冲掉。
+#
+# 环境变量（都可选）：
+#   QQBOT_MEMORY_DATA_ROOT  - 机器人数据根（默认 <cwd>/dshqqbot）
+#   QQBOT_PLUGIN_DIR        - 显式指定 @zaofan/dsh-qqbot 的安装目录
+#
+# 叠加顺序：dsh-base → 本 bundle patch → profile cordis.patch.yml → --patch
+- insert:
+    - id: dsh-qqbot-muu
+      name: 'dsh-qqbot-muu'

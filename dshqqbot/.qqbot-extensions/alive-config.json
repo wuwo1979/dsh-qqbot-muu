@@ -1,0 +1,11 @@
+{
+  "_说明": "『活人感』配置。split-* 控制把一段回复拆成几条短消息连发。",
+  "_split说明": "enabled 开关；prob 每回合连发概率(0~1)；maxBubbles 最多几条(含第一条)；gapMs 条间隔；minLen/maxLen 只在这么长的回复上拆",
+  "_调参记录": "2026-10-23 主人反馈『连续回复一大堆』：prob 0.55→0.35、maxBubbles 3→2。2026-10-23 晚 再次反馈『云端一句话每次都被切片成两三句发群里，会刷屏，很不好』+『浮窗显示一句 QQ 显示两句，前后矛盾』⇒ 默认关闭（enabled:false, prob:0）。她在群里本来就只回一两句，拆包只会让面板和群里对不上。想恢复把 enabled 改回 true、prob 给 0.2~0.3。",
+  "enabled": false,
+  "prob": 0,
+  "maxBubbles": 2,
+  "gapMs": 600,
+  "minLen": 12,
+  "maxLen": 90
+}

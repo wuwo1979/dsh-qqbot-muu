@@ -1,0 +1,14 @@
+{
+  "canvas": { "w": 720, "h": 980 },
+  "baseline": 945,
+  "targetH": 900,
+  "source": "sd-img2img(counterfeit3) + char-key.py",
+  "palette": { "blue": "#4D6BFE", "deep": "#1B2A6B", "mid": "#2747C8", "light": "#8FD6F2", "belly": "#F4F1E8" },
+  "poses": [
+    { "pose": "idle",  "file": "idle.png",  "baseline": 945, "box": { "x": 0, "y": 45, "w": 720, "h": 900 }, "source": "sd", "scale": 1.0 },
+    { "pose": "talk",  "file": "talk.png",  "baseline": 945, "box": { "x": 0, "y": 45, "w": 720, "h": 900 }, "source": "sd", "scale": 1.0 },
+    { "pose": "wave",  "file": "wave.png",  "baseline": 945, "box": { "x": 0, "y": 45, "w": 720, "h": 900 }, "source": "sd", "scale": 1.0 },
+    { "pose": "happy", "file": "happy.png", "baseline": 945, "box": { "x": 0, "y": 45, "w": 720, "h": 900 }, "source": "sd", "scale": 1.0 },
+    { "pose": "point", "file": "point.png", "baseline": 945, "box": { "x": 0, "y": 45, "w": 720, "h": 900 }, "source": "sd", "scale": 1.0 }
+  ]
+}

@@ -1,0 +1,16 @@
+# 本目录（dshqqbot/.qqbot-extensions）随 npm 包发布，但以下运行时/隐私内容绝不进包：
+#   data/            运行时状态（含真实 openid 的白名单/群分级）
+#   inbound/.state/  审计日志（含聊天内容与 openid）
+#   hooks/data/      hook 运行计数
+#   *.jsonl          任何台账/日志
+#   bili-ops-config.json  本机配置（含真实 ownerOpenid），干净模板见 bili-ops-config.example.json
+data/
+**/.state/
+**/.state/**
+hooks/data/
+hooks/data/**
+*.jsonl
+*.bak
+*.bak-*
+bili-ops-config.json
+worldbook.json

@@ -1,0 +1,59 @@
+{
+  "name": "dsh-qqbot-muu",
+  "version": "0.1.2",
+  "description": "DSH / @zaofan dsh-qqbot 的扩展包与补丁集：统一记忆库、按会话隔离、群分级省 token、历史印象卡、表情包视觉打标、B站卡片分享、浮窗 UI 整理",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "bin": {
+    "dsh-qqbot-muu-install": "./install.mjs"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "install.mjs",
+    "README.md",
+    "LICENSE",
+    "package.json",
+    "dshqqbot/.qqbot-extensions/*.example.json",
+    "dshqqbot/.qqbot-extensions/lib/**",
+    "dshqqbot/.qqbot-extensions/hooks/**",
+    "dshqqbot/.qqbot-extensions/inbound/**",
+    "dshqqbot/.qqbot-extensions/outbound/**",
+    "dshqqbot/.qqbot-extensions/tools/**",
+    "dshqqbot/.qqbot-extensions/commands/**",
+    "dshqqbot/.qqbot-extensions/botplay/**",
+    "dshqqbot/.qqbot-extensions/vendor/**",
+    "qqbot-mod/patches/**"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@zaofan/dsh-qqbot": "1.10.39"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "keywords": [
+    "qqbot",
+    "dsh",
+    "ollama",
+    "memory",
+    "sticker",
+    "bilibili",
+    "extensions"
+  ],
+  "license": "MIT",
+  "author": "wuwo1979",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wuwo1979/dsh-qqbot-muu"
+  }
+}

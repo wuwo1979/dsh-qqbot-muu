@@ -1,0 +1,185 @@
+{
+  "_comment": "voice 名 -> 后端 + 参考音频/参考文本。backend: gsv|breeze|index（三个本地后端，端口 9880/7860/9890）。gsv 的 ref_audio_path 是 api_v2 能读到的绝对路径；breeze 的 ref_audio 由适配层读进 multipart 上传。prompt_text 必须和参考音频逐字一致。改完本文件**不用重启适配层**（mtime 热加载；拿不准就 POST /admin/reload）。",
+  "_params": "每个 voice 可带 speed(基准语速,请求里的 speed 乘上去,夹在 0.5~2.0)、pitch(半音,ffmpeg 真变调)、temperature(仅 gsv/breeze 有意义)。想换个语速音高不用复制整段，写到下面的 custom 里派生即可。",
+  "default": "xiaolan_cute",
+  "default_backend": "gsv",
+  "_曲库说明": "curated 是浮窗「本地模型」页里给人试听的四个主力音色（主人 2026-10-27 定的四类：少女风 / 软糯 / 飒爽 / 呆萌机器人）。浮窗只列这四个，其余音色仍可手填 voice-config.json。",
+  "curated": [
+    {
+      "voice": "xiaolan",
+      "label": "少女风 · 清亮",
+      "hint": "GSV 零样本克隆，最接近平时说话的腔调"
+    },
+    {
+      "voice": "xiaolan_cute",
+      "label": "软糯 · 奶音",
+      "hint": "同参考音升 4 个半音，黏糊糊那种"
+    },
+    {
+      "voice": "xiaolan_cool",
+      "label": "飒爽 · 干脆",
+      "hint": "主参考音降 2.5 半音 + 提速，尾音利落"
+    },
+    {
+      "voice": "robot_soft",
+      "label": "呆萌机器人",
+      "hint": "奶音升 2 半音 + 机械回声，呆呆的"
+    }
+  ],
+  "engines": {
+    "gsv": {
+      "default_voice": "xiaolan",
+      "port": 9880,
+      "vram_mb": 3400,
+      "note": "GPT-SoVITS api_v2，文本到音色最稳，支持 speed_factor / temperature"
+    },
+    "breeze": {
+      "default_voice": "breeze",
+      "port": 7860,
+      "vram_mb": 4800,
+      "note": "Breeze-TTS2，指令式（instruction）控制音色与风格，显存最贵"
+    },
+    "index": {
+      "default_voice": "xiaolan_emo",
+      "port": 9890,
+      "vram_mb": 4600,
+      "note": "IndexTTS-2.5，情感向量 + 时长控制，启动最慢"
+    }
+  },
+  "voices": {
+    "xiaolan": {
+      "backend": "gsv",
+      "ref_audio_path": "F:/qqbot/.models/tts-ref/ref_zh.wav",
+      "prompt_text": "今天的风很轻，适合说点悄悄话。你听，海边的潮水正在慢慢退下去。",
+      "prompt_lang": "zh",
+      "text_lang": "zh",
+      "text_split_method": "cut5",
+      "speed": 1,
+      "pitch": 0,
+      "temperature": 0.6
+    },
+    "xiaolan_cute": {
+      "backend": "gsv",
+      "ref_audio_path": "F:/qqbot/.models/tts-ref/ref_zh_cute4.wav",
+      "prompt_text": "今天的风很轻，适合说点悄悄话。你听，海边的潮水正在慢慢退下去。",
+      "prompt_lang": "zh",
+      "text_lang": "zh",
+      "text_split_method": "cut5",
+      "speed": 1,
+      "pitch": 0,
+      "temperature": 0.7,
+      "_说明": "可爱档：与 xiaolan 同一段参考音，整体升 4 个半音（实测 F0 中位 258→326Hz），GSV 输出音高≈参考音音高，所以换参考音就换了音区，零延迟代价。回退只需把 voice-config.json 的 voice 改回 xiaolan。"
+    },
+    "breeze": {
+      "backend": "breeze",
+      "ref_audio": "F:/qqbot/.models/tts-ref/ref_zh.wav",
+      "prompt_text": "今天的风很轻，适合说点悄悄话。你听，海边的潮水正在慢慢退下去。",
+      "voice_name": "xiaolan_breeze",
+      "cfg_scale": 1,
+      "seed": 42,
+      "speed": 1,
+      "temperature": 0.9
+    },
+    "breeze_design": {
+      "backend": "breeze",
+      "instruction": "一位温柔自信的年轻女性，声音清晰，语气亲切，表达轻快而富有感染力。",
+      "cfg_scale": 4,
+      "seed": 42,
+      "speed": 1,
+      "temperature": 0.9
+    },
+    "robot_soft": {
+      "backend": "gsv",
+      "ref_audio_path": "F:/qqbot/.models/tts-ref/ref_zh_cute4.wav",
+      "prompt_text": "今天的风很轻，适合说点悄悄话。你听，海边的潮水正在慢慢退下去。",
+      "prompt_lang": "zh",
+      "text_lang": "zh",
+      "speed": 0.96,
+      "pitch": 2,
+      "temperature": 0.7,
+      "post_filter": "aecho=0.85:0.75:16|32:0.35|0.22,highpass=f=170,lowpass=f=7200",
+      "_说明": "「呆萌机器人」：奶音参考音升 2 个半音 + 轻微回声/带通做出机械钝感。原来走 Breeze，但 6GB 卡 4800MB 需求起不来，改 gsv 派生。"
+    },
+    "gentle": {
+      "backend": "gsv",
+      "ref_audio_path": "F:/qqbot/.models/tts-ref/gentle.wav",
+      "prompt_text": "这里是第二段参考音频里原样说的那句话。",
+      "prompt_lang": "zh",
+      "text_lang": "zh",
+      "speed": 1,
+      "pitch": 0
+    },
+    "xiaolan_emo": {
+      "backend": "index",
+      "ref_audio_path": "F:/qqbot/.models/tts-ref/ref_zh.wav",
+      "speed": 1,
+      "_说明": "IndexTTS-2.5：同小蓝参考音色，情感档。emo_vector 顺序 [happy,angry,sad,afraid,disgusted,melancholic,surprised,calm]，适配层按 speed 反推 duration（duration=1/speed，1.0 正常）。"
+    },
+    "xiaolan_emo_soft": {
+      "backend": "index",
+      "ref_audio_path": "F:/qqbot/.models/tts-ref/ref_zh.wav",
+      "emo_vector": [
+        0.5,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0.5
+      ],
+      "speed": 1,
+      "_说明": "温柔偏开心档：适合视频口播"
+    },
+    "xiaolan_cool": {
+      "backend": "gsv",
+      "ref_audio_path": "F:/qqbot/.models/tts-ref/ref_zh.wav",
+      "prompt_text": "今天的风很轻，适合说点悄悄话。你听，海边的潮水正在慢慢退下去。",
+      "prompt_lang": "zh",
+      "text_lang": "zh",
+      "speed": 1.06,
+      "pitch": -2.5,
+      "temperature": 0.5,
+      "_说明": "「飒爽 · 干脆」：用主参考音降 2.5 个半音 + 提速 6%，比 gentle 更脆；gentle.wav 从来不存在，故改用派生。"
+    }
+  },
+  "custom": {
+    "_说明": "派生音色：base 指向上面某个 voice，其余字段覆盖它。省得为了一个 speed/pitch 把整段参考音复制三遍。改这里同样是热加载。",
+    "xiaolan_slow": {
+      "base": "xiaolan",
+      "speed": 0.88,
+      "temperature": 0.5,
+      "_说明": "慢一点、更稳，适合念长段落/知识类"
+    },
+    "xiaolan_fast": {
+      "base": "xiaolan",
+      "speed": 1.15,
+      "_说明": "快一点，适合短视频口播"
+    },
+    "xiaolan_cute5": {
+      "base": "xiaolan_cute",
+      "pitch": 2,
+      "_说明": "在可爱档基础上再用 ffmpeg 升 2 半音（比直接做参考音灵活，代价是多一次 ffmpeg）"
+    },
+    "breeze_soft": {
+      "base": "breeze",
+      "speed": 0.94,
+      "temperature": 0.7,
+      "_说明": "Breeze 走 ffmpeg atempo 补语速"
+    },
+    "emo_sad": {
+      "base": "xiaolan_emo",
+      "emo_vector": [
+        0,
+        0,
+        0.75,
+        0,
+        0,
+        0.25,
+        0,
+        0
+      ],
+      "_说明": "IndexTTS 悲伤档"
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "_说明": "语音（TTS）配置。keepText=true 表示语音条之外正文照常发（推荐：听不清还能看字）。rateJitter/pitchJitter 每次合成随机抖一点，避免每次都一个腔调（合成感主要来自此）。",
+  "_本地TTS说明": "provider=edge 用 edge-tts（微软网页接口，在线）；provider=http 走本地模型：skills/local-tts/adapter/server.py（端口 9881，OpenAI 形状）→ GPT-SoVITS api_v2（9880，GPU）+ breeze-server（7860，Vulkan）。音色在 profiles.json：xiaolan(GSV参考音克隆)/breeze/breeze_design/gentle。本地服务没起时会合成失败，把 provider 改回 edge 即可回退。",
+  "_音色建议": "本地档：xiaolan=小蓝音（GSV 零样本克隆，快，~1.5s）；breeze=参考音克隆（Breeze TTS 2）；breeze_design=文字描述生成音色；gentle=第二参考音频。edge 档（在线）：温柔女声=zh-CN-XiaoxiaoNeural；活泼女声=zh-CN-XiaoyiNeural。B站成片音色在 bili-ops-config.json 的 video.ttsVoice 单独设。",
+  "provider": "http",
+  "endpoint": "http://127.0.0.1:9881/v1/audio/speech",
+  "_model说明": "留空=每个音色用它自己的原生引擎（xiaolan 系→gsv，breeze 系→breeze，emo 系→index）。之前写死 index，导致所有音色都被强指到最吃显存的 IndexTTS(4600MB)，6GB 卡永远差几十 MB 起不来 → 全部语音合成失败。适配层另有梯队降级，不再需要在这里绑死某个引擎。",
+  "enabled": true,
+  "mode": "sometimes",
+  "prob": 0.1,
+  "voice": "xiaolan_cute",
+  "speed": 1.08,
+  "_speed说明": "本地模型档的语速（1.0 正常）。注意 rate/pitch 只在 edge 档生效，本地档的可爱感靠音高（换参考音）+ speed，实测抬语速并不抬音高，只是时长缩 7%。",
+  "voiceProfiles": {
+    "gentle": {
+      "voice": "zh-CN-XiaoxiaoNeural",
+      "type": "edge-neural · 在线",
+      "size": "在线合成（本地无模型；音频落 .qqbot/tts/，每条 10~60KB）",
+      "quality": "高",
+      "rate": "+2%",
+      "pitch": "+2Hz"
+    },
+    "lively": {
+      "voice": "zh-CN-XiaoyiNeural",
+      "type": "edge-neural · 在线",
+      "size": "在线合成（本地无模型；音频落 .qqbot/tts/，每条 10~60KB）",
+      "quality": "高",
+      "rate": "+6%",
+      "pitch": "+6Hz"
+    },
+    "lazy": {
+      "voice": "zh-CN-XiaochenNeural",
+      "type": "edge-neural · 在线",
+      "size": "在线合成（本地无模型；音频落 .qqbot/tts/，每条 10~60KB）",
+      "quality": "中高",
+      "rate": "+1%",
+      "pitch": "+0Hz"
+    },
+    "toughMale": {
+      "voice": "zh-CN-YunjianNeural",
+      "type": "edge-neural · 在线",
+      "size": "在线合成（本地无模型；音频落 .qqbot/tts/，每条 10~60KB）",
+      "quality": "高",
+      "rate": "+2%",
+      "pitch": "-2Hz"
+    }
+  },
+  "rate": "+2%",
+  "pitch": "+0Hz",
+  "rateJitter": 1,
+  "pitchJitter": 1,
+  "tailProb": 0.1,
+  "maxChars": 70,
+  "minChars": 2,
+  "cooldownMs": 45000,
+  "keepText": true,
+  "timeoutMs": 300000,
+  "model": ""
+}

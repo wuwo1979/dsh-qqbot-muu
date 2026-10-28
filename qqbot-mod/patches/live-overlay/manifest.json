@@ -1,0 +1,49 @@
+{
+  "plugin": "@zaofan/dsh-qqbot",
+  "version": "1.10.39",
+  "note": "base/ 是官方同版本原文件；ours/ 是本仓库定制后的结果；install.mjs 用三路合并把它们装回正在跑的插件。",
+  "files": [
+    "settings-host.js",
+    "client/qqbot-settings.js",
+    "dist/transport/inbound.js",
+    "dist/session/session-manager.js",
+    "dist/features/local-embed.js",
+    "dist/features/msg-history.js",
+    "dist/gateway/debounce.js",
+    "dist/transport/tool-presenter.js"
+  ],
+  "sha256": {
+    "settings-host.js": {
+      "ours": "c1052cb6f164c47b19786060d712142b6785f81ec9e847099b5cfc9689ccae04",
+      "base": "a53f0e2223c1f9646cac0c0f28fa8503ebb195c528cfbcfba943b60d4d8b2dbc"
+    },
+    "client/qqbot-settings.js": {
+      "ours": "92b8b95c093a71c134a9b4fbed9d6feed405d307c1974d01664c6196c905bd6f",
+      "base": "c7497839d066b4dfc10ebd6dc5da575f00f309b1b633c05bd3fcc34d869966b5"
+    },
+    "dist/transport/inbound.js": {
+      "ours": "376195b5d7a71a9494e35f5b917703860bd13d259e4ed4aba9618a24ce3d06c1",
+      "base": "c02948766a24268fdbb7888901b1944882347d2c272ce8d087aea029350ca348"
+    },
+    "dist/session/session-manager.js": {
+      "ours": "74d13f047b922ae043ce5b881b1b58362a7cc5fa648274a6cb2c1986cd685d18",
+      "base": "b35df0e712f1eabfb1c2954c6381ef460c33cc5500dc467a969e961cf95f9b62"
+    },
+    "dist/features/local-embed.js": {
+      "ours": "14c93b27d2388f0fc4a3fa42d74391926da737dcd1ca80f569f8bad9f1b5bd89",
+      "base": "67d5e5265eb2e3dac000bd830aaa9c3d4ea1d78963581d73bd6813913542f861"
+    },
+    "dist/features/msg-history.js": {
+      "ours": "4a0c8fca7cf9e63848c303092e0dc7f1f49924428435782c9184430f03d2f658",
+      "base": "e1230df022cd04bdfb62292f8e54fd1293179f7786d3a8ac6db008195c05c7de"
+    },
+    "dist/gateway/debounce.js": {
+      "ours": "1a1a36b7ff858e319958dccd5239acc37c12d59fcd7711a3cc1970bebca8b3d5",
+      "base": "f7cdbafe592c3a68d7986fe35410992a1c5fef92dd6abcf2efb1d35c4a3fc1cd"
+    },
+    "dist/transport/tool-presenter.js": {
+      "ours": "8bc9c1811adef89b42ae37fdd0d433bbff37f87ec983ffc02a83db0554f7c947",
+      "base": "435cef444ecb0f571c295c84597de31214f9a499d52e921afd1d75cf6463ae66"
+    }
+  }
+}

@@ -1,0 +1,121 @@
+{
+ "enabled": true,
+ "mode": "cloud-first",
+ "image": {
+  "provider": "auto",
+  "_说明": "出图来源：local=本地 SD / cloud=云端免费 flux / auto=按 mode 倒（云端没有 endpoint 时自动回落 local）。和视频形态分开选。"
+ },
+ "publish": {
+  "mode": "web",
+  "requireApproval": true,
+  "autoPublish": false,
+  "fallbackManual": true
+ },
+ "llm": {
+  "provider": "deepseek",
+  "baseUrl": "https://api.deepseek.com/v1",
+  "model": "deepseek-flash",
+  "fallbackLocal": true,
+  "timeoutMs": 120000,
+  "temperature": 0.8,
+  "maxTokens": 2400
+ },
+ "video": {
+  "panels": 6,
+  "secondsPer": 5,
+  "burnSubtitle": true,
+  "motion": true,
+  "style": "auto",
+  "text": {
+   "width": 1280,
+   "height": 720,
+   "fps": 24,
+   "style": "typewriter",
+   "accent": "#7fd7ff",
+   "bgImage": ""
+  },
+  "sfx": true,
+  "planner": true,
+  "maxImageShots": 2,
+  "imageAttempts": 3,
+  "imageGate": true,
+  "imageGoodEnough": 0.84,
+  "shotMinSec": 2.4,
+  "shotMaxSec": 5.2,
+  "fadeSec": 0.22,
+  "ttsRate": "-4%",
+  "bgm": true,
+  "ttsVoice": "xiaolan_cute",
+  "ttsProvider": "",
+  "ttsEndpoint": "",
+  "ttsModel": "gsv",
+  "_tts说明": "provider 留空 = 跟 voice-config.json（本地）；model=gsv 是为成片速度——IndexTTS 的 RTF 22~30，7 屏要等十几分钟。想换音色改 ttsVoice。",
+  "tid": 21,
+  "copyright": 1,
+  "_说明": "style：text=本地文字动效（PIL 逐帧，零成本）/ image=逐屏分镜图 / auto=按 mode 倒（local-first→text，cloud-first→image）。",
+  "characterLock": true,
+  "characterStrength": 0.7,
+  "charMode": "composite",
+  "charHeightRatio": 0.72,
+  "charBottom": 0.03,
+  "_charMode说明": "composite=只画场景+贴透明立绘（身份稳定、场景真跟着旁白变，2026-10-27 默认）；img2img=老路线（从定妆照派生，容易保住上一张构图/画框）；off=不画角色。立绘在 F:/qqbot/assets/char/pose/{idle,talk,wave,happy,point}.png。",
+  "route": "frames",
+  "_route说明": "出片路子：frames=前端截图拼帧（默认，分镜卡片） / text=文字动画（金句歌词） / art=程序化画画（氛围片头）。浮窗可改；AI 做视频时按这个选 render.py / render_text.py / render_art.py。"
+ },
+ "sfx": {
+  "enabled": true,
+  "gain": 0.35,
+  "maxPerPanel": 2,
+  "dir": "",
+  "_说明": "音效库在 {dataRoot}/音效（index.json + lib/）。空库第一次成片会用 ffmpeg 现场合成 9 个语义音效；也可以把下载的音效丢进去，或用 scanDir/addFromUrl 入库。"
+ },
+ "media": {
+  "provider": "local",
+  "endpoint": "https://image.pollinations.ai/prompt/{prompt}?width={w}&height={h}&nologo=true&model=flux",
+  "characterPrompt": "chibi 2D anime whale girl, light steel blue long wavy hair, blue eyes, white frilled headband with a blue bow, deep blue and white maid dress with whale embroidery, whale tail, soft cel shading, clean anime lineart, expressive big eyes, ",
+  "stylePrompt": "2D anime screencap, soft cel shading, clean lineart, vivid colors, gentle gradient shading, no 3D render, simple background, ",
+  "timeoutMs": 90000,
+  "width": 1024,
+  "height": 576,
+  "minGapMs": 12000,
+  "cropBottom": 28,
+  "fallbackLocal": false,
+  "_说明": "默认本地 Counterfeit V3（SD1.5 2D 动漫，24 步），质量明显好于云端免费 flux 的 3D 影楼风；想换回云端把 provider 改 cloud。"
+ },
+ "jianying": {
+  "mode": "assets",
+  "draftDir": ""
+ },
+ "review": {
+  "maxPerBatch": 2,
+  "concurrency": 1,
+  "cloudFirst": true,
+  "localFix": true
+ },
+ "limits": {
+  "dailyVideos": 1,
+  "dailyComments": 5,
+  "dailyRenames": 1,
+  "dailyReplies": 10
+ },
+ "schedule": {
+  "enabled": false,
+  "times": [
+   "10:30"
+  ],
+  "topics": [
+   "一个被低估的科技冷知识"
+  ],
+  "notify": true
+ },
+ "guard": {
+  "maxTopicChars": 200
+ },
+ "_说明": "B 站账号运营配置。写操作默认需要主人审核，审核通过后自动上传/发送。",
+ "storage": {
+  "_说明": "成片/分镜/音频/封面的落盘目录。放 F 盘避免 C 盘膨胀，也避开宿主对 .qqbot 子目录的写限制。",
+  "root": "F:/qqbot/data/bili-ops"
+ },
+ "_ownerOpenids说明": "只有这些 QQ openid 能用写操作（plan/approve/publish/rename/comment）。当前是爸爸；换人/加人改这里。留空且插件 groupAdmin.owners 也为空时，写操作一律拒绝。",
+ "ownerOpenids": []
+}

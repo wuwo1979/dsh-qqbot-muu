@@ -1,0 +1,158 @@
+{
+ "_说明": "小蓝记忆库 + 分流观察 配置。改完下次入站即生效（无需重启）。删掉本文件则全部走 memory-core.mjs 的默认值。",
+ "enabled": true,
+ "capture": true,
+ "dataRoot": "F:/qqbot/dshqqbot",
+ "recallTopK": 4,
+ "recallMinCos": 0.45,
+ "recallMaxChars": 300,
+ "cap": 1500,
+ "halfLifeDays": 30,
+ "dedupeCos": 0.92,
+ "minTextLen": 8,
+ "_digest说明": "中层记忆：攒够 digestEvery 条 event 就压一次抽取式摘要（零 token，不删原记忆）。调小=摘要更频繁但更碎。",
+ "digestEvery": 40,
+ "_captureSelf说明": "回合结束时把她自己说过的话也记进库（这样她记得自己答应过什么）。嫌吵就设 false。",
+ "captureSelf": true,
+ "_pastProfile说明": "旧识注入：把导入的历史聊天记录算出的「这个人是谁」的画像（出现次数/活跃时段/语气，不含原话）以 [旧识] 块注入。只给当事人、只在 profile=full 的场景（特别关心群/私聊）；普通群一个字都不带。嫌多余就设 false。",
+ "pastProfile": true,
+ "router": {
+  "_说明": "分流观察期。现在只记日志不改变任何行为；样本够了再决定要不要拿它去拦云端。",
+  "enabled": true
+ },
+ "lore": {
+  "_说明": "世界书（Neuro 式设定检索）。设定不常驻 prompt，命中关键词才注入一小段。条目在 worldbook.json。",
+  "enabled": true,
+  "topK": 2,
+  "maxChars": 200,
+  "minScore": 1
+ },
+ "llmRecall": {
+  "_说明": "用本地小模型把召回的记忆压成一句第一人称（比编号列表更像'自己想起来'，也更省字）。本地模型没起/超时/吐废话就自动回退编号列表，永不阻塞入站。",
+  "enabled": true,
+  "timeoutMs": 1500,
+  "minHits": 2,
+  "maxChars": 60,
+  "maxInChars": 400
+ },
+ "chatlog": {
+  "_说明": "原始聊天台账：把插件已落盘的 msg-history/*.jsonl 增量镜像进 memory.db 的 chat 表（幂等）。给本地记忆分身当输入、给运维查原话。不额外抓包。",
+  "_保留说明": "retentionDays / capPerScope 只管自动采集的行；用 qq-import --archive 导入的完整档案（src=import）不受保留窗影响，不会被 60 天清掉。",
+  "enabled": true,
+  "retentionDays": 60,
+  "capPerScope": 8000,
+  "maxChars": 500,
+  "ingestThrottleMs": 15000,
+  "maxFilesPerRun": 8,
+  "maxBytesPerRun": 4194304,
+  "_backup说明": "每天跟 prune 同一窗口做一次库备份到 .qqbot/backups/（VACUUM INTO，WAL 下也是一致快照），保留 backupKeep 份。手动体检/维护用 node qqbot-mod/scripts/mem-maintain.mjs",
+  "dailyBackup": true,
+  "backupKeep": 5
+ },
+ "_retrieval说明": "检索用的向量模型。local=插件自带 ONNX bge-small-zh；ollama:nomic-embed-text 等=本机 Ollama。图片/表情检索可单独指定 stickerEmbeddingModel（留空跟随 embeddingModel）。换模型后到浮窗「记忆→模型」点一次「重建向量」。",
+ "retrieval": {
+  "embeddingModel": "local",
+  "stickerEmbeddingModel": "local",
+  "visionModel": "qwen2.5vl:3b",
+  "rerankModel": "",
+  "ollamaBase": "http://127.0.0.1:11434",
+  "timeoutMs": 20000,
+  "batch": 16
+ },
+ "_digest说明2": "历史印象：对一个人的全部聊天分片（60 条/片、重叠 8 条）交给本地模型归纳，再汇总成高维卡。主人私聊优先，每天最多自动重建一次。",
+ "digest": {
+  "_auto说明": "auto=true 时，私聊回合整理成功后会顺手重建这个人的高维卡（进程内 12h/人 + perDayMs 双重限流，本地模型离线就跳过）。设 false 则只能从面板手动重建。",
+  "auto": true,
+  "sliceSize": 60,
+  "overlap": 8,
+  "maxSlicesPerRun": 12,
+  "maxSlicesForFinal": 40,
+  "sliceMaxChars": 160,
+  "cardMaxChars": 300,
+  "perDayMs": 79200000,
+  "timeoutMs": 60000,
+  "maxTokens": 400,
+  "temperature": 0.2
+ },
+ "memoryAgent": {
+  "_说明": "记忆分身：每回合收尾后让本地小模型读最近对话，提炼事实/印象卡/心情。异步、不挡回复；本地模型离线时整段跳过。model 留空=沿用 local-llm-config 默认。",
+  "enabled": true,
+  "model": "ollama:qwen2.5:7b",
+  "timeoutMs": 30000,
+  "minNewMessages": 3,
+  "minIntervalMs": 45000,
+  "maxContextMsgs": 18,
+  "maxInputChars": 1600,
+  "maxFacts": 3,
+  "maxFactChars": 48,
+  "maxCards": 3,
+  "maxCardChars": 120,
+  "writeProfile": true,
+  "mood": true,
+  "relation": true,
+  "maxTokens": 280,
+  "temperature": 0.4,
+  "ingest": true,
+  "log": true,
+  "cardStableHours": 6,
+  "_cardStableHours说明": "印象卡稳定窗（小时）：窗内不重写（防 [印象] 块轮间变动、保 prompt 缓存）。2026-10-27 主人要求长期不更新会和目标偏移，从 24h 改 6h；高维卡同样适用。",
+  "_temp说明": "0.2→0.4（2026-10-27）：心情/卡片文案太容易重复（一直\"有点无聊但也想继续聊\"），抬高一点增加多样性；事实提取有去重护栏，不怕温度高。"
+ },
+ "_groupTiers说明": "两层记忆：个人层（印象卡/熟识度）跨群统一；群层（聊天台账/记忆/心情）按 scope 隔离。priority=特别关心群（完整注入+沉淀），其余按 defaultTier 走普通群（只看信息本身：不召回/不沉淀/不写个人卡，只保留极简认人块，省 token）。**名单只从 data/group-tiers.json 读，浮窗「记忆」页改完下一条消息即生效**（memory-config 不再写 groupTiers，避免覆盖文件导致改了不生效）。",
+ "_tierPolicy说明": "各等级的具体策略，可覆盖：profile=full|compact|off（注入完整卡/精简认人块/不注入）；recall/capture/digest=是否召回、沉淀长期记忆、做中层摘要；agentFacts/agentCards=记忆分身是否写事实/个人卡；agentContextMsgs=记忆分身读最近几条。",
+ "tierPolicy": {
+  "c2c": {
+   "profile": "full",
+   "recall": true,
+   "capture": true,
+   "digest": true,
+   "agentFacts": true,
+   "agentCards": true,
+   "agentContextMsgs": 18
+  },
+  "priority": {
+   "profile": "full",
+   "recall": true,
+   "capture": true,
+   "digest": true,
+   "agentFacts": true,
+   "agentCards": true,
+   "agentContextMsgs": 18
+  },
+  "normal": {
+   "profile": "compact",
+   "recall": false,
+   "capture": false,
+   "digest": false,
+   "agentFacts": false,
+   "agentCards": false,
+   "agentContextMsgs": 5
+  }
+ },
+ "profile": {
+  "_说明": "印象+熟识度统一块：高维卡 + 等级，只给当前说话人。stable=true 时不输出每轮会变的数值/备注，保证云端 prompt 缓存命中。",
+  "enabled": true,
+  "maxChars": 300,
+  "stable": true,
+  "showNumbers": false,
+  "numberStep": 10,
+  "stableNote": false
+ },
+ "mood": {
+  "_说明": "心情注入：记忆分身写的当下状态，≤30 字，30 分钟过期后自动不带。",
+  "enabled": true,
+  "maxChars": 30,
+  "ttlMs": 1800000
+ },
+ "bond": {
+  "_说明": "熟识度：persona.fam:<senderId> 是唯一事实源（亲近/信任/等级/备注）。插件原生 affinity/attitude 只做导入源，按 nativeSyncMs 节流融合。",
+  "enabled": true,
+  "maxChars": 240,
+  "startAffinity": 12,
+  "startTrust": 10,
+  "nativeSyncMs": 600000
+ },
+ "privacy": {
+  "encryptAtRest": true
+ }
+}

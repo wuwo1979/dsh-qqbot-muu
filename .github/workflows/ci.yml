@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 语法检查（入口与安装器）
+        run: |
+          node --check index.js
+          node --check install.mjs
+
+      - name: 插件市场提交预检
+        run: node scripts/check-submission.mjs
+
+      # 最重要的门：包里绝不能混进运行时数据、聊天台账、真实 openid
+      - name: npm 包隐私自检
+        run: node scripts/check-pack-privacy.mjs

@@ -1,0 +1,49 @@
+{
+  "enabled": true,
+  "pythonBin": "F:/qqbot/.venv-draw/Scripts/python.exe",
+  "serverScript": "F:/qqbot/qqbot-mod/scripts/sd_server.py",
+  "modelDir": "F:/qqbot/.models/counterfeit3/Counterfeit-V3.0_fix_fp16.safetensors",
+  "baseUrl": "http://127.0.0.1:7861",
+  "timeoutMs": 120000,
+  "bootWaitMs": 120000,
+  "width": 1024,
+  "height": 576,
+  "steps": 24,
+  "cfg": 7,
+  "styleSuffix": ", anime illustration, best quality, clean line art, soft lighting, cute, highly detailed face",
+  "negative": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, ugly, deformed, extra limbs",
+  "translateModel": "",
+  "maxPromptChars": 300,
+  "activeProfile": "sd15-balanced",
+  "profiles": {
+    "sd15-fast": {
+      "_说明": "草稿档：512x288 / 18 步，一张 1~2 秒，只用来试构图",
+      "modelDir": "F:/qqbot/.models/counterfeit3/Counterfeit-V3.0_fix_fp16.safetensors",
+      "steps": 18,
+      "cfg": 7,
+      "width": 512,
+      "height": 288
+    },
+    "sd15-balanced": {
+      "_说明": "日常档：768x432 / 24 步，6GB 显存的安全区（当前默认）",
+      "modelDir": "F:/qqbot/.models/counterfeit3/Counterfeit-V3.0_fix_fp16.safetensors",
+      "steps": 24,
+      "cfg": 7,
+      "width": 768,
+      "height": 432
+    },
+    "sd15-max": {
+      "_说明": "画质档：640x360 / 32 步 CFG7.5，像素少一点、步数多一点，细节更稳（推荐出成片）",
+      "modelDir": "F:/qqbot/.models/counterfeit3/Counterfeit-V3.0_fix_fp16.safetensors",
+      "steps": 32,
+      "cfg": 7.5,
+      "width": 640,
+      "height": 360
+    }
+  },
+  "vae": "",
+  "lowvram": false,
+  "loras": [],
+  "_升级路线": "不换代码就能升级：1) 往 .models 丢更好的 SD1.5 单文件模型（Anything/MeinaMix/Animefull 等），把对应档位的 modelDir 指过去；2) 画风/角色一致性用 LoRA（loras 里填 {path, weight}，6GB 卡上比换底座更划算）；3) 偏灰偏糊先换 fp16 VAE（vae 填路径）；4) 爆显存再开 lowvram。SDXL 在 6GB 上不建议。",
+  "_换模型备选": "Counterfeit-V3.0（动漫，默认）: 当前值；升级就往 .models 丢更好的 SD1.5 单文件再改 modelDir。"
+}
