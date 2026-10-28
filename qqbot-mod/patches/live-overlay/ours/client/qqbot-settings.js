@@ -3851,9 +3851,10 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         if (!r) return '（还没拉过视频）'
         if (r.ok === false) return '<span style="color:#c2410c">拉取失败：' + esc(r.error || '?') + '</span>'
         var v = r.video || {}
+        var plat = String(r.platform || v.platform || '').toLowerCase() // [qqbot-mod] 2026-10-28：platform 在外层 r 上，v.platform 一直是 undefined → B站拉取也显示抖音提示
         var st = v.stats ? ('👁 ' + (v.stats.views || v.stats.play || 0) + ' · 👍 ' + (v.stats.likes || v.stats.digg || 0) + ' · 💬 ' + (v.stats.comments || 0)) : ''
         var h = '<div style="border:1px solid #e0e4ea;border-radius:8px;padding:8px;background:#fcfcfd;margin:2px 0 6px">'
-          + '<b style="font-size:12.5px">' + (v.platform === 'douyin' ? '🎵' : '📺') + ' ' + esc(v.title || '') + '</b>'
+          + '<b style="font-size:12.5px">' + (plat === 'douyin' ? '🎵' : '📺') + ' ' + esc(v.title || '') + '</b>'
           + (v.author ? '<span style="font-size:11px;color:#888;margin-left:6px">' + esc(v.author) + '</span>' : '')
           + '<div style="font-size:11px;color:#888;margin:2px 0">' + st + (st ? ' · ' : '') + '<a href="' + esc(v.url || '') + '" target="_blank">打开视频</a></div>'
         var hot = (r.comments || []).filter(function (c) { return c.text }).slice(0, 3)
@@ -3862,7 +3863,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           + '<textarea id="dk-vr-comment" style="width:100%;height:44px;font-size:12px;border:1px solid #d0d5dd;border-radius:6px;padding:4px;box-sizing:border-box">' + esc(r.draft || '') + '</textarea>'
           + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;align-items:center">'
           + '<button class="dk-btn" id="dk-vr-copy">📋 复制</button>'
-          + (v.platform === 'bili'
+          + (plat === 'bili'
             ? '<button class="dk-btn ok" id="dk-vr-post">✅ 确认后直发B站评论</button>'
             : '<span style="font-size:11px;color:#b54708">抖音自动发被设备票挡死，复制后到视频页粘上</span>')
           + '<button class="dk-btn" id="dk-vr-note">📝 记一笔</button>'
@@ -4855,6 +4856,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
                 + '<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">'
                 + (j.status === 'awaiting_review' ? '<button class="qqs-btn" data-bact="approve" data-bid="' + esc(j.id) + '">✅ 通过并投稿</button>' : '')
                 + (j.status === 'awaiting_review' ? '<button class="qqs-btn" data-bact="delete" data-bid="' + esc(j.id) + '">🗑 删除</button>' : '')
+                + (j.status === 'failed' ? '<button class="qqs-btn ok" data-bact="retry" data-bid="' + esc(j.id) + '">🔁 重试出片</button>' : '')
                 + '<button class="qqs-btn" data-bact="open-folder" data-bid="' + esc(j.id) + '">📂 打开文件夹</button>'
                 + vid
                 + '</div></div></div>'
@@ -4957,6 +4959,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
             if (!r || !r.ok) { box.textContent = '方案信息读取失败：' + ((r && r.error) || '?'); return }
             var d = r.draw || {}
             var v = r.video || {}
+        var plat = String(r.platform || v.platform || '').toLowerCase() // [qqbot-mod] 2026-10-28：platform 在外层 r 上，v.platform 一直是 undefined → B站拉取也显示抖音提示
             box.innerHTML = '<span style="color:#1971c2">🖼 本地 SD</span> '
               + esc(d.activeProfile || '?') + ' · ' + esc(d.modelPath ? String(d.modelPath).split('/').slice(-1)[0] : '未配置')
               + ' · ' + (d.modelSizeGB || 0) + 'GB · ' + (d.sdServer && d.sdServer.up ? '服务在线:7861' : '服务未起:7861')
@@ -6254,7 +6257,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         h.innerHTML = '<img src="data:image/png;base64,' + QQS_WHALE_B64 + '" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover;flex:none;background:#e3f4ff"><span>QQ 群管理台</span>'
           + '<select class="qqs-sel" id="dk-ns" style="max-width:220px">' + (opts || '<option value="">无账号(去账号页添加)</option>') + '</select>'
           + '<span style="flex:1"></span>'
-          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1028a</span>'
+          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1028b</span>'
           + '<button class="dk-btn" id="dk-full" title="全屏/还原">⛶</button>'
           + '<button class="dk-btn" id="dk-close" title="收回成球">➖</button>'
         var fb = h.querySelector('#dk-full')
