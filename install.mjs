@@ -63,6 +63,89 @@ function walk(dir, rel) {
   }
 }
 
+// ── 可移植化：把只属于作者机器的绝对路径改写成「目标机上有就有、没有就关掉」 ──
+// 起因（2026-10-28）：随包发的 draw-config.json 里写着 F:/qqbot/.venv-draw/...、
+// F:/qqbot/.models/...，别人的机器上这些路径不存在，出图会一路 fetch failed。
+const REPO_POSIX = REPO.replace(/\\/g, '/').replace(/\/+$/, '');
+const REWRITES = [
+  [new RegExp(escapeRe(REPO_POSIX) + '/qqbot-mod', 'g'), REPO_POSIX + '/qqbot-mod'],
+  [new RegExp(escapeRe(REPO_POSIX) + '/assets', 'g'), REPO_POSIX + '/assets'],
+  [new RegExp(escapeRe(REPO_POSIX) + '/data(?![\\w-])', 'g'), TARGET + '/data'],
+  [new RegExp(escapeRe(LOCAL_ROOT), 'g'), TARGET],
+];
+const machinePaths = new Map();   // 配置文件 → 不存在的绝对路径
+
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function readJsonLoose(p) {
+  // Windows 记事本/PowerShell 写的 JSON 常带 BOM，JSON.parse 会直接炸
+  const t = readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
+  try { return JSON.parse(t) } catch { return null }
+}
+
+function sanitizeConfigs() {
+  const dir = join(TARGET, '.qqbot-extensions');
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.json')) continue;
+    const p = join(dir, name);
+    let txt = readFileSync(p, 'utf8');
+    let next = txt;
+    for (const [re, to] of REWRITES) next = next.replace(re, to);
+    if (next !== txt) { writeFileSync(p, next, 'utf8'); txt = next; }
+    // 还剩哪些「本机绝对路径」
+    const missing = [];
+    for (const m of txt.matchAll(/"[A-Za-z]:[\\/][^"]*"/g)) {
+      const raw = m[0].slice(1, -1);
+      const norm = raw.replace(/\\/g, '/');
+      if (!/^[A-Za-z]:\//.test(norm)) continue;
+      if (!existsSync(norm)) missing.push(norm);
+    }
+    if (!missing.length) continue;
+    machinePaths.set(name, missing);
+  }
+
+  // draw-config：模型/解释器不在本机 → 关掉出图，别让它带病跑
+  const drawPath = join(TARGET, '.qqbot-extensions', 'draw-config.json');
+  if (existsSync(drawPath)) {
+    const cfg = readJsonLoose(drawPath);
+    const binOk = !cfg.pythonBin || existsSync(String(cfg.pythonBin).replace(/\\/g, '/'));
+    const modelOk = !cfg.modelDir || existsSync(String(cfg.modelDir).replace(/\\/g, '/'));
+    if (!binOk || !modelOk) {
+      cfg.enabled = false;
+      cfg._disabledReason = [
+        !binOk ? `pythonBin 不存在：${cfg.pythonBin}` : '',
+        !modelOk ? `modelDir 不存在：${cfg.modelDir}` : '',
+        '本机没有本地出图环境，已自动关掉 draw（要用就改这两项后把 enabled 改回 true）',
+      ].filter(Boolean).join('；');
+      writeFileSync(drawPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      console.log('⚠️  本机没有本地出图环境：draw-config.json 已置 enabled=false（不会带病跑）。');
+      console.log('   ' + cfg._disabledReason);
+    }
+  }
+
+  // bili-ops-config：立绘目录不在本机 → 清空，避免成片拼角色时找不到图
+  const opsPath = join(TARGET, '.qqbot-extensions', 'bili-ops-config.json');
+  if (existsSync(opsPath)) {
+    const cfg = readJsonLoose(opsPath) || {};
+    let touched = false;
+    const clearIfMissing = (obj, key, label) => {
+      const v = obj?.[key];
+      if (typeof v !== 'string' || !v) return;
+      if (/^[A-Za-z]:[\\/]/.test(v) && !existsSync(v.replace(/\\/g, '/'))) {
+        obj[key] = '';
+        touched = true;
+        console.log(`⚠️  ${label} 指向的本机路径不存在，已清空（成片会跳过该素材）：${v}`);
+      }
+    };
+    clearIfMissing(cfg, 'charPoseDir', 'bili-ops-config.charPoseDir');
+    clearIfMissing(cfg, 'outputRoot', 'bili-ops-config.outputRoot');
+    for (const [k, v] of Object.entries(cfg || {})) {
+      if (v && typeof v === 'object' && !Array.isArray(v)) clearIfMissing(v, 'charPoseDir', `bili-ops-config.${k}.charPoseDir`);
+    }
+    if (touched) writeFileSync(opsPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  }
+}
+
 if (!existsSync(join(TARGET, '.qqbot'))) {
   console.log('提示：' + TARGET + ' 里还没有 .qqbot/，请确认这就是你的 bot 数据根。');
 }
@@ -90,6 +173,8 @@ walk(SRC, '');
     console.log('已从 worldbook.example.json 铺出默认世界书（照着改成你自己的性格与关系即可）');
   }
 }
+
+sanitizeConfigs();
 
 console.log('✅ 扩展已安装到 ' + join(TARGET, '.qqbot-extensions'));
 console.log('   新增/更新 ' + copied + ' 个文件，跳过 ' + skipped + ' 个已存在文件' + (FORCE ? '' : '（用 --force 覆盖）'));

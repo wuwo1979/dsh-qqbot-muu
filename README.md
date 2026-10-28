@@ -179,6 +179,12 @@ node qqbot-mod/patches/unify-fam-ui.mjs     --apply   # 熟识度统一入口
 > 每个补丁都支持 `--check`（只看会改什么）、`--apply`、`--revert`，并且是幂等的。
 > 客户端补丁改完在 DSH 里按 `Ctrl+R` 重载；服务端补丁重启桌面端。
 
+**装完会自检一遍，缺什么就当场关掉什么**（不会带病跑）：
+`install.mjs` 会把配置里指向作者机器的绝对路径改写到你的数据根，然后逐项体检 ——
+本机没有本地出图环境（Python + 模型）就把 `draw-config.json` 的 `enabled` 置 false
+并写清 `_disabledReason`；立绘目录不存在就清空该字段。也就是说：**别人下载包后不会因为
+"路径指向别人的电脑"而静默失败**，而是当场降级 + 打印原因。
+
 **升级后补丁被冲掉？用 overlay 一键装回**（推荐）：
 
 `@zaofan/dsh-qqbot` 自动升级会生成新的 generation 目录，里面是干净的官方文件 —— 之前打的补丁全部消失，表现为"记忆页没了、浮窗切 tab 会跳大小"。
