@@ -3988,13 +3988,24 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           var out = panel.querySelector('#dk-vr-cw-out')
           if (!out) return
           var items = state._cwItems || []
-          var h = '<div style="margin-bottom:3px"><b>B站评论列表（' + items.length + ' 条）</b> <button class="dk-btn" id="dk-vr-cw-re" style="font-size:10.5px;padding:0 6px">🔄 刷新</button></div>'
+          var h = '<div style="margin-bottom:3px"><b>B站评论列表（' + items.length + ' 条）</b> <button class="dk-btn" id="dk-vr-cw-re" style="font-size:10.5px;padding:0 6px">🔄 刷新</button>'
+            + ' 评论模型：<select id="dk-vr-cw-model" style="font-size:10.5px;padding:0 3px"><option value="cloud">云端</option><option value="local">本地</option></select></div>'
+            + '<div style="display:flex;gap:4px;margin:2px 0 6px;align-items:center;flex-wrap:wrap">'
+            + '<input id="dk-vr-cw-direct-msg" placeholder="直接在 B 站视频下发一条新评论…" style="flex:1;min-width:180px;font-size:11.5px;padding:3px 5px;border:1px solid #d0d5dd;border-radius:5px">'
+            + '<button class="dk-btn ok" id="dk-vr-cw-direct" style="font-size:10.5px;padding:1px 7px">💬 直发视频评论</button>'
+            + '<span id="dk-vr-cw-direct-st" style="font-size:10.5px;color:#667085"></span></div>'
           if (!items.length) h += '<span style="color:#999">还没有评论 —— 视频发出去后这里会显示观众评论</span>'
           items.forEach(function (x, i) {
             if (x.error) { h += '<div style="padding:3px 0;color:#c2410c"><b>' + esc(x.title || '') + '</b> ' + esc(x.error) + '</div>'; return }
             var stCol = x.status === '未回复' ? '#c2410c' : '#2f9e44'
-            h += '<div style="border-bottom:1px dashed #eee;padding:4px 0">'
-              + '<b>' + esc(x.user || '') + '</b><span style="color:#98a2b3;font-size:10.5px"> 👍' + (x.likes || 0) + ' · ' + esc(String(x.title || '').slice(0, 18)) + '</span>'
+            // [qqbot-mod] 2026-10-28 楼中楼：子评论缩进显示并标注「回谁」，可单独回复
+            var indent = x.isSub ? 'margin-left:16px;border-left:2px solid #e4e7ec;padding-left:7px;' : 'border-bottom:1px dashed #eee;'
+            var headTag = x.isSub
+              ? '<span style="color:#98a2b3;font-size:10.5px">↳ 回 ' + esc(x.parentUser || '') + '</span> <b>' + esc(x.user || '') + '</b>'
+              : '<b>' + esc(x.user || '') + '</b>' + (x.rcount > 0 ? '<span style="color:#98a2b3;font-size:10.5px"> 💬' + x.rcount + '</span>' : '')
+            h += '<div style="' + indent + 'padding:4px 0">'
+              + headTag
+              + '<span style="color:#98a2b3;font-size:10.5px"> 👍' + (x.likes || 0) + (x.isSub ? '' : ' · ' + esc(String(x.title || '').slice(0, 18))) + '</span>'
               + '<span style="color:' + stCol + ';font-size:10.5px;margin-left:6px">[' + esc(x.status) + ']</span>'
               + '<div style="color:#344054;white-space:pre-wrap">' + esc(x.comment || '') + '</div>'
               + (x.prevReply ? '<div style="color:#2f9e44;font-size:11px">↳ 之前回过：' + esc(x.prevReply) + '</div>' : '')
@@ -4008,6 +4019,22 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           out.innerHTML = h
           var re = out.querySelector('#dk-vr-cw-re')
           if (re) re.onclick = function () { cwLoadList() }
+          // [qqbot-mod] 2026-10-28 直接评论视频本体（不回复某条，发新评论）
+          var dbtn = out.querySelector('#dk-vr-cw-direct')
+          if (dbtn) dbtn.onclick = async function () {
+            var inp = out.querySelector('#dk-vr-cw-direct-msg')
+            var msg = (inp || {}).value || ''
+            var dst = out.querySelector('#dk-vr-cw-direct-st')
+            if (!msg.trim()) { if (dst) dst.textContent = '先写一句要发的评论'; return }
+            var x0 = (state._cwItems || []).find(function (x) { return x && x.aid && !x.error }) || {}
+            if (!x0.aid) { if (dst) dst.textContent = '还没有已发布视频可评论'; return }
+            if (!window.confirm('确认把这条评论直接发到 B 站视频《' + String(x0.title || '').slice(0, 24) + '》下？（公开可见）')) return
+            dbtn.disabled = true; if (dst) dst.textContent = '发送中…（拟人间隔，可能等 20~90 秒）'
+            var rr = await apiPost('bili', { action: 'comment-reply', mode: 'send', commentVideo: true, aid: x0.aid, bvid: x0.bvid, rpid: '', message: msg, title: x0.title, via: (out.querySelector('#dk-vr-cw-model') || {}).value || 'cloud' }).catch(function (e) { return { ok: false, error: e.message } })
+            dbtn.disabled = false
+            if (dst) dst.textContent = rr && rr.ok ? ('✓ 已发出' + (rr.verified ? '' : '（可能被折叠）')) : ('失败：' + ((rr && rr.error) || '?'))
+            if (rr && rr.ok && inp) inp.value = ''
+          }
           out.querySelectorAll('[data-cwsend]').forEach(function (b) {
             b.onclick = async function () {
               var i = Number(b.getAttribute('data-cwsend'))
@@ -4016,7 +4043,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
               if (!msg.trim()) { var st0 = out.querySelector('[data-cwst="' + i + '"]'); if (st0) st0.textContent = '先写一句回复（或点「重生成草稿」让小蓝写）'; return }
               b.disabled = true; var st = out.querySelector('[data-cwst="' + i + '"]')
               if (st) st.textContent = '发送中…（拟人间隔，可能等 20~90 秒）'
-              var rr = await apiPost('bili', { action: 'comment-reply', mode: 'send', aid: x.aid, bvid: x.bvid, rpid: x.rpid, message: msg, user: x.user, comment: x.comment, title: x.title }).catch(function (e) { return { ok: false, error: e.message } })
+              var rr = await apiPost('bili', { action: 'comment-reply', mode: 'send', aid: x.aid, bvid: x.bvid, rpid: x.rpid, rootRpid: x.rootRpid, parentRpid: x.parentRpid, message: msg, user: x.user, comment: x.comment, title: x.title, via: (out.querySelector('#dk-vr-cw-model') || {}).value || 'cloud' }).catch(function (e) { return { ok: false, error: e.message } })
               b.disabled = false
               if (st) st.textContent = rr && rr.ok ? ('✓ 已回复' + (rr.verified ? '' : '（被折叠了，内容没丢）') + '：' + (rr.text || msg)) : ('失败：' + ((rr && rr.error) || '?'))
               if (rr && rr.ok) { x.status = rr.verified ? '已回复' : '已回复(被折叠)'; x.prevReply = rr.text || msg }
@@ -4028,7 +4055,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
               var x = (state._cwItems || [])[i]; if (!x) return
               b.disabled = true; var st = out.querySelector('[data-cwst="' + i + '"]')
               if (st) st.textContent = '小蓝在写…（本地模型几秒）'
-              var rr = await apiPost('bili', { action: 'comment-reply', mode: 'draft', aid: x.aid, bvid: x.bvid, rpid: x.rpid, message: '', user: x.user, comment: x.comment, title: x.title }).catch(function (e) { return { ok: false, error: e.message } })
+              var rr = await apiPost('bili', { action: 'comment-reply', mode: 'draft', aid: x.aid, bvid: x.bvid, rpid: x.rpid, rootRpid: x.rootRpid, parentRpid: x.parentRpid, message: '', user: x.user, comment: x.comment, title: x.title, via: (out.querySelector('#dk-vr-cw-model') || {}).value || 'cloud' }).catch(function (e) { return { ok: false, error: e.message } })
               b.disabled = false
               if (rr && rr.ok) {
                 var inp = out.querySelector('[data-cwmsg="' + i + '"]')
@@ -6227,7 +6254,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         h.innerHTML = '<img src="data:image/png;base64,' + QQS_WHALE_B64 + '" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover;flex:none;background:#e3f4ff"><span>QQ 群管理台</span>'
           + '<select class="qqs-sel" id="dk-ns" style="max-width:220px">' + (opts || '<option value="">无账号(去账号页添加)</option>') + '</select>'
           + '<span style="flex:1"></span>'
-          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1027c</span>'
+          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1028a</span>'
           + '<button class="dk-btn" id="dk-full" title="全屏/还原">⛶</button>'
           + '<button class="dk-btn" id="dk-close" title="收回成球">➖</button>'
         var fb = h.querySelector('#dk-full')
