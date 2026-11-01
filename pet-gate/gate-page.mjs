@@ -3,7 +3,12 @@
  * 差异：素材优先 /media/<form>/<名>.webm 静态直出（随包分发，快），404 自动回退中继。
  */
 
-export const LOGIN_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+export function loginHtml(free) {
+  const freeHint = free
+    ? '<p style="color:#2c8;font-weight:600">当前为免密钥邀请模式，直接点「进入」即可</p>'
+    : '<p>凭访问码进入（一人在线）。看她在桌面上卖萌、点按钮逗她；不用装任何东西。</p>';
+  const input = free ? '' : '<input id="k" type="password" placeholder="访问码" autocomplete="off">';
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>🐋 桌宠 · 访问入口</title>
 <style>
@@ -14,18 +19,21 @@ export const LOGIN_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset
  button{width:100%;border:0;border-radius:10px;background:#3a7df0;color:#fff;padding:10px 0;font-size:14px;cursor:pointer}
  button:active{transform:scale(.98)} #msg{font-size:12px;color:#c66;margin-top:10px;min-height:16px;text-align:center}
 </style></head><body><div class="card">
-<h1>🐋 桌宠·实时</h1><p>凭访问码进入（一人在线）。看她在桌面上卖萌、点按钮逗她；不用装任何东西。</p>
-<input id="k" type="password" placeholder="访问码" autocomplete="off">
+<h1>🐋 桌宠·实时</h1>${freeHint}
+${input}
 <button id="go">进入</button><div id="msg"></div>
 </div><script>
-document.getElementById('go').onclick=function(){var k=document.getElementById('k').value.trim();if(!k)return;
+document.getElementById('go').onclick=function(){var k=(document.getElementById('k')||{value:''}).value.trim();
  document.getElementById('msg').textContent='验证中…';
  fetch('/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k})})
  .then(function(r){return r.json().then(function(j){return {s:r.status,j:j}})})
  .then(function(o){if(o.j&&o.j.ok){location.href='/'}else{document.getElementById('msg').textContent=(o.j&&o.j.message)||('失败('+o.s+')')}})
  .catch(function(){document.getElementById('msg').textContent='网络异常，稍后再试'})};
-document.getElementById('k').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('go').click()});
+var kEl=document.getElementById('k');if(kEl)kEl.addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('go').click()});
+${free ? 'document.getElementById(\'go\').click();' : ''}
 </script></body></html>`;
+}
+export const LOGIN_HTML = loginHtml(false); // 兼容旧引用；server 侧用 loginHtml(SEC.freeMode)
 
 export const PAGE_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -68,7 +76,7 @@ function render(){var f=F.form||'xiaolan';document.getElementById('title').textC
  document.getElementById('forms').innerHTML=fh;
  var ah='';for(var j=0;j<F.anims.length;j++){var a=F.anims[j];ah+='<button data-n="'+esc(a.name)+'">'+esc(a.label)+'</button>'}
  document.getElementById('anims').innerHTML=ah;
- if(!V.dataset.n)useMedia(f,F.anims[0].name);
+ if(!V.dataset.n)useMedia(F.form.id||f,F.anims[0].name);
  Array.prototype.forEach.call(document.getElementById('forms').children,function(b){b.onclick=function(){st('切换中…');post({action:'switch-form',target:b.dataset.f}).then(function(r){st(r.ok?('已切换为『'+(r.label||b.dataset.f)+'』'):(r.message||'切换失败'));load()})}});
  Array.prototype.forEach.call(document.getElementById('anims').children,function(b){b.onclick=function(){st('做了动作：'+b.textContent);useMedia(F.form.id||f,b.dataset.n);V.play&&V.play();post({name:b.dataset.n}).then(function(r){st(r.ok?('桌面已做『'+b.textContent+'』'):(r.message||'触发失败'))})}});
 }

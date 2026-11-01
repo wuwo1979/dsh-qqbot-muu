@@ -166,7 +166,34 @@ botpoll();setInterval(botpoll,10000);
 load();setInterval(load,5000);
 </script></body></html>`;
 
-const PET_MEDIA_PETIDS = { xiaolan: 'xiaolan', muu: 'main' }; // 形态→dsh-pet petId 白名单
+const PET_MEDIA_PETIDS = { xiaolan: 'xiaolan', classic: 'classic', de: 'de', muu: 'main' }; // 形态→dsh-pet petId 白名单
+
+// ── 邀请共享（2026-11-01 主人要求：陪玩界面提供密钥/免密钥两个入口）──────────
+const GATE_SEC = () => join(fileURLToPath(import.meta.url), '..', '..', '..', '..', 'pet-gate', 'secrets.json');
+function readGateSecrets() {
+  try {
+    const j = JSON.parse(readFileSync(GATE_SEC(), 'utf8'));
+    return j && j.cloudUrl ? j : null;
+  } catch { return null; }
+}
+/** 云端管理通道（同 agent.mjs 的平台 cookie 引导）：adminKey 只在本机内存 */
+async function cloudAdmin(sec, path, bodyObj) {
+  const base = String(sec.cloudUrl || '').split('?')[0];
+  const sharecode = (String(sec.cloudUrl || '').split('sharecode=')[1] || '').split('&')[0];
+  let cookie = '';
+  try {
+    const boot = await fetch(`${base}/?sharecode=${sharecode}`, { signal: AbortSignal.timeout(15000) });
+    const sc = boot.headers.getSetCookie ? boot.headers.getSetCookie() : [];
+    cookie = sc.map((c) => c.split(';')[0]).join('; ');
+  } catch { /* 门没过就直连 */ }
+  const r = await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'x-admin-key': sec.adminKey, 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+    body: JSON.stringify(bodyObj || {}),
+    signal: AbortSignal.timeout(15000),
+  });
+  return r.json().catch(() => ({ ok: false, message: `http-${r.status}` }));
+}
 
 function attach(serverCtx) {
   try {
@@ -303,7 +330,48 @@ function attach(serverCtx) {
       });
     } catch { /* 重复注册等，忽略 */ }
 
-    if (typeof dispose === 'function') console.log('[pet-panel] /api/qqbot-settings/pet-anim + /pet + /pet-media + /pet-status 已挂载（v5：状态文件+好感度榜+桌宠右键菜单）');
+    // ── 邀请共享：陪玩页「🔗 邀请」卡接口（密钥显示 + 免密钥开关 + 重置席位）──
+    try {
+      ws.register({
+        kind: 'exact',
+        path: '/api/qqbot-settings/pet-share',
+        handler: async (req, res) => {
+          try {
+            const sec = readGateSecrets();
+            if (!sec) return sendJson(res, 200, { ok: false, message: 'pet-gate/secrets.json 不存在（网关还没部署过）' });
+            if (req.method === 'GET') {
+              // 云端实时状态（免密钥开关/席位占用）；拉不到就用本地 secrets 兜底
+              const live = sec.adminKey ? await cloudAdmin(sec, '/admin/status', {}).catch(() => null) : null;
+              return sendJson(res, 200, {
+                ok: true,
+                url: sec.cloudUrl || '',
+                key: sec.accessKey || '',
+                freeMode: live ? live.freeMode === true : sec.freeMode === true,
+                seatsUsed: live ? live.seatsUsed : null,
+                seatsMax: live ? live.seatsMax : (sec.seats || 1),
+              });
+            }
+            if (req.method === 'POST') {
+              const body = await readJsonBody(req).catch(() => ({}));
+              if (body.action === 'free-mode') {
+                const r = await cloudAdmin(sec, '/admin/free-mode', { on: body.on === true });
+                return sendJson(res, 200, r);
+              }
+              if (body.action === 'reset-seat') {
+                const r = await cloudAdmin(sec, '/admin/reset-seat', {});
+                return sendJson(res, 200, r);
+              }
+              return sendJson(res, 200, { ok: false, message: '需要 action: free-mode / reset-seat' });
+            }
+            return sendJson(res, 200, { ok: false });
+          } catch (e) {
+            return sendJson(res, 200, { ok: false, message: String((e && e.message) || e) });
+          }
+        },
+      });
+    } catch { /* 重复注册等，忽略 */ }
+
+    if (typeof dispose === 'function') console.log('[pet-panel] /api/qqbot-settings/pet-anim + /pet + /pet-media + /pet-status + /pet-share 已挂载（v6：邀请共享+四形态）');
     // 桌宠右键菜单「更多」里挂「变小蓝/变大肥鱼」（dsh-pet 官方第三方菜单扩展点，长轮询消费点击）
     ensurePetMenu();
   } catch (e) {

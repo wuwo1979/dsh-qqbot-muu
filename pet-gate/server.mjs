@@ -145,11 +145,12 @@ function enqueueJob(method, path, bodyB64) {
 }
 setInterval(() => { /* 清理孤儿任务由 25s 超时兜底 */ }, 30000).unref?.();
 
-const AGENT_PATH_RE = /^\/api\/qqbot-settings\/(pet-anim|pet-media|pet-status)$/; // 双白名单之一（云端侧）
+const AGENT_PATH_RE = /^\/api\/qqbot-settings\/(pet-anim|pet-media|pet-status|pet-share)$/; // 双白名单之一（云端侧）
+const MEDIA_FORMS = 'xiaolan|classic|de|muu'; // 四形态静态素材目录（部署时随包分发）
 const MEDIA_RE = /^[^/\\]+\.webm$/; // 文件名可含中文；禁路径分隔符即禁穿越
 
 // ── 桌宠页面（从 pet-panel v5 页面适配：素材走 /media 静态，404 回退中继）──
-import { PAGE_HTML, LOGIN_HTML } from './gate-page.mjs';
+import { PAGE_HTML, loginHtml } from './gate-page.mjs';
 
 // ── 主循环 ──
 const server = http.createServer(async (req, res) => {
@@ -181,7 +182,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── 静态素材（免登录？不 —— 也要登录，防素材被扫）──
-  const mMedia = /^\/media\/(xiaolan|muu)\/([^/\\]+\.webm)$/.exec(decodeURIComponent(u.pathname));
+  const mMedia = new RegExp(`^\\/media\\/(${MEDIA_FORMS})\\/([^/\\\\]+\\.webm)$`).exec(decodeURIComponent(u.pathname));
   if (mMedia) {
     const sid = authCookie(req);
     if (!sid || !seats.has(sid)) return reply(res, 401, { ok: false, message: '请先登录' });
@@ -197,13 +198,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && u.pathname === '/') {
       const sid = authCookie(req);
       if (sid && seats.has(sid)) { seats.get(sid).at = Date.now(); saveSeats(); return reply(res, 200, PAGE_HTML, 'text/html; charset=utf-8'); }
-      return reply(res, 200, LOGIN_HTML, 'text/html; charset=utf-8');
+      return reply(res, 200, loginHtml(SEC.freeMode === true), 'text/html; charset=utf-8');
     }
     if (req.method === 'POST' && u.pathname === '/login') {
       if (loginBlocked(ip)) return reply(res, 429, { ok: false, message: '尝试次数过多，15 分钟后再来' });
       let body = {};
       try { body = JSON.parse((await readBody(req)).toString('utf8') || '{}'); } catch { return reply(res, 400, { ok: false, message: 'bad request' }); }
-      if (!safeEq(String(body.key || ''), SEC.accessKey)) { loginFail(ip); return reply(res, 403, { ok: false, message: '访问码不对' }); }
+      // 免密钥模式（2026-11-01 主人要求：邀请制入口）—— 开启时不需要访问码，
+      // 其余防护（单席位/限速/拉黑）全部保留；关闭后立刻恢复验码。
+      const free = SEC.freeMode === true;
+      if (!free && !safeEq(String(body.key || ''), SEC.accessKey)) { loginFail(ip); return reply(res, 403, { ok: false, message: '访问码不对' }); }
       gcSeats();
       if (seats.size >= SEC.seats) return reply(res, 403, { ok: false, message: `席位已满（限 ${SEC.seats} 人）——请让主人重置席位后再来` });
       const sid = randomBytes(24).toString('hex');
@@ -228,7 +232,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── 管理口（adminKey；不给任何 key 回显）──
-  if (u.pathname === '/admin/status' || u.pathname === '/admin/reset-seat' || u.pathname === '/admin/rotate-key') {
+  if (u.pathname === '/admin/status' || u.pathname === '/admin/reset-seat' || u.pathname === '/admin/rotate-key' || u.pathname === '/admin/free-mode') {
     let body = {};
     try { body = JSON.parse((await readBody(req)).toString('utf8') || '{}'); } catch { }
     if (!safeEq(String((req.headers['x-admin-key'] || body.adminKey) || ''), SEC.adminKey)) return reply(res, 403, { ok: false, message: 'forbidden' });
@@ -239,6 +243,12 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/admin/reset-seat') {
       const n = seats.size; seats.clear(); saveSeats();
       return reply(res, 200, { ok: true, kicked: n, message: '已重置席位，凭访问码可重新进入' });
+    }
+    // free-mode：免密钥邀请开关（开=任何人拿到链接即可进，仍限席位；关=恢复验码）
+    if (u.pathname === '/admin/free-mode') {
+      SEC.freeMode = body.on === true;
+      writeFileSync(SEC_PATH, JSON.stringify(SEC, null, 2), 'utf8');
+      return reply(res, 200, { ok: true, freeMode: SEC.freeMode, message: SEC.freeMode ? '免密钥已开启（链接直接进，仍限席位）' : '免密钥已关闭（恢复访问码验证）' });
     }
     // rotate-key：换访问码（新码由本机 CLI 生成后经 adminKey 鉴权通道送来 —— 云端沙箱里的文件主人读不到）
     const nk = String(body.newKey || '').trim();

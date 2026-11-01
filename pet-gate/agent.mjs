@@ -111,7 +111,7 @@ async function run() {
 }
 
 // ── 管理子命令（本机信任区执行，adminKey 不出本机）──
-async function admin(path, label) {
+async function admin(path, label, bodyObj) {
   const base = (SEC.cloudUrl || '').split('?')[0];
   if (!base) { console.error('✗ secrets.json 里还没有 cloudUrl'); process.exit(1); }
   const sharecode = (SEC.cloudUrl.split('sharecode=')[1] || '').split('&')[0];
@@ -124,7 +124,7 @@ async function admin(path, label) {
   const r = await fetch(`${base}${path}`, {
     method: 'POST',
     headers: { 'x-admin-key': SEC.adminKey, 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
-    body: '{}',
+    body: JSON.stringify(bodyObj || {}),
     signal: AbortSignal.timeout(15000),
   });
   const j = await r.json().catch(() => ({}));
@@ -160,5 +160,9 @@ else if (CMD === 'new-key') {
     console.log('✔ 访问码已更换（旧码立即作废），新访问码：');
     console.log('  ', nk);
   } else { console.error('✗', j.message || r.status); process.exitCode = 1; }
+}
+else if (CMD === 'free-on' || CMD === 'free-off') {
+  // 免密钥邀请开关：开=拿到链接就能进（仍限席位）；关=恢复访问码
+  await admin('/admin/free-mode', CMD === 'free-on' ? '免密钥已开启' : '免密钥已关闭', { on: CMD === 'free-on' });
 }
 else { console.error('未知子命令:', CMD); process.exit(2); }
