@@ -27,7 +27,7 @@ document.getElementById('go').onclick=function(){var k=(document.getElementById(
  document.getElementById('msg').textContent='验证中…';
  fetch('/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k})})
  .then(function(r){return r.json().then(function(j){return {s:r.status,j:j}})})
- .then(function(o){if(o.j&&o.j.ok){location.href='/'}else{document.getElementById('msg').textContent=(o.j&&o.j.message)||('失败('+o.s+')')}})
+ .then(function(o){if(o.j&&o.j.ok){location.href='/watch?v=1101c2&t='+Date.now()}else{document.getElementById('msg').textContent=(o.j&&o.j.message)||('失败('+o.s+')')}})
  .catch(function(){document.getElementById('msg').textContent='网络异常，稍后再试'})};
 var kEl=document.getElementById('k');if(kEl)kEl.addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('go').click()});
 ${free ? 'document.getElementById(\'go\').click();' : ''}
@@ -37,6 +37,7 @@ export const LOGIN_HTML = loginHtml(false); // 兼容旧引用；server 侧用 l
 
 export const PAGE_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
 <title>🐋 桌宠·实时</title>
 <style>
  body{margin:0;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#eef4ff;color:#333;display:flex;flex-direction:column;align-items:center;min-height:100vh}
@@ -68,7 +69,8 @@ var F=null;var V=document.getElementById('v');
 function media(f,n){var ext=(V&&V.canPlayType&&!V.canPlayType('video/webm; codecs="vp9"').replace(/no/,''))?'mp4':'webm';return '/media/'+encodeURIComponent(f)+'/'+encodeURIComponent(n)+'.'+ext}
 function relayMedia(f,n){return '/api/qqbot-settings/pet-media?form='+encodeURIComponent(f)+'&name='+encodeURIComponent(n)}
 function useMedia(f,n){var u=media(f,n);if(V.dataset.src===u)return;V.dataset.src=u;V.dataset.n=n;
- V.onerror=function(){V.onerror=null;V.dataset.src='';if(u.indexOf('.webm')>0){V.src=media(f,n).replace('.webm','.mp4')}else{V.src=relayMedia(f,n)}};V.src=u}
+ V.onerror=function(){V.onerror=null;V.dataset.src='';st('⚠ 画面加载失败：'+u+(u.indexOf('.webm')>0?'（尝试 MP4 兑底）':'（中继也不行？）'));
+  if(u.indexOf('.webm')>0){V.src=media(f,n).replace('.webm','.mp4')}else{V.src=relayMedia(f,n)}};V.src=u}
 function post(b){return fetch('/api/qqbot-settings/pet-anim',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)}).then(function(r){
  if(r.status===401){location.href='/';throw new Error('relogin')}return r.json()})}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -82,7 +84,13 @@ function render(){var f=F.form||'xiaolan';document.getElementById('title').textC
  Array.prototype.forEach.call(document.getElementById('anims').children,function(b){b.onclick=function(){st('做了动作：'+b.textContent);useMedia(F.form.id||f,b.dataset.n);try{V.currentTime=0}catch(e){}V.play&&V.play();post({name:b.dataset.n}).then(function(r){st(r.ok?('桌面已做『'+b.textContent+'』'):(r.message||'触发失败'))})}});
 }
 function st(t){document.getElementById('st').textContent=t}
-function load(){fetch('/api/qqbot-settings/pet-anim').then(function(r){if(r.status===401){location.href='/';throw new Error('relogin')}return r.json()}).then(function(j){if(!j.ok)return st(j.message||'桌宠接口没就绪（她可能关机了）');var changed=!F||F.form.id!==j.form.id;if(changed){F={form:j.form,formLabel:j.form.label,formEmoji:j.form.emoji,forms:j.forms,anims:j.anims};V.dataset.src='';V.dataset.n='';V.removeAttribute('src');render();}st('当前形态：'+j.form.label+' · 每5秒自动同步')}).catch(function(e){if(e.message!=='relogin')st('连不上桌宠服务（主人电脑没开？）')})}
+function load(){fetch('/api/qqbot-settings/pet-anim').then(function(r){if(r.status===401){location.href='/';throw new Error('relogin')}return r.json()}).then(function(j){if(!j.ok)return st(j.message||'桌宠接口没就绪（她可能关机了）');var changed=!F||F.form.id!==j.form.id;if(changed){F={form:j.form,formLabel:j.form.label,formEmoji:j.form.emoji,forms:j.forms,anims:j.anims};V.dataset.src='';V.dataset.n='';V.removeAttribute('src');V.load&&V.load();render();}var base='当前形态：'+j.form.label+' · 每5秒自动同步';
+  // 画面诊断（2026-11-01）：截图就能定位视频问题
+  if(V.error&&V.error.code){st(base+'｜⚠ 视频解码失败 code='+V.error.code+' src='+V.dataset.src)}
+  else if(V.dataset.src&&V.readyState>=2){st(base+'｜画面 OK（'+(V.dataset.src.split('.').pop())+'）')}
+  else if(V.dataset.src){st(base+'｜画面加载中… '+V.dataset.src)}
+  else{st(base)}
+ }).catch(function(e){if(e.message!=='relogin')st('连不上桌宠服务（主人电脑没开？）')})}
 document.getElementById('rnd').onclick=function(){st('随机来一个…');post({action:'random'}).then(function(r){st(r.ok?'桌面已随机做动作':(r.message||'触发失败'))})};
 (function(){var v=document.getElementById('v');if(!v||!window.matchMedia||!window.matchMedia('(pointer:fine)').matches)return;
  document.addEventListener('mousemove',function(e){var r=v.getBoundingClientRect();if(!r.width)return;

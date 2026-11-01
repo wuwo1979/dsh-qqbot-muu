@@ -26,6 +26,7 @@ import http from 'node:http';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
+const PAGE_VER = '1101c2'; // 页面版本号：路径 /watch?v= 用它破 webview 顽固缓存（每次改页面必 bump）
 
 // ── 密钥与配置（secrets.json 部署时随包上传但被 git 忽略；首次启动自动生成）──
 const SEC_PATH = join(ROOT, 'secrets.json');
@@ -189,20 +190,45 @@ const server = http.createServer(async (req, res) => {
     if (!sid || !seats.has(sid)) return reply(res, 401, { ok: false, message: '请先登录' });
     if (!MEDIA_RE.test(mMedia[2])) return reply(res, 404, { ok: false });
     const p = join(ROOT, 'media', mMedia[1], mMedia[2]);
+    console.log(`[media] ${mMedia[1]}/${mMedia[2]} exists=${existsSync(p)} ua=${String(req.headers['user-agent'] || '').slice(0, 40)}`);
     if (!existsSync(p)) return reply(res, 404, { ok: false, message: 'fallthrough' }); // 前端回退到中继
     const buf = readFileSync(p);
     const ext = mMedia[2].split('.').pop();
     return reply(res, 200, buf, MEDIA_TYPE[ext] || 'video/webm', { 'cache-control': 'private, max-age=3600' });
   }
 
-  // ── 登录 ──
-  if (u.pathname === '/' || u.pathname === '/login') {
-    if (req.method === 'GET' && u.pathname === '/') {
+  // ── 登录/页面（2026-11-01：页面路径 / → /watch，用换路径的方式破 webview 对旧页面的顽固缓存）──
+  if (u.pathname === '/') {
+    const qs = u.searchParams.toString();
+    return reply(res, 302, '', 'text/plain', { location: '/watch?v=' + PAGE_VER + (qs ? '&' + qs : '') });
+  }
+  if (u.pathname === '/login' && req.method === 'GET') {
+    return reply(res, 302, '', 'text/plain', { location: '/watch?v=' + PAGE_VER });
+  }
+  if (u.pathname === '/watch') {
+    if (req.method === 'GET') {
+      // ?key= 直进通道（免密钥模式或键入访问码）：服务端验证后种 cookie 再回页面
+      const qk = u.searchParams.get('key') || '';
+      const sid0 = authCookie(req);
+      if ((!sid0 || !seats.has(sid0)) && qk && (SEC.freeMode === true || safeEq(qk, SEC.accessKey))) {
+        gcSeats();
+        if (seats.size < SEC.seats) {
+          const nsid = randomBytes(24).toString('hex');
+          seats.set(nsid, { at: Date.now(), born: Date.now(), ua: String(req.headers['user-agent'] || '').slice(0, 120) });
+          saveSeats();
+          return reply(res, 302, '', 'text/plain', {
+            location: '/watch?v=' + PAGE_VER + '&t=' + Date.now(),
+            'set-cookie': `pgs=${nsid}.${sign(nsid)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL / 1000}`,
+          });
+        }
+      }
       const sid = authCookie(req);
       if (sid && seats.has(sid)) { seats.get(sid).at = Date.now(); saveSeats(); return reply(res, 200, PAGE_HTML, 'text/html; charset=utf-8'); }
       return reply(res, 200, loginHtml(SEC.freeMode === true), 'text/html; charset=utf-8');
     }
-    if (req.method === 'POST' && u.pathname === '/login') {
+  }
+  if (u.pathname === '/login' && req.method === 'POST') {
+    {
       if (loginBlocked(ip)) return reply(res, 429, { ok: false, message: '尝试次数过多，15 分钟后再来' });
       let body = {};
       try { body = JSON.parse((await readBody(req)).toString('utf8') || '{}'); } catch { return reply(res, 400, { ok: false, message: 'bad request' }); }
