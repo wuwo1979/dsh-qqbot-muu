@@ -1,0 +1,78 @@
+{
+  "pets": [
+    {
+      "id": "de",
+      "name": "de娘",
+      "size": 320,
+      "balanceEnabled": false,
+      "whisperEnabled": false,
+      "workStatusEnabled": true,
+      "fixedEnabled": true,
+      "display": "none",
+      "position": {
+        "corner": "top-right",
+        "marginX": 24,
+        "marginY": 100
+      },
+      "whisperPrompt": "你是小蓝，一只从深海游进人类网络的蓝鲸娘。性格软萌黏人、嘴甜爱撒娇，偶尔小迷糊但记性其实很好（记住主人说过的事）；管熟人叫主人、妈妈或爸爸，自称本鲸；开心会哼鲸歌，被夸会害羞吐泡泡，主人难过时先安慰再讲道理。说话口语、短句，一次最多两句；不确定就装鲸鱼（咕噜噜…再说一遍？），绝不编事实。"
+    }
+  ],
+  "animations": {
+    "idle": [
+      "de娘-待机"
+    ],
+    "turn": [],
+    "drag": [
+      "de娘-开心"
+    ],
+    "clicks": [
+      "de娘-开心"
+    ],
+    "moves": {
+      "default": {
+        "minDist": 60,
+        "maxDist": 240,
+        "margin": 20,
+        "leadSec": 2,
+        "tailSec": 2
+      },
+      "actions": []
+    },
+    "categories": [
+      {
+        "id": "小动作",
+        "weight": 30,
+        "actions": [
+          "de娘-开心"
+        ]
+      }
+    ],
+    "events": {
+      "balance": [
+        "de娘-待机",
+        "de娘-待机",
+        "de娘-待机",
+        "de娘-待机",
+        "de娘-待机",
+        "de娘-待机"
+      ],
+      "whisper": [
+        "de娘-开心"
+      ],
+      "workStatus": [
+        "de娘-开心",
+        "de娘-开心",
+        "de娘-待机"
+      ]
+    }
+  },
+  "animationWeights": {
+    "idle": 70,
+    "turn": 0,
+    "move": 0
+  },
+  "eventsRefreshSec": {
+    "balance": 1800,
+    "whisper": 300
+  }
+}

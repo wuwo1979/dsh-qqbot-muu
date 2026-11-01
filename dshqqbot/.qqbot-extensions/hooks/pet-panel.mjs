@@ -121,6 +121,7 @@ const PET_PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 跨外网访问需自建隧道（默认不开，注意隐私）；按钮控制的是这台电脑桌面上的桌宠本体。</footer>
 <script>
 var F=null;var V=document.getElementById('v');
+function dirId(){if(F&&F.forms){for(var i=0;i<F.forms.length;i++){if(F.forms[i].active)return F.forms[i].id}}return (F&&F.form&&F.form.id)||'xiaolan'}
 function media(f,n){return '/api/qqbot-settings/pet-media?form='+encodeURIComponent(f)+'&name='+encodeURIComponent(n)}
 function post(b){return fetch('/api/qqbot-settings/pet-anim',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json()})}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -129,9 +130,9 @@ function render(){var f=F.form||'xiaolan';document.getElementById('title').textC
  document.getElementById('forms').innerHTML=fh;
  var ah='';for(var j=0;j<F.anims.length;j++){var a=F.anims[j];ah+='<button data-n="'+esc(a.name)+'">'+esc(a.label)+'</button>'}
  document.getElementById('anims').innerHTML=ah;
- if(!V.dataset.n)V.src=media(f,F.anims[0].name);
+ if(!V.dataset.n)V.src=media(dirId(),F.anims[0].name);
  Array.prototype.forEach.call(document.getElementById('forms').children,function(b){b.onclick=function(){st('切换中…');post({action:'switch-form',target:b.dataset.f}).then(function(r){st(r.ok?('已切换为『'+(r.label||b.dataset.f)+'』'):'切换失败');load()})}});
- Array.prototype.forEach.call(document.getElementById('anims').children,function(b){b.onclick=function(){st('做了动作：'+b.textContent);V.src=media(F.form.id||f,b.dataset.n);V.play&&V.play();post({name:b.dataset.n}).then(function(r){st(r.ok?('桌面已做『'+b.textContent+'』'):'触发失败')})}});
+ Array.prototype.forEach.call(document.getElementById('anims').children,function(b){b.onclick=function(){st('做了动作：'+b.textContent);V.src=media(dirId(),b.dataset.n);V.play&&V.play();post({name:b.dataset.n}).then(function(r){st(r.ok?('桌面已做『'+b.textContent+'』'):'触发失败')})}});
 }
 function st(t){document.getElementById('st').textContent=t}
 function load(){fetch('/api/qqbot-settings/pet-anim').then(function(r){return r.json()}).then(function(j){if(!j.ok)return st('桌宠接口没就绪');var changed=!F||F.form.id!==j.form.id;F={form:j.form,formLabel:j.form.label,formEmoji:j.form.emoji,forms:j.forms,anims:j.anims};if(changed){V.dataset.n='';V.removeAttribute('src')}render();st('当前形态：'+j.form.label+' · 每5秒自动同步')}).catch(function(){st('连不上桌宠服务（宿主没开？）')})}
@@ -178,15 +179,19 @@ function readGateSecrets() {
 }
 /** 云端管理通道（同 agent.mjs 的平台 cookie 引导）：adminKey 只在本机内存 */
 async function cloudAdmin(sec, path, bodyObj) {
+  // 2026-11-01 修 403：平台门要求每个请求都带 sharecode（否则「链接不完整」403）。
+  // ① admin URL 直接拼 sharecode（根治）；② 引导请求 redirect:'manual'，接住 302 那一跳种的
+  //    平台 cookie（原来默认跟随重定向，最终响应里没有 set-cookie，cookie 永远为空）。
   const base = String(sec.cloudUrl || '').split('?')[0];
   const sharecode = (String(sec.cloudUrl || '').split('sharecode=')[1] || '').split('&')[0];
   let cookie = '';
   try {
-    const boot = await fetch(`${base}/?sharecode=${sharecode}`, { signal: AbortSignal.timeout(15000) });
+    const boot = await fetch(`${base}/?sharecode=${sharecode}`, { redirect: 'manual', signal: AbortSignal.timeout(15000) });
     const sc = boot.headers.getSetCookie ? boot.headers.getSetCookie() : [];
     cookie = sc.map((c) => c.split(';')[0]).join('; ');
   } catch { /* 门没过就直连 */ }
-  const r = await fetch(`${base}${path}`, {
+  const sep = path.includes('?') ? '&' : '?';
+  const r = await fetch(`${base}${path}${sep}sharecode=${sharecode}`, {
     method: 'POST',
     headers: { 'x-admin-key': sec.adminKey, 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
     body: JSON.stringify(bodyObj || {}),
@@ -222,6 +227,7 @@ function attach(serverCtx) {
                 active: id === form,
               })),
               anims: f.anims,
+              pool: (f.randomPool || []).map((x) => (typeof x === 'string' ? { name: x, label: x } : { name: x.name, label: x.label || x.name })),
               petOn,
             });
           }
@@ -289,10 +295,11 @@ function attach(serverCtx) {
           };
           try {
             const u = new URL(req.url, 'http://localhost');
-            const form = u.searchParams.get('form') || 'xiaolan';
+            const form0 = u.searchParams.get('form') || 'xiaolan';
+            const form = form0 === 'main' ? 'muu' : form0; // 兼容：旧页面把大肥鱼的 petId(main) 当 form 传
             const name = (u.searchParams.get('name') || '').trim();
             const petId = PET_MEDIA_PETIDS[form];
-            if (!petId || !name || name.length > 80) return notFound('需要 form(xiaolan|muu) 与 name');
+            if (!petId || !name || name.length > 80) return notFound('需要 form(xiaolan|classic|de|muu) 与 name');
             let ep = webEndpoint();
             if (!ep) return notFound('桌宿没启动');
             const call = (e2) => fetch(`http://127.0.0.1:${e2.port}/dsh-pet-7340/thumb/${encodeURIComponent(petId)}/${encodeURIComponent(name)}.webm?token=${encodeURIComponent(e2.token)}`, { signal: AbortSignal.timeout(10000) });

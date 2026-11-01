@@ -10,6 +10,7 @@ const BODY = {
     { id: 'muu', label: '大肥鱼', emoji: '🐟', petId: 'main', active: true },
   ],
   anims: [{ name: '点击回应-元气挥手', label: '挥手' }, { name: '待机呼吸休闲', label: '待机' }],
+  pool: [{ name: '写代码' }, { name: '三球抛接' }, { name: '撸猫' }],
   petOn: true,
 };
 console.log('[fake-agent] up');

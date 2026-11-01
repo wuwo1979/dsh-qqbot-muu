@@ -136,7 +136,11 @@ const PET_FUNCS = `      // ── 🐋 陪玩·桌宠双形态（补丁 pet-com
         if (m) { m.textContent = t; m.style.color = '#2c8'; setTimeout(function () { inviteRefresh() }, 2600) }
       }
       function petRefresh() {
-        fetch('/api/qqbot-settings/pet-anim').then(function (r) { return r.json() }).then(function (d) {
+        // 2026-11-01：8s 超时 + 4s 自动重试（以前 fetch 挂死就永远卡「加载中」，赶上宿主重启必现）
+        var ctl = (typeof AbortController === 'function') ? new AbortController() : null
+        var timer = ctl && setTimeout(function () { try { ctl.abort() } catch (eRT) { } }, 8000)
+        fetch('/api/qqbot-settings/pet-anim', ctl ? { signal: ctl.signal } : undefined).then(function (r) { return r.json() }).then(function (d) {
+          if (timer) clearTimeout(timer)
           if (!d || !d.ok) { petError('桌宠接口没就绪（桌宠插件没跑起来）'); return }
           PET_STATE.form = (d.form && d.form.id) || 'xiaolan'
           PET_STATE.forms = d.forms || []
@@ -145,7 +149,12 @@ const PET_FUNCS = `      // ── 🐋 陪玩·桌宠双形态（补丁 pet-com
           var tg = panel && panel.querySelector('#dk-pet-toggle')
           if (tg) tg.textContent = (d.petOn === false) ? '⏻ 开启桌宠' : '⏻ 关闭桌宠'
           petRender()
-        }).catch(function () { petError('连不上桌宠服务（宿主没开？）') })
+        }).catch(function () {
+          if (timer) clearTimeout(timer)
+          var box = panel && panel.querySelector('#dk-pet-box')
+          if (box) box.innerHTML = '<div class="dk-msg" style="font-size:11px;color:#b8860b;line-height:1.6">🐋 宿主连接中…（4 秒后自动重试；启动 DSH Desktop 后本面板自动恢复）</div>'
+          if (panel) setTimeout(petRefresh, 4000)
+        })
       }
       function bindPetCompanion() {
         if (!panel || panel._petBound) return

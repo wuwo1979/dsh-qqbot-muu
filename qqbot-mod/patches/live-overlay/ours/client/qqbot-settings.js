@@ -3,7 +3,7 @@
  * 数据经 host 半边同源路由 /api/qqbot-settings/{read,update}。
  */
 window.__ModuleLoader__.load({
-  id: '@zaofan/dsh-qqbot',
+  id: 'dsh-qqbot-muu',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
@@ -4496,6 +4496,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           + '</div>'
         html += '<div id="dk-pet-box"><div class="dk-msg" style="font-size:11px;color:#888">桌宠面板加载中…（宿主没启动时会提示原因，不会一直空着）</div></div>'
         html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6;margin:4px 0 0">点动作按钮 = 桌面上的桌宠立刻做这个动作；右上按钮整体开关桌宠；手机/平板也能用网页版（见浮窗页脚地址）。</div>'
+        html += '<div id="dk-invite" style="margin:8px 0 2px"><div class="dk-msg" style="font-size:11px;color:#888">邀请信息加载中…</div></div>'
         return html
       }
       function petRender() {
@@ -4541,8 +4542,56 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         if (box) box.innerHTML = '<div class="dk-msg" style="font-size:11px;color:#c66;line-height:1.6">🐋 ' + esc(msg)
           + '<br>桌宠动作/预览不可用；启动宿主（DSH Desktop）后本面板自动恢复。</div>'
       }
+      // ── 邀请共享（2026-11-01 主人要求：密钥版/免密钥版两个入口，密钥可见可复制）──
+      function inviteRender(d) {
+        var el = panel && panel.querySelector('#dk-invite')
+        if (!el) return
+        if (!d || !d.ok) {
+          el.innerHTML = '<div class="dk-msg" style="font-size:11px;color:#888">🔗 邀请共享不可用：' + esc((d && d.message) || '网关未部署') + '</div>'
+          return
+        }
+        var free = d.freeMode === true
+        var modeBtn = free
+          ? '<button class="dk-btn" id="dk-inv-free" style="font-size:12px;padding:2px 10px;background:#fff2f0;border-color:#dba;color:#c66">🔒 关闭免密钥（恢复验码）</button>'
+          : '<button class="dk-btn" id="dk-inv-free" style="font-size:12px;padding:2px 10px">🔓 免密钥邀请（限 1 人直进）</button>'
+        el.innerHTML = '<div class="dk-msg" style="font-size:12px;font-weight:700;margin:2px 0">🔗 邀请共享桌宠 <span style="font-weight:400;color:#888;font-size:11px">（在线 ' + (d.seatsUsed == null ? '?' : d.seatsUsed) + '/' + esc(String(d.seatsMax == null ? 1 : d.seatsMax)) + ' 人）</span></div>'
+          + '<div class="dk-msg" style="font-size:11px;color:#556;line-height:1.7;margin:2px 0;word-break:break-all">链接：<a href="' + esc(d.url) + '" target="_blank" rel="noopener">' + esc(d.url) + '</a><br>访问码：<b id="dk-inv-key">' + esc(d.key || '（免密钥模式无需访问码）') + '</b></div>'
+          + '<div class="dk-row" style="gap:6px;flex-wrap:wrap;margin:4px 0">'
+          + '<button class="dk-btn" id="dk-inv-copy" style="font-size:12px;padding:2px 10px">📋 复制有密钥邀请</button>'
+          + modeBtn
+          + '<button class="dk-btn" id="dk-inv-reset" style="font-size:12px;padding:2px 10px">♻️ 踢掉在线者</button>'
+          + '</div>'
+          + '<div class="dk-msg" style="font-size:11px;color:#99a;line-height:1.5;margin:2px 0 0">QQ 内打开受限时，请让对方长按链接选「浏览器打开」。免密钥模式下拿到链接即可进，仍限 1 人同时在线；随时可关闭恢复验码。</div>'
+        el._data = d
+      }
+      function inviteRefresh() {
+        fetch('/api/qqbot-settings/pet-share').then(function (r) { return r.json() }).then(function (d) { inviteRender(d) }).catch(function (e2) { inviteRender(null) })
+      }
+      function inviteCopy(d) {
+        var t = '来看我的桌宠小蓝～（点右上角用浏览器打开）\n' + d.url + '\n访问码：' + (d.key || '（免密钥，直接进）')
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(t).then(function () { petShareMsg('已复制邀请（链接+访问码），发给对方即可') }, function () { fallbackCopy(t) })
+        } else fallbackCopy(t)
+      }
+      function fallbackCopy(t) {
+        try {
+          var ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select()
+          document.execCommand('copy'); document.body.removeChild(ta)
+          petShareMsg('已复制邀请（链接+访问码），发给对方即可')
+        } catch (e2) { petShareMsg('复制失败，请手动选中链接与访问码') }
+      }
+      function petShareMsg(t) {
+        var el = panel && panel.querySelector('#dk-invite')
+        if (!el) return
+        var m = el.querySelector('.dk-msg:last-child')
+        if (m) { m.textContent = t; m.style.color = '#2c8'; setTimeout(function () { inviteRefresh() }, 2600) }
+      }
       function petRefresh() {
-        fetch('/api/qqbot-settings/pet-anim').then(function (r) { return r.json() }).then(function (d) {
+        // 2026-11-01：8s 超时 + 4s 自动重试（以前 fetch 挂死就永远卡「加载中」，赶上宿主重启必现）
+        var ctl = (typeof AbortController === 'function') ? new AbortController() : null
+        var timer = ctl && setTimeout(function () { try { ctl.abort() } catch (eRT) { } }, 8000)
+        fetch('/api/qqbot-settings/pet-anim', ctl ? { signal: ctl.signal } : undefined).then(function (r) { return r.json() }).then(function (d) {
+          if (timer) clearTimeout(timer)
           if (!d || !d.ok) { petError('桌宠接口没就绪（桌宠插件没跑起来）'); return }
           PET_STATE.form = (d.form && d.form.id) || 'xiaolan'
           PET_STATE.forms = d.forms || []
@@ -4551,12 +4600,18 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           var tg = panel && panel.querySelector('#dk-pet-toggle')
           if (tg) tg.textContent = (d.petOn === false) ? '⏻ 开启桌宠' : '⏻ 关闭桌宠'
           petRender()
-        }).catch(function () { petError('连不上桌宠服务（宿主没开？）') })
+        }).catch(function () {
+          if (timer) clearTimeout(timer)
+          var box = panel && panel.querySelector('#dk-pet-box')
+          if (box) box.innerHTML = '<div class="dk-msg" style="font-size:11px;color:#b8860b;line-height:1.6">🐋 宿主连接中…（4 秒后自动重试；启动 DSH Desktop 后本面板自动恢复）</div>'
+          if (panel) setTimeout(petRefresh, 4000)
+        })
       }
       function bindPetCompanion() {
         if (!panel || panel._petBound) return
         panel._petBound = 1
         petRefresh()
+        inviteRefresh()
         // 事件委托挂 panel（仿 _modelsBound），body 重绘不丢
         panel.addEventListener('click', function (ev) {
           var t = ev.target
@@ -4588,6 +4643,33 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
                 : ('✗ ' + ((d && (d.message || d.reason)) || '切换失败'))
               petRefresh()
             }).catch(function () { if (t) t.disabled = false })
+            return
+          }
+          // ── 邀请共享按钮（2026-11-01）──
+          if (t.id === 'dk-inv-copy') {
+            var inv = panel.querySelector('#dk-invite')
+            if (inv && inv._data) inviteCopy(inv._data)
+            return
+          }
+          if (t.id === 'dk-inv-free') {
+            if (t.disabled) return
+            t.disabled = true
+            var turningFree = !(panel.querySelector('#dk-invite')._data && panel.querySelector('#dk-invite')._data.freeMode === true)
+            apiPost('pet-share', { action: 'free-mode', on: turningFree }, 20000).then(function (d) {
+              t.disabled = false
+              petShareMsg((d && d.ok) ? (d.message || '已切换') : ('✗ ' + ((d && d.message) || '切换失败')))
+              setTimeout(inviteRefresh, 1200)
+            }).catch(function () { t.disabled = false })
+            return
+          }
+          if (t.id === 'dk-inv-reset') {
+            if (t.disabled) return
+            t.disabled = true
+            apiPost('pet-share', { action: 'reset-seat' }, 20000).then(function (d) {
+              t.disabled = false
+              petShareMsg((d && d.ok) ? (d.message || '已重置席位') : ('✗ ' + ((d && d.message) || '重置失败')))
+              setTimeout(inviteRefresh, 1200)
+            }).catch(function () { t.disabled = false })
             return
           }
           var nm = t.getAttribute('data-pet')
@@ -6944,7 +7026,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         h.innerHTML = '<img src="data:image/png;base64,' + QQS_WHALE_B64 + '" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover;flex:none;background:#e3f4ff"><span>QQ 群管理台</span>'
           + '<select class="qqs-sel" id="dk-ns" style="max-width:220px">' + (opts || '<option value="">无账号(去账号页添加)</option>') + '</select>'
           + '<span style="flex:1"></span>'
-          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1101a</span>'
+          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1101c4</span>'
           + '<button class="dk-btn" id="dk-full" title="全屏/还原">⛶</button>'
           + '<button class="dk-btn" id="dk-close" title="收回成球">➖</button>'
         var fb = h.querySelector('#dk-full')

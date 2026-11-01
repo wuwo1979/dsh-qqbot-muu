@@ -59,14 +59,18 @@ export const PAGE_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 </style></head><body>
 <h1 id="title">🐋 桌宠·实时</h1><span class="pill" id="pill">零模型 · 纯动作</span> <span class="pill unk" id="botpill">QQ状态 查询中…</span>
 <video id="v" autoplay loop muted playsinline x5-playsinline webkit-playsinline preload="auto"></video>
-<div class="row" id="forms"></div><div class="row" id="anims"></div>
+<div class="row" id="forms"></div><div class="row" id="anims"></div><div class="row" id="pool"></div>
 <div class="row"><button id="rnd">🎲 逗逗TA</button></div>
 <div id="st">连接中…</div>
 <div class="fam" id="fam" style="display:none"></div>
 <footer style="opacity:.85">私享链接：访问码只给一个人，重置后旧会话立即失效。<br>她在那台电脑的桌面上同步做动作 · 按钮随时逗她</footer>
 <script>
 var F=null;var V=document.getElementById('v');
-function media(f,n){var ext=(V&&V.canPlayType&&!V.canPlayType('video/webm; codecs="vp9"').replace(/no/,''))?'mp4':'webm';return '/media/'+encodeURIComponent(f)+'/'+encodeURIComponent(n)+'.'+ext}
+function dirId(){if(F&&F.forms){for(var i=0;i<F.forms.length;i++){if(F.forms[i].active)return F.forms[i].id}}return (F&&F.form&&F.form.id)||'xiaolan'}
+var DRAG={muu:'被鼠标拖拽悬空反馈',xiaolan:'小蓝-被拎起',classic:'小蓝-被拎起'};
+function allAnims(){return (F.anims||[]).concat(F.pool||[])}
+function randPlay(tag){var a=allAnims();if(!a.length)return;var x=a[Math.floor(Math.random()*a.length)];useMedia(dirId(),x.name);try{V.currentTime=0}catch(e){}V.play&&V.play();post({name:x.name}).then(function(r){st(r.ok?((tag||'桌面已做')+'『'+(x.label||x.name)+'』'):(r.message||'触发失败'))})}
+function media(f,n){var ok=false;try{ok=!!(V&&V.canPlayType&&String(V.canPlayType('video/webm; codecs="vp9"')).replace(/no/g,''))}catch(e){};var ext=ok?'webm':'mp4';return '/media/'+encodeURIComponent(f)+'/'+encodeURIComponent(n)+'.'+ext}
 function relayMedia(f,n){return '/api/qqbot-settings/pet-media?form='+encodeURIComponent(f)+'&name='+encodeURIComponent(n)}
 function useMedia(f,n){var u=media(f,n);if(V.dataset.src===u)return;V.dataset.src=u;V.dataset.n=n;
  V.onerror=function(){V.onerror=null;V.dataset.src='';st('⚠ 画面加载失败：'+u+(u.indexOf('.webm')>0?'（尝试 MP4 兑底）':'（中继也不行？）'));
@@ -79,16 +83,19 @@ function render(){var f=F.form||'xiaolan';document.getElementById('title').textC
  document.getElementById('forms').innerHTML=fh;
  var ah='';for(var j=0;j<F.anims.length;j++){var a=F.anims[j];ah+='<button data-n="'+esc(a.name)+'">'+esc(a.label)+'</button>'}
  document.getElementById('anims').innerHTML=ah;
- if(!V.dataset.src)useMedia(F.form.id||f,F.anims[0].name);
+ var ph='';for(var k=0;k<(F.pool||[]).length;k++){var p2=F.pool[k];ph+='<button data-n="'+esc(p2.name)+'">✨ '+esc(p2.label||p2.name)+'</button>'}
+ document.getElementById('pool').innerHTML=ph;
+ if(!V.dataset.src)useMedia(dirId(),F.anims[0].name);
  Array.prototype.forEach.call(document.getElementById('forms').children,function(b){b.onclick=function(){st('切换中…');post({action:'switch-form',target:b.dataset.f}).then(function(r){st(r.ok?('已切换为『'+(r.label||b.dataset.f)+'』'):(r.message||'切换失败'));load()})}});
- Array.prototype.forEach.call(document.getElementById('anims').children,function(b){b.onclick=function(){st('做了动作：'+b.textContent);useMedia(F.form.id||f,b.dataset.n);try{V.currentTime=0}catch(e){}V.play&&V.play();post({name:b.dataset.n}).then(function(r){st(r.ok?('桌面已做『'+b.textContent+'』'):(r.message||'触发失败'))})}});
+ Array.prototype.forEach.call(document.getElementById('anims').children,function(b){b.onclick=function(){st('做了动作：'+b.textContent);useMedia(dirId(),b.dataset.n);try{V.currentTime=0}catch(e){}V.play&&V.play();post({name:b.dataset.n}).then(function(r){st(r.ok?('桌面已做『'+b.textContent+'』'):(r.message||'触发失败'))})}});
+ Array.prototype.forEach.call(document.getElementById('pool').children,function(b){b.onclick=function(){var lb=b.textContent.replace('✨ ','');st('做了动作：'+lb);useMedia(dirId(),b.dataset.n);try{V.currentTime=0}catch(e){}V.play&&V.play();post({name:b.dataset.n}).then(function(r){st(r.ok?('桌面已做『'+lb+'』'):(r.message||'触发失败'))})}});
 }
 function st(t){document.getElementById('st').textContent=t}
-function load(){fetch('/api/qqbot-settings/pet-anim').then(function(r){if(r.status===401){location.href='/';throw new Error('relogin')}return r.json()}).then(function(j){if(!j.ok)return st(j.message||'桌宠接口没就绪（她可能关机了）');var changed=!F||F.form.id!==j.form.id;if(changed){F={form:j.form,formLabel:j.form.label,formEmoji:j.form.emoji,forms:j.forms,anims:j.anims};V.dataset.src='';V.dataset.n='';V.removeAttribute('src');V.load&&V.load();render();}var base='当前形态：'+j.form.label+' · 每5秒自动同步';
+function load(){fetch('/api/qqbot-settings/pet-anim').then(function(r){if(r.status===401){location.href='/';throw new Error('relogin')}return r.json()}).then(function(j){if(!j.ok)return st(j.message||'桌宠接口没就绪（她可能关机了）');var changed=!F||F.form.id!==j.form.id;if(changed){F={form:j.form,formLabel:j.form.label,formEmoji:j.form.emoji,forms:j.forms,anims:j.anims,pool:j.pool||[]};V.dataset.src='';V.dataset.n='';V.removeAttribute('src');V.load&&V.load();render();}var base='当前形态：'+j.form.label+' · 每5秒自动同步';
   // 画面诊断（2026-11-01）：截图就能定位视频问题
   if(V.error&&V.error.code){st(base+'｜⚠ 视频解码失败 code='+V.error.code+' src='+V.dataset.src)}
   else if(V.dataset.src&&V.readyState>=2){st(base+'｜画面 OK（'+(V.dataset.src.split('.').pop())+'）')}
-  else if(V.dataset.src){st(base+'｜画面加载中… '+V.dataset.src)}
+  else if(V.dataset.src){st(base+'｜画面加载中… '+V.dataset.src+'（超过 15 秒还空白就刷新重进）')}
   else{st(base)}
  }).catch(function(e){if(e.message!=='relogin')st('连不上桌宠服务（主人电脑没开？）')})}
 document.getElementById('rnd').onclick=function(){st('随机来一个…');post({action:'random'}).then(function(r){st(r.ok?'桌面已随机做动作':(r.message||'触发失败'))})};
@@ -98,6 +105,13 @@ document.getElementById('rnd').onclick=function(){st('随机来一个…');post(
   dx=Math.max(-1,Math.min(1,dx));dy=Math.max(-1,Math.min(1,dy));
   v.style.transform='translate('+(dx*10).toFixed(1)+'px,'+(dy*7).toFixed(1)+'px) rotate('+(dx*3.5).toFixed(2)+'deg)';},{passive:true});
  document.addEventListener('mouseleave',function(){v.style.transform=''});})();
+// ── 拎起交互（2026-11-01 主人要求：web 手感向 dsh-pet 看齐）──
+// 按住她 = 拎起动画悬空；松手 = 随机整活（模拟 dsh-pet 的拎起/扔物理感）。触屏同样生效。
+(function(){var v=document.getElementById('v');if(!v)return;var held=false;
+ v.addEventListener('pointerdown',function(e){if(!F||!F.anims||!F.anims.length)return;held=true;try{v.setPointerCapture&&v.setPointerCapture(e.pointerId)}catch(eC){}
+  var da=DRAG[dirId()];if(da){useMedia(dirId(),da);v.style.transform='translateY(-10px) scale(1.05)';post({name:da}).then(function(){})}});
+ var up=function(){if(!held)return;held=false;v.style.transform='';setTimeout(randPlay,250)};
+ v.addEventListener('pointerup',up);v.addEventListener('pointercancel',up);window.addEventListener('pointerup',up);})();
 function botpoll(){fetch('/api/qqbot-settings/pet-status').then(function(r){if(r.status===401){location.href='/';throw new Error('relogin')}return r.json()}).then(function(j){
   var p=document.getElementById('botpill');if(!p)return;
   if(!j.ok){p.className='pill unk';p.textContent='QQ状态 未知'}

@@ -26,7 +26,7 @@ import http from 'node:http';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
-const PAGE_VER = '1101c2'; // 页面版本号：路径 /watch?v= 用它破 webview 顽固缓存（每次改页面必 bump）
+const PAGE_VER = '1101c4'; // 页面版本号：路径 /watch?v= 用它破 webview 顽固缓存（每次改页面必 bump）1101c4=整活动作池+拎起交互；1101c3=修 muu 素材目录 404（petId=main≠目录muu）+ canPlayType 选格反转
 
 // ── 密钥与配置（secrets.json 部署时随包上传但被 git 忽略；首次启动自动生成）──
 const SEC_PATH = join(ROOT, 'secrets.json');
