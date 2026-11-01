@@ -9,6 +9,14 @@
 # 缺了任何一个，`dsh plugin add dsh-qqbot-muu` 都会装不上（2026-10-26 市场审核打回的原因）
 !/index.js
 !/cordis.patch.yml
+# 独立化（v0.1.3）新增底盘：entry.js 是 package.json main 指向的入口，
+# client/ 是浮窗 UI，dist/ 是运行时编译产物 —— 缺一个 `dsh plugin add` 从 git/npm 都装不上
+# （2026-11-01 CI「插件市场提交预检」打回：main 指向的 ./entry.js 不在仓库）
+!/entry.js
+!/client/
+!/client/**
+!/dist/
+!/dist/**
 
 # README 截图 / 图标（插件市场 icon 与 screenshots.json 都指向这里）
 !/assets/
