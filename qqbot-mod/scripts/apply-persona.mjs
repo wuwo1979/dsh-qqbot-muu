@@ -2,6 +2,10 @@
 /**
  * apply-persona.mjs — 把新的人格核写进 qqbot 的活配置（groupPrompt）
  *
+ * ⚠️ 已废弃（2026-10-30）：人格核唯一事实源是 persona/character.json，
+ *    请改用 `node qqbot-mod/scripts/apply-character.mjs --apply`（生成+HTTP 下发+读回校验）。
+ *    本脚本保留仅作应急；group-prompt.md 已同步为生成快照，误跑也不会把人格压回旧版。
+ *
  * 为什么改这个文件：插件的 Web 设置落在
  *   %APPDATA%\dsh-desktop\harness\qqbot-settings\web\im-qqbot.json
  * 直接写它 = 等价于在面板里改了「群聊守则」并保存。

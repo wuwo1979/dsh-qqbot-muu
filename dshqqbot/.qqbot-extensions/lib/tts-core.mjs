@@ -77,6 +77,37 @@ function ttsHostPort(base) {
   }
 }
 
+// [qqbot-mod] vram-soft 2026-10-28：适配层 2.3.0 起支持 --vram-policy（strict/soft/off）。
+// soft = 显存不够打 WARN 照样拉起后端，超出部分走 Windows WDDM 的 CUDA Sysmem
+// Fallback（共享显存）兜底——慢但能出声。6GB 卡上 IndexTTS 要 5300MB 而整机空闲上限
+// 只有 ~5.1GB（桌面合成器自己吃 1GB），strict 门槛物理上永远达不到 → 每次都滑档。
+// 开关存在 voice-config.json 的 vramSoft，这里负责：① 拉起时把策略传给适配层；
+// ② 适配层已在跑但策略不一致时自动重启（进程是 detached 的，参数只在启动时读，
+// 不重启的话开关永远不生效——就是当年"浮窗切模型不生效"的同款坑）。
+async function adapterVramPolicy(base) {
+  try {
+    const r = await fetch(base + '/admin/status', { signal: AbortSignal.timeout(2500) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const p = j && j.supervisor && j.supervisor.vram_policy;
+    return (p === 'soft' || p === 'strict' || p === 'off') ? p : null;   // 老版本没这字段 → null
+  } catch {
+    return null;
+  }
+}
+
+async function stopAdapterAndWait(base) {
+  try {
+    await fetch(base + '/admin/stop', { method: 'POST', signal: AbortSignal.timeout(2500) });
+  } catch { /* 它可能已经死了 */ }
+  const { host, port } = ttsHostPort(base);
+  for (let i = 0; i < 16; i += 1) {
+    if (!(await probeTcp(host, port))) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
 /** 找仓库根（含 skills/local-tts/adapter/server.py 的那层）。 */
 function findRepoRoot(dir) {
   const cands = [];
@@ -141,11 +172,19 @@ function ttsCleanEnv() {
 }
 
 /** 本地 endpoint：能连上 → true；连不上就拉服务，等一会儿再探。非本机 endpoint 一律 true。 */
-async function ensureLocalTtsServer(endpoint, dir) {
+async function ensureLocalTtsServer(endpoint, dir, opts) {
   const base = ttsServiceBase(endpoint);
   if (!base) return true;
   const { host, port } = ttsHostPort(base);
-  if (await probeTcp(host, port)) return true;
+  const wantPolicy = (opts && opts.vramSoft) ? 'soft' : 'strict';
+  if (await probeTcp(host, port)) {
+    // 策略不一致 → 换掉旧适配层再重拉（改了开关不重启 = 不生效）
+    const cur = await adapterVramPolicy(base);
+    const mismatch = cur ? (cur !== wantPolicy) : (wantPolicy === 'soft');
+    if (!mismatch) return true;
+    logTtsFailure(dir, `[${new Date().toISOString()}] adapter vram-policy ${cur || '(old-adapter)'} → ${wantPolicy}，重启适配层\n`);
+    await stopAdapterAndWait(base);
+  }
   const repo = findRepoRoot(dir);
   if (!repo) return false;
   const server = join(repo, 'skills', 'local-tts', 'adapter', 'server.py');
@@ -159,10 +198,12 @@ async function ensureLocalTtsServer(endpoint, dir) {
       try { mkdirSync(dirname(logFile), { recursive: true }); } catch { /* ignore */ }
       out = openSync(logFile, 'a');
     } catch { /* ignore */ }
-    const c = spawn(py, [
+    const args = [
       server, '--port', port, '--manage', '--idle-minutes', '3',
       '--breeze', 'http://127.0.0.1:7860', '--gsv', 'http://127.0.0.1:9880',
-    ], {
+      '--vram-policy', wantPolicy,
+    ];
+    const c = spawn(py, args, {
       cwd: repo,
       detached: true,
       stdio: ['ignore', out, out],
@@ -196,7 +237,9 @@ function logTtsFailure(dir, line) {
  * 6GB 的卡上 qwen2.5:7b 能占 4.2GB，正好把 GSV 需要的 3.4GB 堵死——
  * 这就是"声儿出不来"的另一半原因（不只是服务没起）。
  */
-async function evictOllamaVram(host = 'http://127.0.0.1:11434') {
+// [qqbot-mod] vram-evict-export 2026-10-31：视频管线整单配音前要主动请 ollama 出显存
+//   （index 门槛 5300MB，6GB 卡上 ollama 常驻就永远滑档/反复冷启动 → 977s/句）。
+export async function evictOllamaVram(host = 'http://127.0.0.1:11434') {
   try {
     const r = await fetch(host + '/api/ps', { signal: AbortSignal.timeout(1500) });
     if (!r.ok) return false;
@@ -238,6 +281,76 @@ const DEFAULT_PITCH = '+0Hz';
 const DEFAULT_TIMEOUT = 20000;
 const MAX_CHARS = 300;        // 短句上限，超出截断
 const MIN_BYTES = 2000;       // 比这还小的 mp3 = 合成失败（空帧/只有头）
+
+// ── [qqbot-mod] wsl-index 2026-10-29 主人专属选项 ─────────────────────────────
+// voice-config.json 的 wslIndex（默认关闭，别人不开就完全不受影响）：
+//   { "enabled": true, "endpoint": "http://127.0.0.1:9891", "refAudio": "/mnt/f/qqbot/.models/tts-ref/ref_zh.wav" }
+// enabled 时**只允许 index 引擎**：直连 WSL 里的 IndexTTS2 服务（POST /tts → wav），
+// 完全拒绝 breeze/gsv/edge（不梯队降级、不回退在线语音）——主人拍板「完全拒绝除了 index 的方案」。
+// 注意：WSL 和 Windows 共用同一块 6GB 卡，图的是 Linux 侧没桌面合成器抢 1GB、CUDA 分页更干净。
+async function synthWslIndex(say, { wsl, dir, outPath, timeoutMs }) {
+  const base = String(wsl.endpoint || 'http://127.0.0.1:9891').replace(/\/+$/, '');
+  const ref = String(wsl.refAudio || '/mnt/f/qqbot/.models/tts-ref/ref_zh.wav');
+  // 健康检查：没起就明确告诉怎么起，绝不降级
+  try {
+    const h = await fetch(base + '/health', { signal: AbortSignal.timeout(5000) });
+    const j = await h.json().catch(() => ({}));
+    if (!h.ok || !(j && (j.ok || j.model_loaded))) {
+      const msg = 'wsl-index: 服务在但模型没就绪（' + base + '）；在 WSL 里跑 ~/projects/bot/start-index.sh 等加载完（首载几分钟）再试';
+      logTtsFailure(dir, `[${new Date().toISOString()}] wsl-index not-ready ${JSON.stringify(j).slice(0, 120)}\n`);
+      return { ok: false, error: msg };
+    }
+  } catch (e) {
+    const msg = 'wsl-index: WSL 服务连不上（' + base + '，' + String(e?.message || e).slice(0, 80) + '）。先在 WSL 里跑 ~/projects/bot/setup-index.sh（一次性安装）再 ~/projects/bot/start-index.sh；按主人要求 wsl-index 模式不降级到 gsv/breeze';
+    logTtsFailure(dir, `[${new Date().toISOString()}] wsl-index down why=${String(e?.message || e).slice(0, 120)}\n`);
+    return { ok: false, error: msg };
+  }
+  let res;
+  try {
+    res = await fetch(base + '/tts', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: say.slice(0, 1000), ref_audio: ref }),
+      signal: AbortSignal.timeout(Math.max(timeoutMs, 240000)),
+    });
+  } catch (e) {
+    const why = 'wsl-index: ' + (e?.message || String(e));
+    logTtsFailure(dir, `[${new Date().toISOString()}] wsl-index tts fail why=${why.slice(0, 140)}\n`);
+    return { ok: false, error: why };
+  }
+  if (!res.ok) {
+    let t = ''; try { t = String(await res.text()).slice(0, 200); } catch { /* ignore */ }
+    logTtsFailure(dir, `[${new Date().toISOString()}] wsl-index status=${res.status} why=${t.replace(/\s+/g, ' ').slice(0, 140)}\n`);
+    return { ok: false, error: 'wsl-index ' + res.status + (t ? ': ' + t.replace(/\s+/g, ' ') : '') };
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length < MIN_BYTES) {
+    return { ok: false, error: 'wsl-index: 返回音频太小（' + buf.length + 'B），疑似静音/失败' };
+  }
+  // /tts 返回 wav；管线/浮窗统一按 mp3 用 → 有 ffmpeg 就转一手，没有就直接落 wav（下游也能吃）
+  let finalPath = outPath;
+  try {
+    const wavPath = join(dir, 'tts-wsl-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + '.wav');
+    writeFileSync(wavPath, buf);
+    const SB = await import('../tools/storyboard.mjs');
+    const exe = SB.findFfmpeg ? SB.findFfmpeg() : '';
+    if (exe) {
+      await new Promise((done) => {
+        const p = spawn(exe, ['-y', '-i', wavPath, '-codec:a', 'libmp3lame', '-q:a', '4', outPath], { stdio: 'ignore', windowsHide: true });
+        const t = setTimeout(() => { try { p.kill(); } catch { } done(); }, 60000);
+        p.on('close', (code) => { clearTimeout(t); if (code !== 0) finalPath = wavPath; done(); });
+        p.on('error', () => { clearTimeout(t); finalPath = wavPath; done(); });
+      });
+    } else {
+      finalPath = wavPath;
+    }
+  } catch { /* 落盘失败走下面统一报错 */ }
+  let bytes = 0;
+  try { bytes = statSync(finalPath).size; } catch { return { ok: false, error: 'wsl-index: 音频落盘失败' }; }
+  return {
+    ok: true, path: finalPath, bytes, provider: 'wsl-index', via: 'wsl-index',
+    ms: 0,   // 旧签名兼容位；2026-10-29 起时长一律由调用方 ffmpeg 实测（probeMediaSec）
+  };
+}
 const BITRATE = 48000;        // edge-tts 默认 mp3 码率 bps，用来估算时长
 
 const FALLBACK_PYTHON = 'E:\\Anaconda\\python.exe';
@@ -485,10 +598,22 @@ export async function synthesize(text, opts = {}) {
     const outPath = newOutPath(dir);
     const provider = String(opts.provider || process.env.QQBOT_TTS_PROVIDER || 'edge').toLowerCase();
 
+    // [qqbot-mod] wsl-index 2026-10-29：开关开 && 只要不是 index → 直接拒绝（不降级）。
+    //   开关开时本地档全部直连 WSL 的 IndexTTS2；edge 在线档也不许顶（主人要求完全拒绝）。
+    const _wsl = (opts.wslIndex && opts.wslIndex.enabled) ? opts.wslIndex : null;
+    const _wantModel = String(opts.model || process.env.QQBOT_TTS_MODEL || '').toLowerCase();
+    if (_wsl && _wantModel !== 'index') {
+      return { ok: false, error: 'wslIndex 模式开启：只允许 index 引擎（收到 ' + (_wantModel || '(空)') + '），按主人要求不降级' };
+    }
+
     // 本地大模型 TTS（CosyVoice2 / IndexTTS2 / GPT-SoVITS 等）通常起一个 HTTP 服务。
     // 约定兼容 OpenAI /v1/audio/speech：POST {model,input,voice,response_format} → 音频字节。
     // 这样换模型只改 voice-config.json 的 provider/endpoint，不用改代码。
     if (provider === 'http' || provider === 'openai' || provider === 'local-http') {
+      // [qqbot-mod] wsl-index：开关开时本地档整条绕开适配层，直连 WSL IndexTTS2
+      if (_wsl) {
+        return await synthWslIndex(say, { wsl: _wsl, dir, outPath, timeoutMs });
+      }
       const endpoint = String(
         opts.endpoint || process.env.QQBOT_TTS_ENDPOINT || 'http://127.0.0.1:9880/v1/audio/speech',
       ).trim();
@@ -499,11 +624,15 @@ export async function synthesize(text, opts = {}) {
         response_format: 'mp3',
         speed: Number(opts.speed) > 0 ? Number(opts.speed) : 1,
       };
+      // [qqbot-mod] strict-engine 2026-10-29：预热/质检场景用 —— 只试指定引擎，
+      //   适配层不许梯队接力（gsv 出声冒充 index 成功），失败就如实报错。
+      //   否则视频管线的预热会被降级结果骗过，后续整单配音全走冷引擎再超时。
+      if (opts.strict) body.strict_engine = true;
       // 本地适配层现在是"管家"：后端不在就现场拉起（GSV 冷启动 ≈30s、Breeze 可能几分钟），
       // 第一条请求会把启动时间算进去。HTTP 分支超时保底 240s，配置里可以更大但不能更小。
       const httpTimeout = Math.max(timeoutMs, 240000);
       // 先确服务在：9881 没起来时 fetch 只会给一句 "fetch failed"，群里看到的就是那句
-      const _up = await ensureLocalTtsServer(endpoint, dir);
+      const _up = await ensureLocalTtsServer(endpoint, dir, opts);
       if (!_up) {
         const msg = 'tts-http: 本地语音服务没起来（' + endpoint + ' 连不上）';
         logTtsFailure(dir, `[${new Date().toISOString()}] provider=http endpoint=${endpoint} why=service-down\n`);
@@ -567,7 +696,7 @@ export async function synthesize(text, opts = {}) {
         // 本地卡实在腾不出来（6GB 卡上浏览器+QQ+桌面端就占掉 3GB 多）→ 先用在线语音顶上，
         // 保证"说话"这件事不失败；本地模型等显存空出来的那次自然就用了。
         const vramShort = /显存|vram|不够|out of memory/i.test(t);
-        if (vramShort && !opts._noEdgeFallback) {
+        if (vramShort && !opts._noEdgeFallback && !opts.strict) {
           const fb = await synthesize(raw, {
             ...opts, provider: 'edge', voice: opts.edgeVoice || DEFAULT_VOICE,
             _noEdgeFallback: true, tailProb: 0,

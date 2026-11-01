@@ -115,6 +115,11 @@ function stripMemoryBlock(text) {
     .replace(/\n?\[B站\][\s\S]*?\[\/B站\]\n?/g, '\n')
     .replace(/\n?\[学\][\s\S]*?\[\/学\]\n?/g, '\n')
     .replace(/\n?\[别重复\][^\n]*/g, '\n')
+    // 2026-10-29 补漏：这三个新块以前不在清单里——若注入文本被引用/回显回来，
+    // 会被当成用户原文再次沉淀+召回，块会越滚越大（token 放大器）
+    .replace(/\n?\[情绪回响\][\s\S]*?\[\/情绪回响\]\n?/g, '\n')
+    .replace(/\n?\[手边\][^\n]*/g, '\n')
+    .replace(/\n?\[约定\][\s\S]*?\[\/约定\]\n?/g, '\n')
     .trim();
 }
 
@@ -154,6 +159,12 @@ function worthRemembering(text, cfg) {
 // 模型照样看得见（语义不变）；只有真变了才注入一份新的（新版在后，模型取最新）。
 // 快块（[记忆]召回/[状态]/[echo]）是为当前句服务的，保持每条，但连续相同内容也跳过。
 const _slowBlockMemo = new Map(); // key: scope+'|'+tag → 上次注入文本
+// 2026-10-29：召回源判重——key: scope → 上次实际注入的那批记忆源文本指纹。
+// 连续同话题时同一批旧记忆不再每条重发（历史里上一份仍在，模型照样看得见）。
+const _recallSrcMemo = new Map();
+// 2026-10-30 主人拍板「上下间隔不远就不至于每次都发送」：距上次召回注入 <5 分钟的消息
+// 直接跳过召回 —— 连续聊天时上一轮的 [记忆] 块还在会话历史里（全量重发模型），模型看得见。
+const _recallTimeMemo = new Map(); // scope → 上次实际注入召回块的时间戳
 function blockIfChanged(scope, tag, text) {
   const key = String(scope || '') + '|' + String(tag || '');
   const prev = _slowBlockMemo.get(key) || '';
@@ -167,8 +178,7 @@ function blockIfChanged(scope, tag, text) {
 export async function onInbound(ctx, next) {
   let cfg;
   try {
-    cfg = loadConfig(dataRootOf({}));
-    cfg = loadConfig(dataRootOf(cfg));
+    cfg = loadConfig(dataRootOf({})); // 2026-10-29 修：原来这里连续 load 两次（第二次包一层 dataRoot 纯属历史残留），每条消息白读一遍配置文件
   } catch {
     return next(); // 配置都读不了 → 直接放行
   }
@@ -213,7 +223,15 @@ export async function onInbound(ctx, next) {
   let recallErr = '';
   if (policy.recall) {
   try {
-    const hits = await recall(dataRoot, scope, original, cfg);
+    // ── ⓪b 短句闸（2026-10-29 token 调度）──
+    //   「哈哈」「嗯嗯」「6」这类几乎没有语义的电荷，拿去跑向量召回只会捞回噪声，
+    //   召回块还可能把不相关的旧事注进上下文 → 主模型多读一段废话。
+    //   有效字符 <4 直接跳过召回（沉淀另有 worthRemembering 把关，不受影响）。
+    const coreLen = normText(original).length;
+    if (coreLen >= 4) {
+    // ── ⓪c 时间闸（2026-10-30）：距上次召回注入 <5 分钟 → 跳过检索（历史里仍可见）
+    const _recent = Date.now() - Number(_recallTimeMemo.get(scope) || 0) < 5 * 60 * 1000;
+    const hits = _recent ? [] : await recall(dataRoot, scope, original, cfg);
     recallRaw = Array.isArray(hits) ? hits.length : 0;
     // ★ 自匹配过滤：库里存着"这句话本身"时（上一轮沉淀的），cos 常是 0.93~0.97，
     //   低于 0.98 的老阈值会漏过去，于是每轮把用户刚说的话再注回去一次 —— 纯浪费 token。
@@ -235,14 +253,29 @@ export async function onInbound(ctx, next) {
     try { applyRecallGuard(dataRoot, scope, kept); } catch { /* 护栏失败不影响召回 */ }
     memBlock = formatRecallBlock(kept, cfg);
     recallKept = kept.length;
+    // ★ 同源去重（2026-10-29 token 调度）：连着聊同一话题时，每条的召回命中常常是
+    //   同一批旧记忆（top hit 不变），只是 LLM 改写出的句子措辞不同 →
+    //   以前按改写后文本判重拦不住，等于同一份记忆每条消息重发一遍。
+    //   改成按**召回源文本**判重：这一批和上一条注入过的完全一样 → 不再注入
+    //   （历史里上一份还在，模型照样看得见）。有新记忆进来才注入增量。
+    const srcKey = kept.map((h) => normText(h.text)).sort().join('|');
+    const prevSrc = _recallSrcMemo.get(scope) || '';
+    if (srcKey && srcKey === prevSrc) {
+      memBlock = '';
+      ctx?.logger?.debug?.('[memory] 召回源与上一条相同，跳过注入（历史里仍有）');
+    } else if (srcKey) {
+      _recallSrcMemo.set(scope, srcKey);
+    }
     if (memBlock) {
       ctx?.logger?.debug?.(`[memory] 召回 ${kept.length} 条 (${kept.map((h) => h.cos.toFixed(2)).join(',')})`);
+      _recallTimeMemo.set(scope, Date.now());   // 时间闸：只记真实注入
     }
     // ── ①a2 本地小模型"过一遍"（用户 2026-10-23 提的方案）──
-    //   · 2 条以上才值得过一次模型（1 条时原文更准）；
+    //   · 2 条以上才值得过一次模型（1 条时原文更准）；块本身已经很短（<100 字）
+    //     也没必要过模型——省一次本地调用，延迟立省 0.5~1.5s；
     //   · 成功 → 压成一句第一人称回忆（4 条 160 字 → 1 句 ~30 字），还顺便丢掉噪声；
     //   · 失败/超时/模型离线 → 保留原来的编号列表（永不因此丢记忆、更不卡回复）。
-    if (memBlock && kept.length >= 2) {
+    if (memBlock && kept.length >= 2 && memBlock.length >= 100) {
       try {
         const lr = await rewriteRecall(kept, original, cfg, { dataRoot });
         if (lr && lr.ok && lr.text) {
@@ -256,6 +289,7 @@ export async function onInbound(ctx, next) {
         ctx?.logger?.debug?.(`[memory] 改写异常(已忽略): ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    } // ── 短句闸结束（coreLen >= 4 才走召回）
   } catch (e) {
     recallErr = e instanceof Error ? e.message : String(e);
     ctx?.logger?.debug?.(`[memory] 召回失败(已忽略): ${recallErr}`);
@@ -329,12 +363,46 @@ export async function onInbound(ctx, next) {
   }
 
   // ── ①e 状态：本轮/近 30 分钟的当下心情（≤30 字，过期自动不带）──
+  //  2026-10-31 主人拍板（信条等没必要反复出现）：状态也是慢变量 —— 心情没变就不重发
+  //  （历史里上一份还在）；变了/过期才注一份新的。
   let moodBlock = '';
   try {
-    moodBlock = moodBlockFor(dataRoot, scope, cfg.mood || {});
+    moodBlock = blockIfChanged(scope, 'mood', moodBlockFor(dataRoot, scope, cfg.mood || {}));
     if (moodBlock) ctx?.logger?.debug?.('[mood] 已注入状态');
   } catch (e) {
     ctx?.logger?.debug?.(`[mood] 状态失败(已忽略): ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // ── ①f 情绪回响（2026-10-29 参考 Companion-AI-Memory 的主动回忆机制）──
+  //   不是被动等 TA 问「怎么了」，而是：检测到情绪词 → 去记忆库翻「上次因为什么」
+  //   → 把那个旧事带进上下文，让她能像熟人一样具体地接（「是又加班了吗？」）。
+  //   隐私分层沿用：只在当前 scope 的记忆库内翻（不跨人聚合）；仅 full 权限场景；
+  //   每 scope 30 分钟最多一次；至少半小时前的旧事才算「回忆」（刚说的不算）。
+  let moodEchoBlock = '';
+  if (policy.profile === 'full' && cfg.moodEcho !== false) {
+    try {
+      const MOOD_WORDS = ['累', '倦', '疲惫', '加班', '熬夜', '压力大', '崩了', '破防', 'emo',
+        '难过', '伤心', '委屈', '烦', '生气', '焦虑', '孤独', '寂寞',
+        '开心', '高兴', '兴奋', '乐死', '爽', '感动', '幸福'];
+      const hitWord = MOOD_WORDS.find((w) => original.includes(w));
+      // 2026-10-29 修：状态键原来用全局 'mood-echo'，注释写的是「每 scope 30 分钟一次」，
+      //   实际 A 群触发后 B 群 30 分钟内被无辜连坐。改成按 scope 记账，与注释语义一致。
+      const meState = getChatState(dataRoot, 'mood-echo:' + scope) || {};
+      if (hitWord && Date.now() - (Number(meState.ts) || 0) > 30 * 60 * 1000) {
+        setChatState(dataRoot, 'mood-echo:' + scope, { ts: Date.now() });
+        const hits = await recall(dataRoot, scope, hitWord + ' ' + original.slice(0, 40), cfg);
+        const older = (hits || []).filter((h) => Date.now() - Number(h.ts || 0) > 30 * 60 * 1000);
+        if (older.length) {
+          const h = older[0];
+          const agoH = Math.floor((Date.now() - Number(h.ts)) / 3600000);
+          const when = agoH >= 24 ? Math.floor(agoH / 24) + ' 天前' : (agoH >= 1 ? agoH + ' 小时前' : '刚才不久');
+          moodEchoBlock = `\n[情绪回响]TA 现在的情绪词是「${hitWord}」。你想起来：${when} 也出现过相关的记忆——「${String(h.text).replace(/\s+/g, ' ').slice(0, 90)}」。接话时可以自然地顺着那个旧事关心（像熟人那样具体，例如顺着当时的原因问「是不是又…了」），而不是干巴巴的「怎么了」。只在确实想得起时提，想不起细节就正常陪聊。[/情绪回响]`;
+          ctx?.logger?.debug?.(`[mood-echo] 情绪回响已注入（词=${hitWord}，旧事=${when}）`);
+        }
+      }
+    } catch (e) {
+      ctx?.logger?.debug?.(`[mood-echo] 情绪回响失败(已忽略): ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   // ── ①d2 旧识：这个人的历史聊天记录导入后留下的画像 ──
@@ -392,8 +460,11 @@ export async function onInbound(ctx, next) {
   // 所有块合并成一次 rewrite（改两次会让中间态被别的扩展看见）
   // [信条]（2026-10-26）：底层刻写常驻块，全静态、跨群不变（prompt 缓存友好）；
   // 放最前——它是主人手笔，LLM 只读不可改，优先级高于一切注入。
-  const bedrock = bedrockBlock(dataRoot);
-  const extra = bedrock + memBlock + loreBlock + profileBlock + pastBlock + moodBlock + promiseB + echoBlock + styleBlock + stickerBlock;
+  // 2026-10-31 主人拍板（「信条等真的没必要反复出现那么多次」）：信条全静态，
+  //   一个 scope 只在内容变化时注入一次（历史里上一份仍在，模型照样看得见），
+  //   不再每条消息重发 —— N 条消息 N 份信条的 token 线性浪费到此为止。
+  const bedrock = blockIfChanged(scope, 'bedrock', bedrockBlock(dataRoot));
+  const extra = bedrock + memBlock + loreBlock + profileBlock + pastBlock + moodBlock + moodEchoBlock + promiseB + echoBlock + styleBlock + stickerBlock;
   if (extra && typeof ctx.rewrite === 'function') {
     ctx.rewrite({ text: String(ctx.text || '') + extra });
   }
@@ -425,6 +496,13 @@ export async function onInbound(ctx, next) {
   }
 
   return next();
+}
+
+/** 测试钩子：清空召回节流备忘（时间闸/判重/慢块），闭环测试里背靠背两条消息也要能召回 */
+export function _testResetRecallMemo() {
+  _slowBlockMemo.clear();
+  _recallSrcMemo.clear();
+  _recallTimeMemo.clear();
 }
 
 /** 调试用：让她能通过日志看到记忆库状态 */

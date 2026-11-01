@@ -30,7 +30,7 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import * as B from './bili-api.mjs';
 import { writeJsonAtomic } from './atomic-write.mjs';
-import { loadConfig as loadDrawConfig, draw, translatePrompt } from './draw-core.mjs';
+import { loadConfig as loadDrawConfig, draw, translatePrompt, stopServer as stopDrawServer } from './draw-core.mjs';
 import { synthesize } from './tts-core.mjs';
 import { synthesizeWarm } from './tts-polish.mjs';
 import { writeScript, writeText, sanitizeTopic } from './script-writer.mjs';
@@ -126,7 +126,9 @@ export const DEFAULT_OPS_CONFIG = {
     endpoint: 'https://image.pollinations.ai/prompt/{prompt}?width={w}&height={h}&nologo=true&model=flux',
     characterPrompt:
       'a cute anime whale girl with long deep blue-purple wavy hair, white frilled headband with a blue bow, deep blue and white maid dress, whale tail, ',
-    stylePrompt: 'anime key visual, clean lineart, cinematic lighting, highly detailed, ',
+    // [qqbot-mod] handdrawn 2026-10-31：主人反馈「SD 图算手绘但差点感觉」——cel shading+clean lineart
+    //   是赛璐璐平涂，太干净。换成水彩质感+笔触+纸纹（实际生效值在 bili-ops-config.json，这里同步兜底）。
+    stylePrompt: 'hand-drawn anime illustration, soft watercolor shading, visible brush strokes, sketchy warm linework, subtle paper grain, soft light, no 3D render, simple background, ',
     timeoutMs: 90000,
     width: 1024,
     height: 576,
@@ -243,8 +245,9 @@ export function applySize(orientation) {
   const prev = { QUALITY_W, QUALITY_H, GEN_W, GEN_H };
   QUALITY_W = vertical ? 1080 : 1280;
   QUALITY_H = vertical ? 1920 : 720;
-  GEN_W = vertical ? 576 : 768;
-  GEN_H = vertical ? 1024 : 432;
+  // [qqbot-mod] 2026-10-29 升分辨率：576→640 / 768→832，SD1.5 在 6GB 卡仍稳，清晰度 +20%
+  GEN_W = vertical ? 640 : 832;
+  GEN_H = vertical ? 1136 : 480;
   return { prev, vertical, size: { w: QUALITY_W, h: QUALITY_H, gw: GEN_W, gh: GEN_H } };
 }
 
@@ -288,11 +291,28 @@ export function paths(dataRoot) {
     jobs: join(root, 'jobs'),
     records: join(root, 'records.jsonl'),
     comments: join(root, 'comment-drafts.jsonl'),
+    drafts: join(root, 'script-drafts.jsonl'),
     state: join(root, 'state.json'),
     quota: join(String(dataRoot), '.qqbot', 'bili-ops-quota.json'),
     secret: join(String(dataRoot), 'bili-ops-secret.json'),
     jianying: join(root, '剪映草稿'),
   };
+}
+
+/**
+ * [qqbot-mod] dubbing-hint 2026-10-29：从选题/脚本文本里识别主人指定的配音引擎。
+ *
+ * 背景（主人实测抱怨）：工单里明写「最好能全程用 Index/Breeze 配音」，结果成片还是 GSV ——
+ * 因为主模型常把这句留在 topic 正文里，忘了翻译成 plan 的 dubbing 参数。
+ * 这里做兜底：显式参数永远优先；没传时扫文本提及。两者都没提 → ''（跟随全局）。
+ * 同时提 Index 和 Breeze（如「Index/Breeze」）→ 取 index（情感最足，主人偏好）。
+ */
+export function detectDubbing(...texts) {
+  const s = texts.filter(Boolean).join('\n').toLowerCase();
+  if (/indextts|index[\s/／\-|·]?tts|(^|[^a-z])index(?![a-z])/.test(s)) return 'index';
+  if (/breeze/.test(s)) return 'breeze';
+  if (/gsv|gpt-?sovits/.test(s)) return 'gsv';
+  return '';
 }
 
 /**
@@ -396,7 +416,10 @@ export function resolveTts(dataRoot, ops = {}) {
   const voice = String(v.ttsVoice || vc.voice || 'xiaolan_cute').trim();
   const endpoint = String(v.ttsEndpoint || vc.endpoint || 'http://127.0.0.1:9881/v1/audio/speech').trim();
   const model = String(v.ttsModel || vc.model || (provider === 'http' ? 'gsv' : '')).trim();
-  return { provider, voice, endpoint, model };
+  // [qqbot-mod] vram-soft 2026-10-28：成片配音是 IndexTTS-2.5 的主场（离线、不抢答），
+  // 显存不够也得能起 —— 跟随 voice-config.json 的 vramSoft 开关。
+  const vramSoft = vc.vramSoft === true || vc.vramSoft === 'true';
+  return { provider, voice, endpoint, model, vramSoft };
 }
 
 export function maskKey(k) {
@@ -633,6 +656,12 @@ export async function planAndRender(dataRoot, cfg = {}, opt = {}) {
   job.title = topic.slice(0, 30);
   job.orientation = String(opt.orientation || cfg.video?.orientation || '').toLowerCase() === 'vertical'
     ? 'vertical' : 'horizontal';
+  // [qqbot-mod] 2026-10-28：任务级配音引擎（opt.dubbing = gsv|breeze|index）。
+  // [qqbot-mod] 2026-10-29：没显式传时，从选题/脚本里拈主人提及的引擎（Index/Breeze 兑底）。
+  const dub = ['gsv', 'breeze', 'index'].includes(String(opt.dubbing || '').toLowerCase())
+    ? String(opt.dubbing).toLowerCase()
+    : detectDubbing(opt.topic, opt.scriptJson);
+  if (dub) job.dubbing = dub;
   job.status = 'scripting';
   job.stage = 'script';
   saveJob(job);
@@ -786,6 +815,39 @@ export function buildSrt(panels = []) {
 }
 
 // ── ffmpeg ───────────────────────────────────────────────────────────
+
+/** [qqbot-mod] 2026-10-29：用 ffmpeg 实测媒体时长（秒）——
+ *  治「合成耗时被当成音频长度」的切声 bug。ffmpeg -i 不带输出会非零退出，
+ *  但 Duration 在 stderr 里；照 runFfmpeg 的沙箱纪律（不管道）落盘再读。解析不了回 0。 */
+function probeMediaSec(exe, file) {
+  return new Promise((resolve) => {
+    if (!exe || !file) return resolve(0);
+    const logPath = join(tmpdir(), 'qqbot-ffdur-' + process.pid + '-' + Date.now() + '.log');
+    let fd = -1;
+    try { fd = openSync(logPath, 'w'); } catch { return resolve(0); }
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      try { closeSync(fd); } catch { /* ignore */ }
+      try { unlinkSync(logPath); } catch { /* ignore */ }
+      resolve(v);
+    };
+    let p;
+    try {
+      p = spawn(exe, ['-hide_banner', '-i', file], { stdio: ['ignore', fd, fd] });
+    } catch { finish(0); return; }
+    const timer = setTimeout(() => { try { p.kill(); } catch { /* ignore */ } finish(0); }, 15000);
+    p.on('error', () => { clearTimeout(timer); finish(0); });
+    p.on('close', () => {
+      clearTimeout(timer);
+      try {
+        const m = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(readFileSync(logPath, 'utf8'));
+        finish(m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : 0);
+      } catch { finish(0); }
+    });
+  });
+}
 
 function runFfmpeg(exe, args, timeoutMs = 180000) {
   return new Promise((resolve) => {
@@ -1040,7 +1102,32 @@ export async function renderJob(job, cfg = {}, deps = {}) {
   const detail = { panels: [], warnings: [], plan: { ...plan, videoStyle } };
   // 配音：跟 voice-config.json 走（主人换音色，成片配音一起换）
   const ttsCfg = resolveTts(dataRoot, ops);
+  // [qqbot-mod] 2026-10-28：任务级配音引擎（job.dubbing = gsv|breeze|index）。
+  //   工具/工单里指定了就覆盖全局配置——离线长片用 breeze/index（慢但效果好，
+  //   反正不抢答），聊天短片用 gsv。同时把最终引擎回写进 detail.tts 供台账展示。
+  // [qqbot-mod] dubbing-override 2026-10-29 主人拍板：「哪怕砍掉非必要占显存的东西，
+  //   也一定要用 Index 生成」——主管型 LLM 经常怕超时自作主张传 gsv（bb-201438 实锤：
+  //   预热链为空、直接 gsv）。现在 ops.video.dubbingOverride（默认 index）强制改判，
+  //   预热梯队 index→breeze 兑底，gsv 只做最后保险。传 "off" 可关掉强制。
+  const dubOverride = String((ops.video && ops.video.dubbingOverride) || 'index').toLowerCase();
+  if (['index', 'breeze'].includes(dubOverride)) {
+    if (job && job.dubbing !== dubOverride) detail.warnings.push(`配音引擎强制改判：${job.dubbing || '(未指定)'} → ${dubOverride}（dubbingOverride）`);
+    if (job) job.dubbing = dubOverride;
+    ttsCfg.model = dubOverride;
+  } else if (job && job.dubbing) {
+    ttsCfg.model = String(job.dubbing).toLowerCase();
+  }
   detail.tts = ttsCfg;
+
+  // [qqbot-mod] vram-evict 2026-10-31：index 门槛 5300MB，ollama 常驻 4~5GB 时 index
+  //   起不来/被挤 → 每句都付一次 7~12min 冷启动（实测 23 字 977s）。整单配音前主动
+  //   请 ollama 出显存，配合适配层 30min 空闲地板，16 句只付一次冷启动。
+  if (ttsCfg.model === 'index' || ttsCfg.model === 'breeze') {
+    try {
+      const { evictOllamaVram } = await import('./tts-core.mjs');
+      if (await evictOllamaVram()) detail.warnings.push('配音前已请 ollama 让出显存（给 ' + ttsCfg.model + ' 腾地方）');
+    } catch { /* ignore */ }
+  }
 
   // 尺寸：每单自己按 job.orientation 设一遍（缺省横屏 1280×720，竖屏 1080×1920）。
   // 串行出片，所以不需要还原；并发时必须改成传参。
@@ -1107,6 +1194,87 @@ export async function renderJob(job, cfg = {}, deps = {}) {
     }
   }
   if (!script.panels.length) return { ok: false, error: '任务没有分镜（先写脚本）', detail };
+
+  // [qqbot-mod] script-quality-gate 2026-10-29：文案质量闸。
+  //   主人实锤 bb-20261029-132913-w11g：agent 硬凑「每屏≤26字」写出 7 屏 77 字、
+  //   25 秒的电报体——选题里要求的功能介绍/学习汇报/数据/参考文献全没讲开。
+  //   总字数低于时长下限的脚本自动用 writeScript 重写一次（原稿当参考），失败才放行原稿。
+  {
+    // [qqbot-mod] jargon-ban 2026-10-29 主人二连实锤（w11g 电报体、cuot「五步走：空镜出图、贴立绘」）：
+    //   光有字数闸不够——模型会把 briefing 里的工程台账**原样念出来**，满嘴「出图/拼片/召回/
+    //   向量/显存」，观众根本听不懂也没人想听。鲸鱼娘的口播里出现这些词 = 拒稿。
+    const JARGON = ['显存', '显卡', '管线', '引擎', '召回', '向量', '倒排', '图谱', '索引', '数据库',
+      '日志', '接口', '参数', '部署', 'API', 'GPU', '适配层', '拼片', '出图', '立绘', '分镜',
+      '旁白', '缓存', '工单', '队列', '帧率', '编码', '渲染', '前端', '后端', '冷启动', '预处理',
+      '上下文', '提示词', 'token', '语料', '权重', '本地模型']; // [script-skill 2026-10-30] 补漏 6 词
+    const hits = (text) => JARGON.filter((w) => String(text || '').includes(w));
+    const totalChars = script.panels.reduce((a, p) => a + String(p.narration || '').replace(/\s/g, '').length, 0);
+    const MIN_CHARS = 240;   // ≈55 秒口播（约 4.3 字/秒）
+    const jargonPanels = script.panels.filter((p) => hits(p.narration).length);
+    const jargonAll = [...new Set(jargonPanels.flatMap((p) => hits(p.narration)))];
+    // [qqbot-mod] echo-detect 2026-10-31：主人汇报——云端写稿 8 次 5 次把选题原样复读成旁白。
+    //   检测：取选题每 8 字步长的 14 字窗口，任一窗口整段出现在 narration 里 = 复读屏。
+    const topicText = String(job.topic || '').replace(/\s/g, '');
+    const sample = [];
+    if (topicText.length >= 14) {
+      for (let st = 0; st + 14 <= topicText.length; st += 8) sample.push(topicText.slice(st, st + 14));
+      if (sample[sample.length - 1].length < 14) sample.push(topicText.slice(-14));
+    }
+    const echoPanels = sample.length
+      ? script.panels.filter((p) => sample.some((w) => String(p.narration || '').replace(/\s/g, '').includes(w)))
+      : [];
+    const needRewrite = totalChars < MIN_CHARS || jargonPanels.length >= 2 || jargonAll.length >= 3 || echoPanels.length >= 2;
+    if (needRewrite) {
+      if (totalChars < MIN_CHARS) detail.warnings.push(`文案过短（共 ${totalChars} 字 ≈ ${Math.round(totalChars / 4.3)} 秒，下限 ${MIN_CHARS}），自动扩写…`);
+      if (jargonPanels.length) detail.warnings.push(`文案带技术黑话（${jargonAll.join('、')}，${jargonPanels.length} 屏命中），自动改写成生活化的故事…`);
+      if (echoPanels.length >= 2) detail.warnings.push(`写稿复读选题原文（${echoPanels.length} 屏命中），自动重写…`);
+      try {
+        const topic = String(job.topic || script.title || '').trim();
+        let apiKey = '';
+        try { apiKey = String(readSecret(job.dataRoot)?.apiKey || ''); } catch { /* ignore */ }
+        let briefing = '';
+        try {
+          const VB = await import('./video-briefing.mjs');
+          const b = await VB.buildBriefing(job.dataRoot);
+          if (b && b.ok && b.text) briefing = b.text;
+        } catch { /* ignore */ }
+        const feedback = [];
+        if (totalChars < MIN_CHARS) feedback.push('这版原稿太短太空，只参考它提到的信息点，把每件事都讲具体（数字、例子、进展、感受）');
+        if (echoPanels.length >= 2) feedback.push('这版原稿把选题原样抄进了旁白，严禁再犯——要用第一人称把选题里的事讲成你自己的故事，选题原文一个字都不许直接出现');
+        if (jargonAll.length) feedback.push('这版原稿满嘴技术词（' + jargonAll.join('、') + '）——把每一处都翻译成生活说法：不说「显存挤不下」要说「家里桌子太小，只能先把玩具收进柜子」；不说「召回/数据库」要说「我把他说过的话都记在小本本上，一翻就能翻到」；工程的事只讲当时的场景和心情');
+        // [qqbot-mod] script-skill 2026-10-30：原来 feedback+原稿全拼进 topic —— script-writer 的
+        //   sanitizeTopic 只留前 200 字，整改要求和原稿信息点全被砍掉，扩写等于盲写
+        //   （主人反复实锤「文案还是很差」的直接根因之一）。改走 briefing 通道（system 侧，无截断）。
+        const refDraft = script.panels.map((x) => String(x.narration || '').trim()).join(' / ').slice(0, 400);
+        const briefing2 = (briefing ? briefing + '\n\n' : '')
+          + (feedback.length ? '# 上一稿整改要求（必须全部遵守）\n' + feedback.join('；') + '\n' : '')
+          + (refDraft ? '# 上一稿旁白（只提炼它提到的信息点，写法不许抄它）\n' + refDraft : '');
+        const s2 = await writeScript(
+          {
+            topic,
+            style: job.style || 'default',
+            panels: Math.max(Number(cfg.video?.panels) || 6, 12),
+            seconds: job.durationSec || 60,
+            briefing: briefing2,
+          },
+          cfg.llm,
+          { dataRoot: job.dataRoot, apiKey }
+        );
+        if (s2 && s2.ok && Array.isArray(s2.panels) && s2.panels.length) {
+          script.title = s2.title || script.title;
+          script.desc = s2.desc || script.desc;
+          script.tags = (s2.tags && s2.tags.length) ? s2.tags : script.tags;
+          script.panels = s2.panels;
+          updateJob(job.dataRoot, job.id, { title: script.title, desc: script.desc, tags: script.tags, panels: s2.panels });
+          detail.warnings.push(`文案已自动改写（${s2.panels.length} 屏，llm=${s2.llm || 'template'}）`);
+        } else {
+          detail.warnings.push('文案自动改写没出稿，用原稿继续');
+        }
+      } catch (e) {
+        detail.warnings.push('文案自动改写失败（用原稿继续）：' + (e?.message || String(e)));
+      }
+    }
+  }
 
   // ── 分镜编排（纯函数）：节拍 / 形态 / 转场 / 音效 / 时长预算 ──
   // 旧行为（planner=false）等价于"一屏一张图、固定淡入"，保留给回滚。
@@ -1202,6 +1370,14 @@ export async function renderJob(job, cfg = {}, deps = {}) {
     }
   }
   const usedHashes = [];   // 已成片的图 dHash：后面的屏不许再出同一张
+  // [qqbot-mod] two-phase 2026-10-29：阶段 1（出图）的产出暂存，阶段 2 统一配音
+  //  [qqbot-mod] sparse-fix 2026-10-29：imageScore/pose 以前直接写 detail.panels[i]，
+  //   但那时数组还没 push —— 稀疏残骸排在 panel 前面（w11g 的 meta.panels[0]={"pose":...}
+  //   垃圾 + README "undefined. [?s] undefined" 实锤），字幕错位、台账难看。改暂存数组。
+  const imgByShot = [];
+  const modes = [];
+  const imgScores = [];
+  const poseByShot = [];
 
   for (let i = 0; i < shots.length; i += 1) {
     const shot = shots[i];
@@ -1251,13 +1427,13 @@ export async function renderJob(job, cfg = {}, deps = {}) {
         ...(anchorPath ? { negative: CHARACTER_NEG } : {}),
       };
       if (composeMode) {
-        // 空镜：默认走程序化背景（确定性、干净、0 等待，永不出现第二个人）。
-        // 想用 AI 画场景就把 bili-ops-config.json 的 video.sceneMode 设成 "ai"。
+        // 空镜：默认走 AI 画背景（2026-10-29 默认改 'ai' —— 主人实锤 procedural 的
+        //   程序化渐变底「空旷得像 PPT」，是画质差的主要来源）；SD 不可用时才兑底程序化。
         drawOpt.negative = CHAR_SCENE_NEG;
         drawOpt.out = join(panelsDir, idx + '-bg.png');
         drawOpt.width = GEN_W;
         drawOpt.height = GEN_H;
-        const sceneMode = String(ops.video?.sceneMode || 'procedural').toLowerCase();
+        const sceneMode = String(ops.video?.sceneMode || 'ai').toLowerCase();
         if (sceneMode === 'ai') {
           try {
             const raw = join(panelsDir, idx + '-bg-raw.jpg');
@@ -1298,7 +1474,7 @@ export async function renderJob(job, cfg = {}, deps = {}) {
         });
         if (g.ok) {
           drew = { ok: true, path: g.path, score: g.score, provider: panelProvider };
-          detail.panels[i] = { ...(detail.panels[i] || {}), imageScore: g.score };
+          imgScores[i] = g.score;
           if (g.score < 0.6) detail.warnings.push('第' + (i + 1) + '屏画面质量偏低（' + g.score + '），建议换图描述');
         } else {
           // 质检本身跑不起来（没 python/Pillow）→ 不能因为"检查失败"就丢掉图
@@ -1333,7 +1509,7 @@ export async function renderJob(job, cfg = {}, deps = {}) {
           });
           if (cp2.ok) {
             imgPath = composed;
-            detail.panels[i] = { ...(detail.panels[i] || {}), pose: posePath.split(/[\\/]/).pop() };
+            poseByShot[i] = posePath.split(/[\\/]/).pop();
           } else {
             detail.warnings.push('第' + (i + 1) + '屏立绘合成失败（' + (cp2.reason || '?') + '），用纯场景图');
           }
@@ -1365,11 +1541,124 @@ export async function renderJob(job, cfg = {}, deps = {}) {
     }
     } // /image
 
-    // 2) 配音
+    imgByShot.push(imgPath);
+    modes.push(shotMode);
+    detail.panels.push({
+      index: i + 1, narration: p.narration, imagePrompt: p.imagePrompt,
+      mode: shotMode, beat: shot.beat || '', image: imgPath,
+      pose: poseByShot[i] || '',
+      transition: shot.transition || null,
+      imageScore: imgScores[i],
+    });
+    job.panels = detail.panels;
+  } // ── 阶段 1 完：全部分镜图就位（two-phase 2026-10-29）──────────────
+
+  // ── 阶段 1.5：还显存 ────────────────────────────────────────────────
+  // 出图完第一件事是把 SD 服务停掉（sd_server 按需拉起，停了下次自动重拉），
+  // 再把「非目标」的本地 TTS 后端停掉 —— breeze-server 常驻 4.8GB+ 也是
+  // index 起不来的帮凶（10-29 实锤：SD 占卡时 free=354MB，15GB 权重靠共享
+  // 显存分页 900s 都载不完 → 预热超时 → 滑 GSV）。
+  if (ttsCfg.provider === 'http' && /^(index|breeze)$/i.test(String(ttsCfg.model || ''))) {
+    const target = String(ttsCfg.model).toLowerCase();
+    try {
+      await stopDrawServer(drawCfg);
+      detail.warnings.push('已停本地 SD 服务还显存（配音阶段不用卡）');
+    } catch (e) {
+      detail.warnings.push('停 SD 服务异常：' + (e?.message || String(e)));
+    }
+    try {
+      const ab = String(ttsCfg.endpoint || '').replace(/\/v1\/.*$/, '').replace(/\/+$/, '');
+      if (/^https?:\/\/(127\.0\.0\.1|localhost)/.test(ab)) {
+        for (const other of ['gsv', 'breeze', 'index']) {
+          if (other === target) continue;
+          try {
+            const rr = await fetch(ab + '/admin/stop-backend', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ name: other }), signal: AbortSignal.timeout(4000),
+            });
+            const j = await rr.json().catch(() => ({}));
+            if (j && j.stopped) detail.warnings.push(`已停 ${other}（给 ${target} 让显存）`);
+          } catch { /* 适配层不在就算了 */ }
+        }
+      }
+    } catch (e) {
+      detail.warnings.push('停闲置 TTS 后端异常：' + (e?.message || String(e)));
+    }
+  }
+
+  // ── 阶段 1.6：预热目标引擎（梯队按离线出片偏好重排）─────────────────
+  // 出片场景 index → breeze → gsv（适配层通用梯队 gsv 抢跑，是 10-29 滑档主因）。
+  // 预热成功把 ttsCfg.model 固定在「真的热了的引擎」，后续配音全走它。
+  if (ttsCfg.provider === 'http') {
+    const want = String(ttsCfg.model || '').toLowerCase();
+    const chain = /^(index|breeze)$/.test(want)
+      ? [want, ...['index', 'breeze'].filter((x) => x !== want)]
+      : [];
+    for (const engName of chain) {
+      const t0w = Date.now();
+      try {
+        const w = await synthesize('好。', {
+          dataRoot, voice: ttsCfg.voice, provider: 'http', endpoint: ttsCfg.endpoint,
+          model: engName, vramSoft: ttsCfg.vramSoft === true,
+          strict: true,   // [qqbot-mod] strict-engine：预热必须真用目标引擎，不许被梯队降级骗过
+          speak: false, jitter: false, keep: 0, timeoutMs: 900000,
+        });
+        if (w && w.ok) {
+          if (ttsCfg.model !== engName) {
+            ttsCfg.model = engName;
+            detail.warnings.push(`已切换配音引擎 ${ttsCfg.model} → ${engName}`);
+          }
+          detail.warnings.push(`${engName} 预热完成（${Math.round((Date.now() - t0w) / 1000)}s），全片配音走 ${engName}`);
+          break;
+        }
+        // [qqbot-mod] warmup-retry 2026-10-29：重启适配层后第一发可能撞上连接重置
+        //   （bb-201438 疑似），失败隔 3s 重试一次再判死刑。
+        const w2 = (w && w.ok) ? w : await new Promise((r) => setTimeout(r, 3000)).then(() => synthesize('好。', {
+          dataRoot, voice: ttsCfg.voice, provider: 'http', endpoint: ttsCfg.endpoint,
+          model: engName, vramSoft: ttsCfg.vramSoft === true,
+          strict: true,
+          speak: false, jitter: false, keep: 0, timeoutMs: 900000,
+        })).catch((e2) => ({ ok: false, error: e2?.message || String(e2) }));
+        if (w2 && w2.ok) {
+          if (ttsCfg.model !== engName) {
+            ttsCfg.model = engName;
+            detail.warnings.push(`已切换配音引擎 ${ttsCfg.model} → ${engName}`);
+          }
+          detail.warnings.push(`${engName} 预热完成（重试后成功，共 ${Math.round((Date.now() - t0w) / 1000)}s），全片配音走 ${engName}`);
+          break;
+        }
+        detail.warnings.push(`${engName} 预热失败（${String((w2 && w2.error) || (w && w.error) || '?').slice(0, 80)}），试下一梯队`);
+      } catch (e) {
+        detail.warnings.push(`${engName} 预热异常：${String(e?.message || e).slice(0, 80)}，试下一梯队`);
+      }
+    }
+    // [qqbot-mod] 全梯队预热都失败：明确落到 gsv（秒出、必成），别让配音请求
+    //   再去适配层走一遍冷启动 + 梯队（那会整单超时、每屏 5 分钟重试）。
+    if (chain.length && !/^(index|breeze)$/.test(String(ttsCfg.model || '').toLowerCase())) {
+      ttsCfg.model = 'gsv';
+      detail.warnings.push('index/breeze 都没能热起来，本单配音改走 gsv（速度优先）');
+    }
+  }
+  // [qqbot-mod] 2026-10-29：把实际用的引擎回写 job.dubbing —— meta/台账不能说谎
+  if (job && ttsCfg.model && job.dubbing !== ttsCfg.model) job.dubbing = String(ttsCfg.model).toLowerCase();
+
+  // ── 阶段 2：配音 + 文字帧 + 时间轴（SD 已停、引擎已热）──────────────
+  cursor = 0;
+  for (let i = 0; i < shots.length; i += 1) {
+    const shot = shots[i];
+    const p = { narration: shot.narration, imagePrompt: shot.imagePrompt };
+    const shotMode = modes[i];
+    const imgPath = imgByShot[i];
+    const idx = String(i + 1).padStart(2, '0');
+    let frameDir = '';
+    let frameFps = 0;
     let audioPath = '';
     let dur = secondsPer;
     try {
-      const r = await ttsFn(p.narration, {
+      // [qqbot-mod] tts-resilient 2026-10-29 主人要求「不要出现语音拼接失败」：
+      //   以前单屏配音失败 = 该屏静音 → 后续时间轴全乱、听感断掉。
+      //   现在三连保险：①同引擎重试一次（网络抖动）②换 gsv 单屏兜底（秒出必成）③真全败才静音+警告。
+      const ttsOpts = (modelOverride) => ({
         outDir: audioDir,
         dataRoot,
         voice: ttsCfg.voice,
@@ -1377,12 +1666,24 @@ export async function renderJob(job, cfg = {}, deps = {}) {
         pitch: ops.video.ttsPitch || '-1Hz',
         provider: ttsCfg.provider,
         endpoint: ttsCfg.endpoint,
-        model: ttsCfg.model,
+        model: modelOverride || ttsCfg.model,
+        vramSoft: ttsCfg.vramSoft === true,
         speak: false,
         jitter: false,
         keep: 200,
-        timeoutMs: 60000,
+        timeoutMs: 600000,
       });
+      let r = null;
+      try { r = await ttsFn(p.narration, ttsOpts()); } catch (e0) { r = { ok: false, error: e0?.message || String(e0) }; }
+      if (!(r?.ok && r.path)) {
+        await new Promise((res) => setTimeout(res, 2000));
+        try { r = await ttsFn(p.narration, ttsOpts()); } catch (e1) { r = { ok: false, error: e1?.message || String(e1) }; }
+        if (r?.ok && r.path) detail.warnings.push('第' + (i + 1) + '屏配音重试成功（首次失败：' + String(r.error || '').slice(0, 60) + '）');
+      }
+      if (!(r?.ok && r.path) && String(ttsCfg.model || '').toLowerCase() !== 'gsv') {
+        detail.warnings.push('第' + (i + 1) + '屏 ' + ttsCfg.model + ' 两连败，本屏用 gsv 兜底（不留静音屏）');
+        try { r = await ttsFn(p.narration, ttsOpts('gsv')); } catch (e2) { r = { ok: false, error: e2?.message || String(e2) }; }
+      }
       if (r?.ok && r.path) {
         const dest = join(audioDir, idx + '.mp3');
         try {
@@ -1391,13 +1692,18 @@ export async function renderJob(job, cfg = {}, deps = {}) {
         } catch {
           audioPath = r.path;
         }
-        const sec = Number(r.ms) > 0 ? Number(r.ms) / 1000 : Math.max(2, p.narration.length / 4.2);
+        // [qqbot-mod] 2026-10-29 修「分镜切了配音没念完、后面全断」：
+        //   以前 sec = r.ms/1000 —— r.ms 是**合成耗时**（网络往返）不是音频长度，
+        //   合成越慢音频被算得越短 → 段视频比音频短 → 尾巴被截、听感断崖
+        //   （bb-20261029-201438 实锤：09 屏音频 8.14s 被压到 6.30s）。
+        //   现在 ffmpeg 实测音频时长，段长 = 音频 + 呼吸垫；shotMax 只做提示绝不截音频。
+        const probed = await probeMediaSec(exe, audioPath);
+        const sec = probed > 0 ? probed
+          : (Number(r.ms) > 0 ? Number(r.ms) / 1000 : Math.max(2, p.narration.length / 4.2));
         const shotMin = Math.max(1.5, Number(ops.video.shotMinSec) || 2.4);
         const shotMax = Math.max(shotMin, Number(ops.video.shotMaxSec) || 5.2);
-        // 镜头时长要"容得下这句话"：以前硬夹到 shotMax(5.2s)，旁白 10s 的屏
-        // 会被 ffmpeg 的 -t 直接砍掉半句（2026-10-27 修：成片比配音短 = 话没说完）。
-        dur = sec > shotMax ? Math.min(sec + 0.35, 30) : Math.max(shotMin, Math.min(shotMax, sec + 0.2));
-        if (sec > shotMax) detail.warnings.push('第' + (i + 1) + '屏旁白 ' + sec.toFixed(1) + 's 超过单屏 ' + shotMax + 's，本屏按旁白长度放宽');
+        dur = Math.max(shotMin, sec + 0.35);
+        if (sec > shotMax) detail.warnings.push('第' + (i + 1) + '屏旁白 ' + sec.toFixed(1) + 's 超过单屏偏好 ' + shotMax + 's，本屏按音频实际长度放宽');
       } else {
         detail.warnings.push('第' + (i + 1) + '屏配音失败：' + (r?.error || '?'));
       }
@@ -1405,7 +1711,7 @@ export async function renderJob(job, cfg = {}, deps = {}) {
       detail.warnings.push('第' + (i + 1) + '屏配音异常：' + (e?.message || String(e)));
     }
 
-    // 2.5) 文字动效帧（text 形态）：用配音时长决定帧数，画面和声音天然对齐
+    // 文字动效帧（text 形态）：用配音时长决定帧数，画面和声音天然对齐
     if (shotMode === 'text') {
       const tc = ops.video?.text || {};
       try {
@@ -1417,7 +1723,6 @@ export async function renderJob(job, cfg = {}, deps = {}) {
           height: Number(tc.height) || QUALITY_H,
           fps: Number(tc.fps) || 24,
           durationSec: dur,
-          // 分镜给了逐屏样式（kinetic/pop/sweep/glitch…）就用它，否则用全局配置
           style: shot.textStyle || tc.style || 'typewriter',
           accent: tc.accent || '#7fd7ff',
           bgImage: String(tc.bgImage || '').trim(),
@@ -1426,13 +1731,12 @@ export async function renderJob(job, cfg = {}, deps = {}) {
           textScript: drawCfg.textScript,
           card: imgPath || '',
           cardAt: 0.35,
-          // 本屏在全片中的起始秒
           charOffset: cursor,
         });
         if (fr?.ok) {
           frameDir = fr.dir;
           frameFps = Number(fr.fps) || Number(tc.fps) || 24;
-          imgPath = TV.firstFrame(frameDir);
+          imgByShot[i] = TV.firstFrame(frameDir);
         } else {
           detail.warnings.push('第' + (i + 1) + '屏文字帧渲染失败：' + (fr?.reason || '?'));
         }
@@ -1443,16 +1747,12 @@ export async function renderJob(job, cfg = {}, deps = {}) {
 
     const start = cursor;
     cursor += dur;
-    const panel = {
-      index: i + 1, narration: p.narration, imagePrompt: p.imagePrompt,
-      mode: shotMode, beat: shot.beat || '', image: imgPath, audio: audioPath,
-      start, end: cursor, seconds: dur,
-      transition: shot.transition || null,
-      imageScore: detail.panels[i]?.imageScore,
-    };
-    detail.panels.push(panel);
-    job.panels = detail.panels;
-    segments.push({ panel, imgPath, audioPath, dur, frameDir, frameFps });
+    const panel = detail.panels[i];
+    panel.audio = audioPath;
+    panel.start = start;
+    panel.end = cursor;
+    panel.seconds = dur;
+    segments.push({ panel, imgPath: imgByShot[i], audioPath, dur, frameDir, frameFps });
   }
 
   // 3) 字幕（外挂，永远生成）
@@ -1521,6 +1821,11 @@ export async function renderJob(job, cfg = {}, deps = {}) {
       let cues = sfxReady ? (cuePlan.find((c) => c.index === seg.panel.index)?.cues || []) : [];
       if (!cues.length && sfxReady) cues = pickSfxCues(sfxRoot, seg, seg.panel.mode, ops);
 
+      // [qqbot-mod] audio-pop 2026-10-31：分镜切换杂音根因——TTS 每段首尾波形非零，
+      //   concat -c copy 直拼处波形跳变 = 咔哒声。每段音轨先 8ms 淡入 + 10ms 淡出再混/编码。
+      const fadePad = 'afade=t=in:d=0.008,afade=t=out:st=' +
+        Math.max(0, Number(seg.dur) - 0.01).toFixed(2) + ':d=0.01';
+
       const buildArgs = (filter) => {
         if (cues.length) {
           const inputs = [...baseInputs];
@@ -1529,11 +1834,18 @@ export async function renderJob(job, cfg = {}, deps = {}) {
           let inputIdx = 2;
           const withIdx = cues.map((c) => ({ ...c, inputIndex: inputIdx++ }));
           for (const c of withIdx) inputs.push('-i', c.path);
-          const mix = SFX.buildSfxFilter(withIdx, { baseLabel: '[1:a]' });
+          const chains = [`[0:v]${filter},setsar=1[v]`];
+          if (seg.audioPath) {
+            chains.push(`[1:a]${fadePad}[abase]`);
+            var mix = SFX.buildSfxFilter(withIdx, { baseLabel: '[abase]' });
+          } else {
+            var mix = SFX.buildSfxFilter(withIdx, { baseLabel: '[1:a]' });
+          }
+          chains.push(...mix.chains);
           return [
             ...inputs,
             '-t', Number(seg.dur).toFixed(2),
-            '-filter_complex', [`[0:v]${filter},setsar=1[v]`, ...mix.chains].join(';'),
+            '-filter_complex', chains.join(';'),
             '-map', '[v]', '-map', mix.outLabel,
             '-r', '24', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', ...COLOR_ARGS,
             ...(hasFrames ? [] : ['-tune', 'stillimage']),
@@ -1548,7 +1860,7 @@ export async function renderJob(job, cfg = {}, deps = {}) {
           '-vf', `${filter},setsar=1`,
           '-r', '24', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', ...COLOR_ARGS,
           ...(hasFrames ? [] : ['-tune', 'stillimage']),
-          ...(seg.audioPath ? ['-c:a', 'aac', '-b:a', '128k'] : []),
+          ...(seg.audioPath ? ['-af', fadePad, '-c:a', 'aac', '-b:a', '128k'] : []),
           segOut,
         ];
       };
@@ -1622,6 +1934,26 @@ export async function renderJob(job, cfg = {}, deps = {}) {
     if (firstImg) {
       const cover = join(job.dir, 'cover.jpg');
       if (await coverFromImage(exe, firstImg, cover)) job.cover = cover;
+    }
+
+    // [qqbot-mod] cleanup-mid 2026-10-31：主人要求「没用的中间产物及时清空」。
+    //   成片+封面都成功后，清掉可重建的分段/临时文件；panels 里的最终出图保留
+    //   （重渲染还要用，重出图要再花算力），只删 -bg-raw.jpg（crop 前的云端原图）。
+    if (videoPath && job.cover) {
+      let cleaned = 0;
+      const rmOne = (p) => { try { const s = statSync(p); cleaned += s.size; rmSync(p, { force: true }); } catch { /* ignore */ } };
+      try {
+        for (const f of readdirSync(job.dir)) {
+          if (/^seg-\d+\.mp4$/.test(f) || /^cap-\d+\.txt$/.test(f)) rmOne(join(job.dir, f));
+        }
+        const panelsDir = join(job.dir, 'panels');
+        if (existsSync(panelsDir)) {
+          for (const f of readdirSync(panelsDir)) {
+            if (/-bg-raw\.jpg$/.test(f)) rmOne(join(panelsDir, f));
+          }
+        }
+        if (cleaned > 0) detail.cleanup = { cleanedBytes: cleaned };
+      } catch { /* 清理失败不影响成片 */ }
     }
   }
 
@@ -1898,9 +2230,75 @@ export function listCommentDrafts(dataRoot, { limit = 10 } = {}) {
   }
 }
 
+// ── 文稿草稿箱（2026-10-28 主人需求）────────────────────────────────────
+// 灵感随手记、反复改思路的地方：可以是几句话的选题灵感，也可以是整篇分镜文案，
+// 改好了「转视频任务」一键进渲染管线。和评论草稿一样走 JSONL 追加写（last-wins），
+// 台账不怕并发写坏；面板/工具（bili_ops action=draft）和宿主 API 三处共用。
+
+function appendDraft(dataRoot, rec) {
+  const p = ensureDirs(dataRoot);
+  appendFileSync(p.drafts, JSON.stringify(rec) + '\n', 'utf8');
+}
+
+function loadDraftMap(dataRoot) {
+  try {
+    const rows = readFileSync(paths(dataRoot).drafts, 'utf8')
+      .split(/\r?\n/).filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter((x) => x && x.id);
+    const map = new Map();
+    for (const r of rows) map.set(r.id, r);
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
+export function listScriptDrafts(dataRoot, { limit = 30, q = '' } = {}) {
+  const kw = String(q || '').trim().toLowerCase();
+  return [...loadDraftMap(dataRoot).values()]
+    .filter((d) => d.status !== 'deleted')
+    .filter((d) => !kw || (String(d.title || '') + String(d.text || '')).toLowerCase().includes(kw))
+    .sort((a, b) => (Number(b.editedAt) || Number(b.createdAt) || 0) - (Number(a.editedAt) || Number(a.createdAt) || 0))
+    .slice(0, Math.max(1, Number(limit) || 30));
+}
+
+export function getScriptDraft(dataRoot, id) {
+  return loadDraftMap(dataRoot).get(String(id || '')) || null;
+}
+
+/** 新建/更新文稿草稿。id 省略=新建；给了 id=在原文稿上覆盖（更新也是追加写）。
+ *  usedJobId：转成视频任务后回写，防止重复转。 */
+export function saveScriptDraft(dataRoot, { id, title, text, tags, usedJobId } = {}) {
+  const body = String(text || '').trim();
+  if (!body && !usedJobId) return { ok: false, error: '草稿内容不能为空' };
+  const prev = id ? loadDraftMap(dataRoot).get(String(id)) : null;
+  if (id && !prev) return { ok: false, error: '找不到草稿 ' + id };
+  if (prev && prev.status === 'deleted' && !usedJobId) return { ok: false, error: '这条草稿已删除，不能改' };
+  const rec = {
+    id: prev ? prev.id : ('d-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 5)),
+    title: String(title || prev?.title || (body.split(/\n|。/)[0] || '')).trim().slice(0, 80) || '未命名草稿',
+    text: prev && !body ? prev.text : body.slice(0, 20000),
+    tags: (Array.isArray(tags) ? tags : String(tags || (prev?.tags || []).join(',')).split(','))
+      .map((x) => String(x).trim()).filter(Boolean).slice(0, 8),
+    status: 'active',
+    createdAt: prev?.createdAt || Date.now(),
+    editedAt: Date.now(),
+    usedJobId: String(usedJobId || prev?.usedJobId || ''),
+  };
+  appendDraft(dataRoot, rec);
+  return { ok: true, draft: rec };
+}
+
+export function deleteScriptDraft(dataRoot, id) {
+  const d = loadDraftMap(dataRoot).get(String(id || ''));
+  if (!d || d.status === 'deleted') return { ok: false, error: '找不到草稿 ' + id };
+  appendDraft(dataRoot, { ...d, status: 'deleted', deletedAt: Date.now() });
+  return { ok: true, id: d.id, msg: '已删除草稿 ' + d.id };
+}
+
 /** 主人修改评论草稿（只是改文字，不发送） */
-export function updateCommentDraft(dataRoot, { id, text } = {}) {
-  const d = listCommentDrafts(dataRoot, { limit: 200 }).find((x) => x.id === String(id || ''));
+export function updateCommentDraft(dataRoot, { id, text } = {}) {  const d = listCommentDrafts(dataRoot, { limit: 200 }).find((x) => x.id === String(id || ''));
   if (!d) return { ok: false, error: '找不到评论草稿' };
   if (d.status !== 'pending') return { ok: false, error: '该评论已处理过（' + d.status + '）' };
   const next = {

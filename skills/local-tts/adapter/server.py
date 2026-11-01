@@ -35,7 +35,7 @@ import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "2.2.0"
+VERSION = "2.3.3"
 DEFAULT_GSV = "http://127.0.0.1:9880"
 DEFAULT_BREEZE = "http://127.0.0.1:7860"
 DEFAULT_INDEX = "http://127.0.0.1:9890"
@@ -713,8 +713,23 @@ class SupervisorError(Exception):
 # index（IndexTTS-2.5 bf16）跑起来要 ≈5GB+（CUDA context 另算）：门槛给 5300
 # —— 2026-10-27 修：原来写 4600，结果"起得来、一合成就 OOM 断连"，
 #    还把 GSV 要的显存堵死（free 4838→1190），全链路一起死。门槛必须给足。
+# —— 2026-10-28 再修：6GB 卡（RTX 3060 Laptop）整机空闲上限实测只有 ~5.1GB
+#    （桌面合成器自己吃 ~1GB），5300 的门槛**物理上永远达不到**（日志实锤
+#    free=5152 < need=5300）→ index 从来没起来过，每次都滑档。
+#    解法是 --vram-policy soft：显存不足打 WARN 照样拉起，靠 Windows WDDM 的
+#    CUDA Sysmem Fallback（显存不够自动溢出到共享显存=内存）兜底——
+#    起得来就能出声，代价是慢。配合 PYTORCH_CUDA_ALLOC_CONF=expandable_segments
+#    把碎片化 OOM 也压下去。strict 语义不变（怕跟游戏抢卡的场合用）。
 DEFAULT_NEED_MB = {"gsv": 3400, "breeze": 4800, "index": 5300}
-DEFAULT_WAIT_S = {"gsv": 150, "breeze": 240, "index": 420}
+# index 冷启动：15GB 权重 + 共享显存溢出时，光加载就要 7~12 分钟（2026-10-28 实测
+# 420s 等不到被管家当"启动超时"杀掉）。给 1500s：抢卡腾出显存后加载会快一个量级，
+# 这里只是极限兑底；模型加载完之后的请求就走热的了。
+DEFAULT_WAIT_S = {"gsv": 150, "breeze": 240, "index": 1500}
+# 各后端空闲回收的下限（分钟）：拉起/加载成本越贵的，闲着也多留一会儿。
+# index 冷加载 7~12min+，3 分钟就回收 = 每条语音都付一次冷启动，所以给 30 分钟地板；
+# gsv 秒级冷启，维持 --idle-minutes 配置值。breeze 冷启几十秒，给 5 分钟地板。
+IDLE_FLOOR_MIN = {"gsv": 0.0, "breeze": 5.0, "index": 30.0}
+VRAM_POLICIES = ("strict", "soft", "off")   # soft=显存不足照起（共享显存兜底）；off=不查
 
 
 class Supervisor:
@@ -726,7 +741,8 @@ class Supervisor:
 
     def __init__(self, root: str, log_dir: str, idle_minutes: float = 10.0,
                  min_free_mb: int = 0, need_mb: Optional[Dict[str, int]] = None,
-                 wait_s: Optional[Dict[str, float]] = None, enabled: bool = True) -> None:
+                 wait_s: Optional[Dict[str, float]] = None, enabled: bool = True,
+                 vram_policy: str = "strict") -> None:
         self.root = root
         self.log_dir = log_dir
         self.ckpt_dir = os.path.join(root, ".models", "index-tts")   # IndexTTS 权重目录
@@ -735,6 +751,7 @@ class Supervisor:
         self.need_mb = need_mb or {}
         self.wait_s = wait_s or {}
         self.enabled = bool(enabled)                 # False = 老行为，只代理不管理
+        self.vram_policy = vram_policy if vram_policy in VRAM_POLICIES else "strict"
         self._locks = {"gsv": threading.Lock(), "breeze": threading.Lock(), "index": threading.Lock()}
         self._last_use = {"gsv": 0.0, "breeze": 0.0, "index": 0.0}
         self._inflight = {"gsv": 0, "breeze": 0, "index": 0}
@@ -775,11 +792,27 @@ class Supervisor:
             log(f"supervisor: {name} 不在线，尝试拉起…")
             free = self.vram_free_mb()
             need = self.need_mb.get(name) or self.min_free_mb or DEFAULT_NEED_MB.get(name, 0)
+            # [qqbot-mod] index-preempt 2026-10-29：主人拍板「一定要用 index」——
+            #   index 是 15GB 级权重，显存被 gsv/breeze 占住时硬拉会走共享显存分页，
+            #   900~1500s 都载不完被杀（10-29 全天 5 连超时全是这种）。所以 index
+            #   拉起前显存不够时，先把别的本地后端停掉腾卡（它们之后被请求会自动再拉）。
+            if name == "index" and need and free is not None and free < need and self.vram_policy != "off":
+                self._preempt_for_index()
+                free = self.vram_free_mb()
             if need and free is not None and free < need:
-                msg = (f"本地 TTS（{name}）没有启动：显存只剩 {free}MB，不够它要的 {need}MB。"
-                       f"可能游戏/大模型正占着卡——要语音就先腾显存，或等我空闲时再试。")
-                log(f"supervisor: 拒绝启动 {name}（free={free}MB < need={need}MB）")
-                return msg
+                if self.vram_policy == "off":
+                    log(f"supervisor: 显存预检关闭（policy=off），不查 {name} 的 {need}MB 门槛")
+                elif self.vram_policy == "soft":
+                    # 共享显存兜底：Windows WDDM 的 CUDA Sysmem Fallback 会把装不下的
+                    # 权重溢到共享显存（系统内存），不 OOM——慢但能出声。
+                    log(f"supervisor: WARN {name} 显存只剩 {free}MB（门槛 {need}MB），"
+                        f"按 soft 策略照样拉起——超出部分走共享显存，合成会明显变慢")
+                else:
+                    msg = (f"本地 TTS（{name}）没有启动：显存只剩 {free}MB，不够它要的 {need}MB。"
+                           f"可能游戏/大模型正占着卡——要语音就先腾显存；或在浮窗打开"
+                           f"『显存不够也强启』（共享显存兜底，慢但能出声）。")
+                    log(f"supervisor: 拒绝启动 {name}（free={free}MB < need={need}MB，policy=strict）")
+                    return msg
             try:
                 self._spawn(name)
             except Exception as e:  # noqa: BLE001
@@ -801,7 +834,8 @@ class Supervisor:
     def status(self) -> Dict[str, Any]:
         now = time.time()
         out: Dict[str, Any] = {"enabled": self.enabled, "idle_minutes": self.idle_minutes,
-                               "vram_free_mb": self.vram_free_mb()}
+                               "vram_free_mb": self.vram_free_mb(),
+                               "vram_policy": self.vram_policy}
         for name in ("gsv", "breeze", "index"):
             last = self._last_use.get(name, 0.0)
             out[name] = {"running": self._popen.get(name) is not None and self._popen[name].poll() is None,
@@ -858,10 +892,35 @@ class Supervisor:
         hf = os.path.join(root, ".models", "hf-cache")
         if os.path.isdir(hf):
             env.setdefault("HF_HOME", hf)
+        # 2026-10-28：expandable_segments 让 PyTorch 按需扩展显存段而不是先占大块，
+        # 压碎片化 OOM（就是"起得来、一合成就 OOM 断连"的那种）；显存不够的部分
+        # 配合 WDDM Sysmem Fallback 溢到共享显存。对 torch 各版本无副作用。
+        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         # 关键：不设这个，重定向到文件时 stdout 全缓冲，日志永远空、排不了障
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         return env
+
+    def _preempt_for_index(self) -> None:
+        """[qqbot-mod] index-preempt：把别的本地后端停掉腾显存给 index。
+        只在 index 拉起路径上调用；gsv/breeze 之后被请求时 supervisor 会自动再拉。
+        停完轮询等显存真正归还（Windows 驱动回收要几秒）。"""
+        did = False
+        for other in ("gsv", "breeze"):
+            p = self._popen.get(other)
+            if p is not None and p.poll() is None:
+                inflight = self._inflight.get(other, 0)
+                log("supervisor: 为 index 腾显存，先停 " + other +
+                    ("（注意：它还有 " + str(inflight) + " 个在途请求，会被中断）" if inflight else ""))
+                self._kill(other, reason="为 index 腾显存")
+                did = True
+        if did:
+            for _ in range(20):                # 最多等 40s 让驱动归还显存
+                time.sleep(2.0)
+                free = self.vram_free_mb()
+                if free is None or free >= 4500:
+                    break
+            log("supervisor: 腾卡完成，free=" + str(self.vram_free_mb()) + "MB")
 
     def _spawn(self, name: str) -> None:
         os.makedirs(self.log_dir, exist_ok=True)
@@ -974,10 +1033,13 @@ class Supervisor:
 
 
     def _reaper_loop(self) -> None:
-        idle_s = self.idle_minutes * 60.0
         while not self._stop.wait(30):
             now = time.time()
             for name in ("gsv", "breeze", "index"):
+                # 2026-10-28：按引擎分级——index 冷加载 7~12min+，闲 3 分钟就杀等于
+                # 每条语音都付一次冷启动，所以取 max(配置值, 引擎地板)。
+                idle_min = max(self.idle_minutes, IDLE_FLOOR_MIN.get(name, 0.0))
+                idle_s = idle_min * 60.0
                 if self._inflight.get(name, 0) > 0 or self._spawning.get(name):
                     continue               # 正在合成/正在拉起，别杀
                 running = self._popen.get(name) is not None and self._popen[name].poll() is None
@@ -987,7 +1049,7 @@ class Supervisor:
                 last = self._last_use.get(name, 0.0)
                 if last and now - last < idle_s:
                     continue
-                quiet = f"空闲 {self.idle_minutes} 分钟"
+                quiet = f"空闲 {idle_min:g} 分钟"
                 log(f"supervisor: 回收 {name}（{quiet}，还显存给游戏）")
                 try:
                     self._kill(name, reason=f"({quiet})")
@@ -1071,7 +1133,14 @@ class Adapter:
         lst.append(now)
         self._fails[name] = lst
         self._last_err[name] = str(why)[:300]
-        soft = ("显存" in str(why) or "不够" in str(why))   # 暂时性：等显空就能好
+        # 暂时性：等显存空了就能好。中文报错含"显存/不够"；上游 CUDA 的英文报错是
+        # "CUDA out of memory"（torch.OOM 不带"显存"两个字），2026-10-28 补上英文，
+        # 免得真 OOM 被当硬失败降 30 分钟。
+        _w = str(why)
+        soft = ("显存" in _w or "不够" in _w
+                or "out of memory" in _w.lower() or "cuda oom" in _w.lower()
+                # 引擎还在加载模型（2026-10-28）：暂时性，等它就绪就好，别按硬失败降 30 分钟
+                or "not loaded" in _w.lower() or "engine unavailable" in _w.lower())
         dur = self.DEMOTE_SOFT_S if soft else self.DEMOTE_HARD_S
         if len(lst) >= self.DEMOTE_HITS:
             self._demoted_until[name] = now + dur
@@ -1166,7 +1235,8 @@ class Adapter:
 
 
     def synth(self, text: str, voice: str, speed: float, fmt: str = "mp3",
-              model: str = "", pitch_semitones: Optional[float] = None
+              model: str = "", pitch_semitones: Optional[float] = None,
+              strict: bool = False
               ) -> Tuple[bytes, str, str, Dict[str, Any]]:
         name, prof, source = self.resolve(voice, model)
         params = resolve_params(prof, speed, pitch_semitones)
@@ -1174,8 +1244,14 @@ class Adapter:
         native = str(prof.get("backend") or self.profiles.get("default_backend") or "gsv")
         # ── 梯队链：原生引擎优先，然后按"越省显存越靠前"挨个接力。
         #   起不来/报错的后端记一笔失败并当场降级，下一请求直接绕开它。
-        chain = [b for b in ([native] + [b for b in self.TIER_ORDER if b != native])
-                 if b in self.backends]
+        #   strict_engine：只试原生，失败直接报错（预热/质检用）。
+        if strict:
+            chain = [native] if native in self.backends else []
+            if not chain:
+                last_err = f"strict_engine 指定的 {native} 不可用且不允许降级"
+        else:
+            chain = [b for b in ([native] + [b for b in self.TIER_ORDER if b != native])
+                     if b in self.backends]
         tier_tries: List[Dict[str, Any]] = []
         last_err = ""
         for i, be_name in enumerate(chain):
@@ -1401,6 +1477,35 @@ class Handler(BaseHTTPRequestHandler):
                                  "profiles": self.adapter.store.info()
                                  if self.adapter.store else None})
             return
+        # 2026-10-29：停单个后端（不关适配层）。视频管线的两阶段渲染用：
+        # 出图阶段 SD 把 6GB 卡占满，index 的 15GB 权重靠共享显存分页加载
+        # 900s 都载不完（13:22 实锤 free=354MB）→ 出图完必须先把不相关的
+        # 本地引擎停掉、显存还干净，再拉目标引擎配音。
+        if path == "/admin/stop-backend":
+            if not self._local_only(path):
+                return
+            body: Dict[str, Any] = {}
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                if n > 0:
+                    body = json.loads(self.rfile.read(n).decode("utf-8")) or {}
+            except Exception:  # noqa: BLE001
+                body = {}
+            name = str(body.get("name") or
+                       urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("name", [""])[0]
+                       ).strip().lower()
+            if name not in ("gsv", "breeze", "index"):
+                self._json(400, {"ok": False, "error": {"message": "name 必须是 gsv/breeze/index"}})
+                return
+            sup = self.adapter.supervisor
+            if sup is None:
+                self._json(200, {"ok": True, "stopped": False, "note": "supervisor off"})
+                return
+            was = sup._popen.get(name) is not None and sup._popen[name].poll() is None
+            if was:
+                sup._kill(name, reason=f"(stop-backend: 给 {name} 之外的任务还显存)")
+            self._json(200, {"ok": True, "stopped": bool(was), "name": name})
+            return
         if path not in ("/v1/audio/speech", "/audio/speech"):
             self._json(404, {"error": {"message": f"no route {path}"}})
             return
@@ -1418,6 +1523,10 @@ class Handler(BaseHTTPRequestHandler):
         text = (body.get("input") or body.get("text") or "").strip()
         voice = str(body.get("voice") or body.get("name") or "")
         model = str(body.get("model") or "")
+        # [qqbot-mod] strict-engine 2026-10-29：只试原生引擎、不许梯队接力。
+        #   预热场景必须知道目标引擎真的起来了——不然 gsv 出声返回 200，
+        #   管线误以为 index 热了，后面整单配音全走冷引擎再超时（10-29 实锤）。
+        strict = bool(body.get("strict_engine") or body.get("strict"))
         fmt = str(body.get("response_format") or body.get("format") or "mp3").lower()
         try:
             speed = float(body.get("speed") or 1.0)
@@ -1443,7 +1552,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data, ctype, encoder, meta = self.adapter.synth(text, voice, speed, fmt,
                                                            model=model,
-                                                           pitch_semitones=pitch_semitones)
+                                                           pitch_semitones=pitch_semitones,
+                                                           strict=strict)
         except ModelError as e:
             log(f"400 POST {path} model={model!r}: {e}")
             self._json(400, {"error": {"message": str(e), "type": "model_not_local",
@@ -1572,9 +1682,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                     default=float(os.environ.get("TTS_IDLE_MINUTES", "10")),
                     help="后端空闲多少分钟后自动关闭还显存（0=不自动关，默认 10）")
     ap.add_argument("--min-free-mb", type=int, default=int(os.environ.get("TTS_MIN_FREE_MB", "0")),
-                    help="启动后端要求的最小空闲显存（0=按后端默认：gsv 3400 / breeze 4800）")
+                    help="启动后端要求的最小空闲显存（0=按后端默认：gsv 3400 / breeze 4800 / index 5300）")
     ap.add_argument("--need-gsv-mb", type=int, default=0)
     ap.add_argument("--need-breeze-mb", type=int, default=0)
+    ap.add_argument("--need-index-mb", type=int,
+                    default=int(os.environ.get("TTS_NEED_INDEX_MB", "0")),
+                    help="index 的显存门槛（0=默认 5300）。2026-10-28 前这个参数根本没接线，想调低也做不到")
+    ap.add_argument("--vram-policy", default=os.environ.get("TTS_VRAM_POLICY", "strict"),
+                    choices=list(VRAM_POLICIES),
+                    help="显存预检策略：strict=不够就拒（默认）；soft=不够打 WARN 照样拉起（WDDM 共享显存兑底，慢但能出声）；off=不查")
     ap.add_argument("--log-dir", default=os.environ.get(
         "TTS_LOG_DIR",
         os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -1595,8 +1711,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         os.path.dirname(os.path.abspath(__file__)))))   # server.py 在 <root>/skills/local-tts/adapter/
     sup = Supervisor(root, a.log_dir, idle_minutes=a.idle_minutes,
                      min_free_mb=a.min_free_mb,
-                     need_mb={"gsv": a.need_gsv_mb or 0, "breeze": a.need_breeze_mb or 0},
-                     enabled=a.manage)
+                     need_mb={"gsv": a.need_gsv_mb or 0, "breeze": a.need_breeze_mb or 0,
+                              "index": a.need_index_mb or 0},
+                     enabled=a.manage, vram_policy=a.vram_policy)
     adapter = Adapter(backends, profiles, a.timeout, a.bitrate, supervisor=sup, store=store)
     Handler.adapter = adapter
 
@@ -1615,10 +1732,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     log(f"listening http://{a.host}:{a.port}  gsv={a.gsv}  breeze={a.breeze}  "
         f"encoder={'lameenc' if _has_lameenc() else 'ffmpeg'}")
     if a.manage:
-        log(f"supervisor: ON（空闲 {a.idle_minutes} 分钟自动关后端；"
+        log(f"supervisor: ON（空闲 {a.idle_minutes} 分钟自动关后端（index 不低于 {IDLE_FLOOR_MIN['index']:g} 分钟，"
+            f"冷加载太贵）；显存策略 {a.vram_policy}；"
             f"显存门槛 gsv={a.need_gsv_mb or DEFAULT_NEED_MB['gsv']}MB / "
             f"breeze={a.need_breeze_mb or DEFAULT_NEED_MB['breeze']}MB / "
-            f"index={DEFAULT_NEED_MB['index']}MB；日志 {a.log_dir}）")
+            f"index={a.need_index_mb or DEFAULT_NEED_MB['index']}MB；日志 {a.log_dir}）")
         sup.start_reaper()
     else:
         log("supervisor: off（老行为，后端自己管自己）")

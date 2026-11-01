@@ -102,9 +102,15 @@ export async function onInbound(ctx, next) {
     const now = Date.now();
 
     // ── 1. 出招裁决（有对局且消息长得像招）——最高优先 ──
+    // [N3 2026-10-30] 限流前置：原来 applyMove（LLM 游戏会真调一次本地模型）先跑、
+    //   rateOk 后查——被限流的出招也白烧一次模型调用还推进了状态。
+    //   现在先判「有对局且像招」，限流通过才让 applyMove 干活。
+    const s0 = activeOf(dataRoot, scope, peerId);
+    if (s0 && engineOf(s0.kind)?.match?.(text)) {
+      if (!rateOk(key, now)) return next();   // 限流兜底：宁可让 AI 看见也别刷屏
+    }
     const move = await applyMove(dataRoot, scope, peerId, text, ctx.senderName || '');
     if (move.handled) {
-      if (!rateOk(key, now)) return next();   // 限流兜底：宁可让 AI 看见也别刷屏
       const ok = await localReply(ctx, move.reply, `游戏:${move.kind}`);
       if (ok) return;                          // 消灭成功，链到此为止（零 token）
       return next();                           // 发送失败 → 放行让 AI 兜

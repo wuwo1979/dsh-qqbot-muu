@@ -14,8 +14,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import * as B from '../lib/bili-api.mjs';
 import * as SH from '../lib/bili-share.mjs';
+
+const requireVendor = createRequire(import.meta.url); // vendor 里的 CJS 库（qrcode）
 
 const DATA_ROOT_FALLBACK = 'F:/qqbot/dshqqbot';
 
@@ -198,12 +201,20 @@ async function run(args = {}, env = {}) {
     try {
       writeFileSync(join(metaDir(root), 'bili-qr.json'), JSON.stringify({ key: q.key, ts: Date.now() }), 'utf8');
     } catch { /* ignore */ }
-    const png = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(q.url)}`;
+    // 2026-10-31 隐私复查：登录票据（q.url）不再发给第三方 qrserver 生成二维码，
+    // 改用本地 vendor/qrcode 渲染 PNG；失败则提示直接用登录链接。
+    const qrPath = join(metaDir(root), 'bili-qr.png');
+    let pngOk = false;
+    try {
+      const QRCode = requireVendor('../vendor/qrcode/node_modules/qrcode');
+      await QRCode.toFile(qrPath, q.url, { width: 300, margin: 1 });
+      pngOk = true;
+    } catch { /* 本地渲染失败就不发图，绝不外联 */ }
     return {
       ok: true,
       msg: lines([
         'B 站扫码登录已生成，二维码 3 分钟内有效。',
-        `请把这张图发给主人：[MEDIA:image|${png}]`,
+        ...(pngOk ? [`请把这张图发给主人：[MEDIA:image|${qrPath.replace(/\\/g, '/')}]`] : ['二维码本地渲染失败，请把下面的登录链接直接发给主人扫码。']),
         '扫完后调用 action=login_poll 查结果。',
         `（备用登录链接：${q.url}）`,
         '⚠️ 二维码里含一次性的登录票据，只发给主人本人，不要发群。',

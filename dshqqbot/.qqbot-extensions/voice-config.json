@@ -55,5 +55,13 @@
   "cooldownMs": 45000,
   "keepText": true,
   "timeoutMs": 300000,
-  "model": ""
+  "model": "index",
+  "vramSoft": true,
+  "_vramSoft说明": "显存不够也强启本地引擎（适配层 --vram-policy soft）：超出显存的部分走 Windows 共享显存（CUDA Sysmem Fallback），慢但能出声。6GB 卡上 IndexTTS-2.5 的 5300MB 预检门槛物理上达不到（桌面合成器自己吃 ~1GB），不开这个 IndexTTS 永远滑档。2026-10-28。",
+  "wslIndex": {
+    "_说明": "主人专属：用 WSL Linux 跑 IndexTTS2（默认关闭，不影响他人）。enabled=true 时本地语音只允许 index 引擎、完全拒绝 gsv/breeze/edge 降级。endpoint 是 WSL 里服务的地址（WSL2 localhost 直达 Windows）；refAudio 必须是 WSL 侧路径（/mnt/f/...）。安装：WSL 里跑 ~/projects/bot/setup-index.sh（一次性），日常 ~/projects/bot/start-index.sh。注意 WSL 与 Windows 共用同一块显卡，这里图的是 Linux 侧无桌面抢显存、CUDA 分页更干净。",
+    "enabled": false,
+    "endpoint": "http://127.0.0.1:9891",
+    "refAudio": "/mnt/f/qqbot/.models/tts-ref/ref_zh.wav"
+  }
 }

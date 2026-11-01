@@ -16,7 +16,7 @@
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { getPersonaValue, setPersona } from './memory.mjs';
+import { getPersonaValue, setPersona, listPersona } from './memory.mjs';
 // 兼容：inbound/aa-memory-recall.mjs 等从本模块取 getPersonaValue（2026-10-27 修：原先没再导出，整个记忆注入 hook 加载失败）
 export { getPersonaValue };
 
@@ -214,6 +214,8 @@ function parseFam(raw, cfg) {
     ts: 0,
     hist: [],
     nativeAt: 0,
+    talk: 0,   // v2(2026-10-31)：累计互动次数（bump 一次 +1）
+    last: 0,   // v2：最近一次互动时间戳（衰减按这个算）
   };
   const s = String(raw || '').trim();
   if (!s) return base;
@@ -227,6 +229,8 @@ function parseFam(raw, cfg) {
         ts: num(o.ts, 0),
         hist: Array.isArray(o.hist) ? o.hist.slice(-10) : [],
         nativeAt: num(o.nativeAt, 0),
+        talk: Math.max(0, Math.round(num(o.talk, 0))),
+        last: num(o.last, 0),
       };
     } catch { /* 坏 JSON 当备注 */ }
   }
@@ -328,6 +332,7 @@ export function getFamiliarity(dataRoot, scope, who = {}, cfg = {}) {
       key, scope: GLOBAL_SCOPE, a: f.a, t: f.t, s,
       level: levelOf(s), levelLabel: levelLabel(levelOf(s)),
       note: f.note, ts: f.ts || (v && v.ts) || 0, hist: f.hist || [],
+      talk: f.talk || 0, last: f.last || 0,   // v2：给 bump/展示层用
       phase: bondPhase(f.a, f.t),
       known: !!(f.ts || f.note || migrated || synced),
     };
@@ -343,6 +348,7 @@ export function setFamiliarity(dataRoot, scope, who = {}, patch = {}, cfg = {}) 
   try {
     const cur = getFamiliarity(dataRoot, scope, who, c) || {
       a: clamp(c.startAffinity, 0, 100), t: clamp(c.startTrust, 0, 100), note: '', ts: 0, hist: [], nativeAt: 0,
+      talk: 0, last: 0,
     };
     const next = {
       a: clamp(patch.a == null ? cur.a : patch.a, 0, 100),
@@ -351,6 +357,9 @@ export function setFamiliarity(dataRoot, scope, who = {}, patch = {}, cfg = {}) 
       ts: Date.now(),
       hist: Array.isArray(cur.hist) ? cur.hist.slice(-10) : [],
       nativeAt: num(patch.nativeAt, cur.nativeAt || 0),
+      // v2(2026-10-31)：累计互动次数 / 最近互动时间 —— 不传就保留旧值，写路径上绝不让它们凭空掉
+      talk: Math.max(0, Math.round(num(patch.talk, num(cur.talk, 0)))),
+      last: num(patch.last, num(cur.last, 0)),
     };
     if (patch.a != null || patch.t != null) {
       next.hist.push({ ts: next.ts, a: next.a, t: next.t, why: String(patch.why || 'set').slice(0, 24) });
@@ -380,6 +389,8 @@ export function bumpFamiliarity(dataRoot, scope, who = {}, { delta = 0, note = '
     note: String(note || cur.note || '').slice(0, 80),
     why: (d >= 0 ? '互动 +' : '互动 ') + d,
     nativeAt: cur.note ? undefined : cur.nativeAt,
+    talk: num(cur.talk, 0) + 1,   // v2：一次互动计一次（排行/活跃度用）
+    last: Date.now(),             // v2：最近互动时间，展示层衰减按这个算
   }, c);
   return r.ok ? { ...r, phase: bondPhase(r.a, r.t), delta: d } : r;
 }
@@ -392,6 +403,78 @@ export function getBond(dataRoot, scope, who = {}, cfg = {}) {
 /** 兼容旧名：bumpBond → fam */
 export function bumpBond(dataRoot, scope, who = {}, opts = {}, cfg = {}) {
   return bumpFamiliarity(dataRoot, scope, who, opts, cfg);
+}
+
+// ── v2.1(2026-10-31 主人口径)：好感度**不衰减** ──────────────────────────────
+// 口径：a/t 是「累计事实」，存储层永不下掉（认识过就是认识过）；
+//       展示层也不再降温 —— floor=1 ⇒ k 恒为 1，famEffective 退化为纯累计分。
+//       last/talk 保留：/pet 页仍显示「互动 N 次 · 已 X 天没聊」，只是不再扣分。
+export const FAM_DECAY = { halfLifeDays: 21, floor: 1 };
+
+/** 有效亲近/信任：按 last 距今做半衰期衰减（last=0 视为老数据不衰减） */
+export function famEffective(a, t, last = 0, now = Date.now()) {
+  const days = last > 0 ? Math.max(0, (now - last) / 86400000) : 0;
+  const k = FAM_DECAY.floor + (1 - FAM_DECAY.floor) * Math.pow(0.5, days / FAM_DECAY.halfLifeDays);
+  const ea = clamp(num(a, 0) * k, 0, 100);
+  const et = clamp(num(t, 0) * k, 0, 100);
+  const s = ea * 0.6 + et * 0.4;
+  const lv = levelOf(s);
+  return {
+    a: Math.round(ea), t: Math.round(et), s: Math.round(s * 10) / 10,
+    level: lv, levelLabel: levelLabel(lv),
+    daysIdle: Math.round(days * 10) / 10,
+  };
+}
+
+/**
+ * 好感度排行（/pet 页 💗 面板用）。跨全部个人层 fam 记录：
+ * listPersona 按 ts DESC → 同一人第一条即最新 → first-wins 去重 →
+ * famEffective 算有效分 → 名字从 chat 表反查（first-wins，最新的称呼优先）→ 按有效分排序。
+ * 任何一步失败都静默降级（名字留空，前端显示尾号），绝不抛异常。
+ */
+export async function topFamiliarity(dataRoot, { limit = 6 } = {}) {
+  try {
+    const rows = listPersona(dataRoot, { limit: 600, scopeFilter: GLOBAL_SCOPE });
+    if (!rows.length) console.warn('[profile-core] topFamiliarity: listPersona 返回 0 行 (dataRoot=' + String(dataRoot || '') + ')');
+    const seen = new Map();
+    for (const r of rows) {
+      if (!r.ckey || !r.ckey.startsWith(FAM_PREFIX)) continue;
+      const id = r.ckey.slice(FAM_PREFIX.length);
+      if (!id || seen.has(id)) continue;
+      seen.set(id, parseFam(r.cvalue, BOND_DEFAULTS));
+    }
+    if (!seen.size) { console.warn('[profile-core] topFamiliarity: persona 里没有 fam: 行 (rows=' + rows.length + ')'); return []; }
+    const now = Date.now();
+    const list = [];
+    for (const [id, f] of seen) {
+      const eff = famEffective(f.a, f.t, f.last || f.ts || 0, now);
+      list.push({
+        id, name: '', a: eff.a, t: eff.t, s: eff.s, level: eff.level, levelLabel: eff.levelLabel,
+        daysIdle: eff.daysIdle, talk: f.talk || 0, last: f.last || f.ts || 0, note: f.note || '',
+      });
+    }
+    // 名字反查：chat 表里这个人最近用过的昵称（聊天台账是自动采集的，比 fam.note 可靠）
+    try {
+      const { getHandle } = await import('./memory-db.mjs');
+      const h = getHandle(dataRoot);
+      const nameRows = h.db.prepare(
+        "SELECT sender_id, sender FROM chat WHERE sender_id <> '' AND sender <> '' AND sender <> sender_id"
+        + " AND sender NOT IN ('群友','对方','机器人') ORDER BY ts DESC LIMIT 4000"
+      ).all();
+      const nameOf = new Map();
+      for (const p of nameRows) {
+        const sid = String(p.sender_id || '').trim();
+        const nm = String(p.sender || '').trim();
+        if (sid && nm && !nameOf.has(sid)) nameOf.set(sid, nm);
+      }
+      for (const it of list) it.name = nameOf.get(it.id) || '';
+    } catch { /* 反查失败不阻塞排行 */ }
+    list.sort((x, y) => y.s - x.s || y.talk - x.talk);
+    return list.slice(0, Math.max(1, Math.min(20, Number(limit) || 6)));
+  } catch (e) {
+    console.warn('[profile-core] topFamiliarity 失败:', (e && e.stack) || e);
+    return [];
+  }
 }
 
 /**
@@ -490,5 +573,6 @@ export default {
   CARD_PREFIX, BOND_PREFIX, FAM_PREFIX, SLICE_PREFIX, MOOD_KEY, GLOBAL_SCOPE, getProfileCard, profileBlockFor, getMood, saveMood, moodBlockFor,
   getBond, bumpBond, bondBlockFor, bondPhase,
   getFamiliarity, setFamiliarity, bumpFamiliarity, familiarityBlockFor, compactBlockFor, readNativeFamiliarity, levelOf, levelLabel,
+  FAM_DECAY, famEffective, topFamiliarity,
   PROFILE_DEFAULTS, MOOD_DEFAULTS, BOND_DEFAULTS,
 };

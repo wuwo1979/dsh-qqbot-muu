@@ -1857,7 +1857,7 @@ window.__ModuleLoader__.load({
             inputRow('Agent 预设(人格): ', (function () { if (presets.length === 0 && !selInvalid) {
                 return h('span', { className: 'qqs-inp', style: { display: 'inline-block', verticalAlign: 'middle', padding: '5px 10px', fontSize: 12, color: '#e8590c', background: 'var(--qqs-warn-bg,#fff5f0)', borderRadius: 6 } }, '⚠️ 还没有任何 Agent 预设——请在下方②新建/复制一个')
               } return h('select', { className: 'qqs-inp', style: { width: 320, padding: '4px 8px' }, value: it.preset || '', onChange: function (e) { upd(i, { preset: e.target.value }) } }, opts.map(function (o) { return h('option', { key: o.id, value: o.id, style: selInvalid && o.id === it.preset ? { color: '#e03131' } : null }, o.label) })) })()),
-            inputRow('工作目录(各账号数据放这, 留空=默认): ', h('input', { className: 'qqs-inp', style: Object.assign({ width: '90%' }, st), value: it.cwd || '', onChange: function (e) { upd(i, { cwd: e.target.value }) }, placeholder: '如 D:\\bots\\二号机' })),
+            inputRow('工作目录(账号+记忆+好感度等数据都存这; 留空=默认; 首装想避开C盘可填, 如 D:\\bots\\二号机): ', h('input', { className: 'qqs-inp', style: Object.assign({ width: '90%' }, st), value: it.cwd || '', onChange: function (e) { upd(i, { cwd: e.target.value }) }, placeholder: '如 D:\\bots\\二号机' })),
             (function () {
               var ws = (workspaces || []).filter(function (w) { return w.path && w.count > 0 })
               if (ws.length === 0) return null
@@ -2580,10 +2580,12 @@ try { ensureDockCss9() } catch (e) {}
           .then(function (r) { if (tm) clearTimeout(tm); return r.json().catch(function () { return null }) })
           .catch(function () { if (tm) clearTimeout(tm); return null })
       }
-      function apiPost(path, body) {
-        // [qqbot-mod] api-timeout：POST 20 秒超时（下载类操作给宽些）
+      function apiPost(path, body, timeoutMs) {
+        // [qqbot-mod] api-timeout：POST 默认 20 秒超时（下载类操作给宽些）；
+        //   2026-10-29 支持第三参 —— 评论发送类要 40~110 秒（拟人间隔+回读校验），
+        //   巡检更久，以前 20s 一刀切 → 面板超时报「失败：?」，服务端其实已发出（实锤）
         var ac2 = (typeof AbortController !== 'undefined') ? new AbortController() : null
-        var tm2 = ac2 ? setTimeout(function () { try { ac2.abort() } catch (eT2) {} }, 20000) : null
+        var tm2 = ac2 ? setTimeout(function () { try { ac2.abort() } catch (eT2) {} }, timeoutMs || 20000) : null
         return fetch('/api/qqbot-settings/' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}), signal: ac2 ? ac2.signal : undefined })
           .then(function (r) { if (tm2) clearTimeout(tm2); return r.json().catch(function () { return null }) })
           .catch(function () { if (tm2) clearTimeout(tm2); return null })
@@ -3376,8 +3378,26 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
             + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
             + '<button class="dk-btn ok" id="dk-tts-apply" style="font-size:12px;padding:1px 10px">✔ 用这个方案</button>'
             + '<button class="dk-btn" id="dk-tts-probe" style="font-size:12px;padding:1px 10px">🔄 重新探测</button>'
+            // [qqbot-mod] vram-soft 2026-10-28：6GB 卡上 IndexTTS 要 5300MB 而整机空闲上限只有 ~5.1GB，
+            // strict 门槛物理上永远达不到 → 每次都滑档。开这个 = 显存不够也强启，超出部分走
+            // Windows 共享显存（CUDA Sysmem Fallback），慢但能出声。
+            + '<label style="display:inline-flex;gap:4px;align-items:center;font-size:11px;cursor:pointer;user-select:none" title="Windows 会把显存装不下的权重溢到共享显存（内存），不会 OOM——慢但能出声。6GB 卡上想用 IndexTTS-2.5 必开。">'
+            + '<input type="checkbox" id="dk-tts-vramsoft"' + (d.vramSoft ? ' checked' : '') + '> 显存不够也强启（共享显存兜底）</label>'
             + '<span class="dk-msg" id="dk-tts-hint" style="font-size:11px"></span></div>'
             + '<div style="font-size:11px;color:#868e96;line-height:1.6;margin-top:2px">适配层 ' + esc((d.adapter && d.adapter.endpoint) || '') + ' · ' + ((d.adapter && d.adapter.up) ? '在工作' : '没起') + '；方案切换只改 voice-config.json，下一条语音生效。</div>'
+          var vs = box.querySelector('#dk-tts-vramsoft')
+          if (vs) vs.onchange = async function () {
+            var hint = box.querySelector('#dk-tts-hint')
+            if (hint) { hint.style.color = '#2f9e44'; hint.textContent = '保存中…' }
+            try {
+              var r = await apiPost('tts-engines', { vramSoft: !!vs.checked })
+              if (hint) {
+                hint.style.color = (r && r.ok) ? '#2f9e44' : '#e03131'
+                hint.textContent = (r && r.ok) ? ((r.note || (vs.checked ? '已开启' : '已关闭')) + ' · 若适配层正在跑会自动按新策略重启') : ('失败：' + ((r && r.error) || '?'))
+              }
+              if (d) d.vramSoft = !!vs.checked
+            } catch (e) { if (hint) { hint.style.color = '#e03131'; hint.textContent = '失败：' + ((e && e.message) || e) } }
+          }
           var ap = box.querySelector('#dk-tts-apply')
           if (ap) ap.onclick = async function () {
             var sel = box.querySelector('input[name="dk-tts-engine"]:checked')
@@ -3680,6 +3700,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           + '对局状态落盘，15 分钟没动静自动收摊。会话里也可以让她开局/收摊（走 game 工具）。</div>'
         html += '<div style="font-size:12px;color:#555;margin:6px 0 2px">会玩的游戏：'
           + (k.length ? k.map(function (x) { return esc(x.title || x.id) }).join(' · ') : '（读取中…）') + '</div>'
+        html += petCompanionHtml()
         html += '<div style="font-weight:600;font-size:12px;margin:8px 0 2px">进行中的对局</div>'
         html += '<div class="dk-list" id="dk-games-list" style="min-height:40px"><div class="dk-empty">加载中…</div></div>'
         return html
@@ -3897,7 +3918,10 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         return { platform: v.platform, id: v.id, title: v.title, url: v.url, comment: cEl ? cEl.value : (state.video || {}).draft || '' }
       }
       function bindVideoRadar() {
-        if (!panel || state.tab !== 'video') return
+        // [qqbot-mod] ops-center 2026-10-30：评论中心 HTML 搬进「运营中心」页后，
+        //   评论/互动相关的绑定也要在 bili 页生效 —— 本函数同时服务 video+bili 两个页签，
+        //   每个元素都 if(el) 判空，创作台/运营中心各自只绑自己有的那部分。
+        if (!panel || (state.tab !== 'video' && state.tab !== 'bili')) return
         var go = panel.querySelector('#dk-vr-go')
         if (go) go.onclick = function () { vrPull(false) }
         var rd = panel.querySelector('#dk-vr-random')
@@ -3980,7 +4004,9 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         async function cwLoadList() {
           var out = panel.querySelector('#dk-vr-cw-out')
           if (out) out.innerHTML = '<i>读评论中…（自己已发布的视频，秒级）</i>'
-          var r = await apiPost('bili', { action: 'comment-list', limit: 10 }).catch(function (e) { return { ok: false, error: e.message } })
+          var r = await apiPost('bili', { action: 'comment-list', limit: 10,
+            sort: (panel.querySelector('#dk-vr-cw-sort') || {}).value || 'latest',
+            maxAgeHours: Number((panel.querySelector('#dk-vr-cw-age') || {}).value) || 0 }, 90000).catch(function (e) { return { ok: false, error: e.message } })
           if (!r || r.ok === false) { if (out) out.innerHTML = '<span style="color:#c2410c">读失败：' + esc((r && r.error) || '?') + '</span>'; return }
           state._cwItems = r.items || []
           cwListRender()
@@ -3998,7 +4024,8 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           if (!items.length) h += '<span style="color:#999">还没有评论 —— 视频发出去后这里会显示观众评论</span>'
           items.forEach(function (x, i) {
             if (x.error) { h += '<div style="padding:3px 0;color:#c2410c"><b>' + esc(x.title || '') + '</b> ' + esc(x.error) + '</div>'; return }
-            var stCol = x.status === '未回复' ? '#c2410c' : '#2f9e44'
+            // [qqbot-mod] self-supplement 2026-10-29：自己的评论用蓝色标出（补楼用），和待回复橙色区分
+            var stCol = x.self ? '#1d4ed8' : (x.status === '未回复' ? '#c2410c' : '#2f9e44')
             // [qqbot-mod] 2026-10-28 楼中楼：子评论缩进显示并标注「回谁」，可单独回复
             var indent = x.isSub ? 'margin-left:16px;border-left:2px solid #e4e7ec;padding-left:7px;' : 'border-bottom:1px dashed #eee;'
             var headTag = x.isSub
@@ -4006,7 +4033,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
               : '<b>' + esc(x.user || '') + '</b>' + (x.rcount > 0 ? '<span style="color:#98a2b3;font-size:10.5px"> 💬' + x.rcount + '</span>' : '')
             h += '<div style="' + indent + 'padding:4px 0">'
               + headTag
-              + '<span style="color:#98a2b3;font-size:10.5px"> 👍' + (x.likes || 0) + (x.isSub ? '' : ' · ' + esc(String(x.title || '').slice(0, 18))) + '</span>'
+              + '<span style="color:#98a2b3;font-size:10.5px"> 👍' + (x.likes || 0) + (x.at ? ' · ' + (function (t) { var d = new Date(t * 1000); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) })(x.at) : '') + (x.isSub ? '' : ' · ' + esc(String(x.title || '').slice(0, 18))) + '</span>'
               + '<span style="color:' + stCol + ';font-size:10.5px;margin-left:6px">[' + esc(x.status) + ']</span>'
               + '<div style="color:#344054;white-space:pre-wrap">' + esc(x.comment || '') + '</div>'
               + (x.prevReply ? '<div style="color:#2f9e44;font-size:11px">↳ 之前回过：' + esc(x.prevReply) + '</div>' : '')
@@ -4031,7 +4058,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
             if (!x0.aid) { if (dst) dst.textContent = '还没有已发布视频可评论'; return }
             if (!window.confirm('确认把这条评论直接发到 B 站视频《' + String(x0.title || '').slice(0, 24) + '》下？（公开可见）')) return
             dbtn.disabled = true; if (dst) dst.textContent = '发送中…（拟人间隔，可能等 20~90 秒）'
-            var rr = await apiPost('bili', { action: 'comment-reply', mode: 'send', commentVideo: true, aid: x0.aid, bvid: x0.bvid, rpid: '', message: msg, title: x0.title, via: (out.querySelector('#dk-vr-cw-model') || {}).value || 'cloud' }).catch(function (e) { return { ok: false, error: e.message } })
+            var rr = await apiPost('bili', { action: 'comment-reply', mode: 'send', commentVideo: true, aid: x0.aid, bvid: x0.bvid, rpid: '', message: msg, title: x0.title, imgPath: (state._cwSticker || {}).path || '', via: (out.querySelector('#dk-vr-cw-model') || {}).value || 'cloud' }, 180000).catch(function (e) { return { ok: false, error: e.message } })
             dbtn.disabled = false
             if (dst) dst.textContent = rr && rr.ok ? ('✓ 已发出' + (rr.verified ? '' : '（可能被折叠）')) : ('失败：' + ((rr && rr.error) || '?'))
             if (rr && rr.ok && inp) inp.value = ''
@@ -4044,7 +4071,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
               if (!msg.trim()) { var st0 = out.querySelector('[data-cwst="' + i + '"]'); if (st0) st0.textContent = '先写一句回复（或点「重生成草稿」让小蓝写）'; return }
               b.disabled = true; var st = out.querySelector('[data-cwst="' + i + '"]')
               if (st) st.textContent = '发送中…（拟人间隔，可能等 20~90 秒）'
-              var rr = await apiPost('bili', { action: 'comment-reply', mode: 'send', aid: x.aid, bvid: x.bvid, rpid: x.rpid, rootRpid: x.rootRpid, parentRpid: x.parentRpid, message: msg, user: x.user, comment: x.comment, title: x.title, via: (out.querySelector('#dk-vr-cw-model') || {}).value || 'cloud' }).catch(function (e) { return { ok: false, error: e.message } })
+              var rr = await apiPost('bili', { action: 'comment-reply', mode: 'send', aid: x.aid, bvid: x.bvid, rpid: x.rpid, rootRpid: x.rootRpid, parentRpid: x.parentRpid, message: msg, user: x.user, comment: x.comment, title: x.title, imgPath: (state._cwSticker || {}).path || '', via: (out.querySelector('#dk-vr-cw-model') || {}).value || 'cloud' }, 180000).catch(function (e) { return { ok: false, error: e.message } })
               b.disabled = false
               if (st) st.textContent = rr && rr.ok ? ('✓ 已回复' + (rr.verified ? '' : '（被折叠了，内容没丢）') + '：' + (rr.text || msg)) : ('失败：' + ((rr && rr.error) || '?'))
               if (rr && rr.ok) { x.status = rr.verified ? '已回复' : '已回复(被折叠)'; x.prevReply = rr.text || msg }
@@ -4056,7 +4083,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
               var x = (state._cwItems || [])[i]; if (!x) return
               b.disabled = true; var st = out.querySelector('[data-cwst="' + i + '"]')
               if (st) st.textContent = '小蓝在写…（本地模型几秒）'
-              var rr = await apiPost('bili', { action: 'comment-reply', mode: 'draft', aid: x.aid, bvid: x.bvid, rpid: x.rpid, rootRpid: x.rootRpid, parentRpid: x.parentRpid, message: '', user: x.user, comment: x.comment, title: x.title, via: (out.querySelector('#dk-vr-cw-model') || {}).value || 'cloud' }).catch(function (e) { return { ok: false, error: e.message } })
+              var rr = await apiPost('bili', { action: 'comment-reply', mode: 'draft', aid: x.aid, bvid: x.bvid, rpid: x.rpid, rootRpid: x.rootRpid, parentRpid: x.parentRpid, message: '', user: x.user, comment: x.comment, title: x.title, selfSupplement: !!x.self, via: (out.querySelector('#dk-vr-cw-model') || {}).value || 'cloud' }, 120000).catch(function (e) { return { ok: false, error: e.message } })
               b.disabled = false
               if (rr && rr.ok) {
                 var inp = out.querySelector('[data-cwmsg="' + i + '"]')
@@ -4070,14 +4097,171 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         if (cwDraft) cwDraft.onclick = async function () {
           var out = panel.querySelector('#dk-vr-cw-out')
           if (out) out.innerHTML = '<i>巡检中…（读评论 + 本地模型生回复，B站要一两分钟）</i>'
-          cwRender(await apiPost('bili', { action: 'comment-watch', auto: false }))
+          cwRender(await apiPost('bili', { action: 'comment-watch', auto: false,
+            sort: (panel.querySelector('#dk-vr-cw-sort') || {}).value || 'latest',
+            maxAgeHours: Number((panel.querySelector('#dk-vr-cw-age') || {}).value) || 0,
+            withSub: !(panel.querySelector('#dk-vr-cw-sub') || {}).checked ? false : true }, 600000))
         }
         var cwAuto = panel.querySelector('#dk-vr-cw-auto')
         if (cwAuto) cwAuto.onclick = async function () {
           if (!window.confirm('确认自动回复 B 站评论？会用小蓝口吻直接发公开回复（每次最多 3 条，已回复过的不会再回）。')) return
           var out = panel.querySelector('#dk-vr-cw-out')
           if (out) out.innerHTML = '<i>巡检+回复中…（拟人间隔防折叠，最多等几分钟）</i>'
-          cwRender(await apiPost('bili', { action: 'comment-watch', auto: true }))
+          cwRender(await apiPost('bili', { action: 'comment-watch', auto: true,
+            sort: (panel.querySelector('#dk-vr-cw-sort') || {}).value || 'latest',
+            maxAgeHours: Number((panel.querySelector('#dk-vr-cw-age') || {}).value) || 0,
+            withSub: !(panel.querySelector('#dk-vr-cw-sub') || {}).checked ? false : true }, 600000))
+        }
+        var cwStickerBtn = panel.querySelector('#dk-vr-cw-sticker')
+        if (cwStickerBtn) cwStickerBtn.onclick = async function () {
+          // [qqbot-mod] sticker-img 2026-10-29：表情包选择器 —— 列库（id/描述），点选后换白名单路径
+          var out = panel.querySelector('#dk-vr-cw-out')
+          if (out) out.innerHTML = '<i>读表情包库…</i>'
+          var r = await apiPost('bili', { action: 'sticker-list' })
+          if (!r || !r.ok) { if (out) out.innerHTML = '<span style="color:#c2410c">表情包库读取失败：' + esc((r && r.error) || '?') + '</span>'; return }
+          if (!r.items || !r.items.length) { if (out) out.innerHTML = '<span style="color:#999">表情包库是空的（把图放进 表情包/lib/ 后重建索引）</span>'; return }
+          // [qqbot-mod] 2026-10-29 主人需求：贴原图预览，不是纯文字——人看不来文字对的是哪张图
+          var stkQ = (state.ns ? '?ns=' + encodeURIComponent(state.ns) + '&' : '?')
+          out.innerHTML = '<div style="font-weight:700;font-size:12px;margin:2px 0">🎞 选一张（点选后本页所有评论/回复都带上；再点可取消）</div>'
+            + '<div style="display:flex;gap:6px;flex-wrap:wrap;max-height:260px;overflow:auto;padding:2px">' +
+            r.items.map(function (s) {
+              return '<button class="dk-btn" data-stk="' + esc(s.id) + '" data-layer="' + esc(s.layer) + '" title="' + esc(s.tags || '') + '" style="padding:0;background:none;border:2px solid transparent;border-radius:8px;cursor:pointer;overflow:hidden">'
+                + '<img src="/api/qqbot-settings/cw-sticker-img' + stkQ + 'id=' + encodeURIComponent(s.id) + '" alt="' + esc(s.desc || s.id) + '" style="width:64px;height:64px;object-fit:cover;display:block" loading="lazy">'
+                + '<div style="font-size:9.5px;color:#667085;max-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;padding:0 2px">' + esc(s.desc || s.tags || s.id.slice(0, 8)) + '</div>'
+                + '</button>'
+            }).join('') + '</div>'
+          out.querySelectorAll('[data-stk]').forEach(function (b) {
+            b.onclick = async function () {
+              var itemId = b.getAttribute('data-stk')
+              if (state._cwSticker && state._cwSticker.itemId === itemId) {
+                state._cwSticker = null
+                b.style.borderColor = 'transparent'
+                var stEl = panel.querySelector('#dk-vr-cw-sticker-st')
+                if (stEl) stEl.textContent = '未选 —— 选中后本页所有评论/回复都会带上这张图'
+                cwStickerBtn.textContent = '🎞 评论带表情包'
+                return
+              }
+              // 高亮当前选中、取消其它的高亮（一眼看出选的是哪张）
+              out.querySelectorAll('[data-stk]').forEach(function (x) { x.style.borderColor = 'transparent' })
+              b.style.borderColor = '#1c7ed6'
+              var pr = await apiPost('bili', { action: 'sticker-path', itemId: itemId })
+              if (!pr || !pr.ok) { if (out) out.innerHTML += '<div style="color:#c2410c">取路径失败：' + esc((pr && pr.error) || '?') + '</div>'; return }
+              state._cwSticker = { itemId: itemId, path: pr.path }
+              var stEl2 = panel.querySelector('#dk-vr-cw-sticker-st')
+              if (stEl2) stEl2.innerHTML = '✓ 已选：<img src="/api/qqbot-settings/cw-sticker-img' + stkQ + '&id=' + encodeURIComponent(itemId) + '" style="width:24px;height:24px;object-fit:cover;border-radius:4px;vertical-align:-6px"> （发送时自动传图；再点一次取消）'
+              cwStickerBtn.textContent = '🎞 已选表情包（再点取消）'
+            }
+          })
+        }
+        var cwTabs = panel.querySelector('#dk-vr-cw-tabs')
+        if (cwTabs) cwTabs.onclick = function (ev) {
+          // [qqbot-mod] 2026-10-29 页签切换：高亮当前页签 + 切内容区；首次进收件箱自动拉一次
+          var b = ev.target && ev.target.closest ? ev.target.closest('[data-ctab]') : null
+          if (!b) return
+          var tab = b.getAttribute('data-ctab')
+          state._cwTab = tab
+          cwTabs.querySelectorAll('[data-ctab]').forEach(function (x) {
+            var on = x.getAttribute('data-ctab') === tab
+            x.style.background = on ? '#eef4ff' : ''
+            x.style.borderColor = on ? '#1c7ed6' : ''
+            x.style.color = on ? '#1d4ed8' : ''
+            x.style.fontWeight = on ? '700' : ''
+          })
+          ;['feed', 'list', 'dy'].forEach(function (t) {
+            var p = panel.querySelector('#dk-vr-cw-pane-' + t)
+            if (p) p.style.display = t === tab ? '' : 'none'
+          })
+          if (tab === 'feed' && !state._cwFeedLoaded) {
+            state._cwFeedLoaded = true
+            var fb = panel.querySelector('#dk-vr-cw-feed')
+            if (fb) fb.click()
+          }
+        }
+        var cwFeed = panel.querySelector('#dk-vr-cw-feed')
+        if (cwFeed) cwFeed.onclick = async function () {
+          // [qqbot-mod] 2026-10-29「回复我的」收件箱：B 站消息中心的全量通知，别人回复我评论一条不漏
+          var out = panel.querySelector('#dk-vr-cw-out')
+          if (out) out.innerHTML = '<i>读「回复我的」通知中…（B 站消息中心，秒级）</i>'
+          var r = await apiPost('bili', { action: 'reply-feed', limit: 15 }, 60000)
+          if (!r || !r.ok) { if (out) out.innerHTML = '<span style="color:#c2410c">读取失败：' + esc((r && (r.error || r.needLogin && '登录已失效，先在 B 站区重新扫码')) || '?') + '</span>'; return }
+          var rows = r.rows || []
+          if (!rows.length) { if (out) out.innerHTML = '<span style="color:#999">（还没有「回复我的」通知）</span>'; return }
+          out.innerHTML = '<div style="font-weight:700;font-size:12px;margin:2px 0">📬 回复我的（' + rows.length + ' 条，B 站消息中心）</div>' +
+            rows.map(function (x, i) {
+              if (x.kind !== 'reply') {
+                return '<div style="border-bottom:1px dashed #eee;padding:3px 0;color:#98a2b3;font-size:11px">' + esc(x.user) + ' · ' + esc(x.kind) + ' · <a href="' + esc(x.bvid ? 'https://www.bilibili.com/video/' + x.bvid : '#') + '" target="_blank" style="color:#7aa2f7">' + esc(x.myText || x.replyText || '查看') + '</a></div>'
+              }
+              var fixed = !x.canReply
+              return '<div style="border:1px solid #eef0f4;border-radius:6px;padding:4px 6px;margin:3px 0">'
+                + '<b style="color:#475467">' + esc(x.user) + '</b>'
+                + '<span style="color:#98a2b3;font-size:10.5px"> 回复了你的评论 · ' + (x.at ? new Date(x.at).toLocaleString() : '') + '</span>'
+                // [qqbot-mod] feed-status 2026-10-29：已回复状态徽标 —— 防止看不出回过而重复回复
+                + (x.feedStatus ? '<span style="color:' + (x.feedStatus === '有草稿' ? '#b54708' : '#2f9e44') + ';font-size:10.5px;font-weight:700"> [' + esc(x.feedStatus) + ']</span>' : '')
+                + '<div style="color:#1d4ed8;font-size:11.5px;margin:1px 0">你的原文：' + esc(x.myText || '（无）') + '</div>'
+                + '<div style="color:#344054;white-space:pre-wrap">' + esc(x.replyText || '（图片/表情，无文字）') + '</div>'
+                + (x.prevReply ? '<div style="color:#2f9e44;font-size:11px;margin:1px 0">你回过：' + esc(x.prevReply) + '</div>' : '')
+                + (fixed
+                  ? '<div style="color:#98a2b3;font-size:10.5px;margin:2px 0">（定位信息不全，去 B 站 App 里回）</div>'
+                  : '<div style="display:flex;gap:4px;margin:3px 0;align-items:center;flex-wrap:wrap">'
+                    + '<input data-feedmsg="' + i + '" placeholder="回复 ' + esc(x.user) + '…（可让小蓝写）" style="flex:1;min-width:170px;font-size:11.5px;padding:3px 5px;border:1px solid #d0d5dd;border-radius:5px">'
+                    + '<button class="dk-btn" data-feedgen="' + i + '" style="font-size:10.5px;padding:1px 7px">🪄 小蓝写</button>'
+                    + '<button class="dk-btn ok" data-feedsend="' + i + '" style="font-size:10.5px;padding:1px 7px">📨 回复TA</button>'
+                    + '</div><div data-feedst="' + i + '" style="font-size:10.5px;color:#667085"></div>')
+                + '</div>'
+            }).join('')
+          // [qqbot-mod] 2026-10-29：🪄 小蓝写 —— 和其他回复入口同一套性格引擎（genReply），
+          //   语境=「对方回复了你的这条评论」，按小蓝口吻生成填进输入框，不满意可再点一次
+          out.querySelectorAll('[data-feedgen]').forEach(function (b) {
+            b.onclick = async function () {
+              var i = Number(b.getAttribute('data-feedgen'))
+              var x = rows[i]; if (!x) return
+              b.disabled = true
+              var st = out.querySelector('[data-feedst="' + i + '"]')
+              if (st) st.textContent = '小蓝在想怎么接这句话…（云端几秒，本地十来秒）'
+              var rr = await apiPost('bili', {
+                action: 'comment-reply', mode: 'draft', aid: x.oid, rpid: x.parentRpid,
+                rootRpid: x.rootRpid, parentRpid: x.parentRpid, message: '',
+                user: x.user, comment: x.replyText, title: '', myText: x.myText,
+                selfSupplement: false, via: 'cloud',
+              }, 120000).catch(function (e) { return { ok: false, error: e.message } })
+              b.disabled = false
+              if (rr && rr.ok && rr.text) {
+                var inp = out.querySelector('[data-feedmsg="' + i + '"]')
+                if (inp) inp.value = rr.text
+                // [qqbot-mod] feed-status：这条已经回过时如实告诉主人（文案照给，发不发自己定）
+                if (st) st.textContent = rr.alreadyReplied
+                  ? '⚠ 这条你之前已回过（' + (rr.prevReply || '见台账') + '）——文案已填入，确认要再发再点「📨 回复TA」'
+                  : '✓ 草稿已填入（不满意再点一次，或自己改完点「📨 回复TA」）'
+              } else if (st) st.textContent = '生成失败：' + ((rr && rr.error) || '?')
+            }
+          })
+          out.querySelectorAll('[data-feedsend]').forEach(function (b) {
+            b.onclick = async function () {
+              var i = Number(b.getAttribute('data-feedsend'))
+              var x = rows[i]; if (!x) return
+              var msg = (out.querySelector('[data-feedmsg="' + i + '"]') || {}).value || ''
+              if (!msg.trim()) { var s0 = out.querySelector('[data-feedst="' + i + '"]'); if (s0) s0.textContent = '先写一句'; return }
+              b.disabled = true
+              var st = out.querySelector('[data-feedst="' + i + '"]')
+              if (st) st.textContent = '发送中…（拟人间隔，最多等一两分钟' + (state._cwSticker ? '；含表情包上传' : '') + '）'
+              var rr = await apiPost('bili', {
+                action: 'comment-reply', mode: 'send', aid: x.oid, rpid: x.parentRpid,
+                rootRpid: x.rootRpid, parentRpid: x.parentRpid, message: msg,
+                imgPath: (state._cwSticker || {}).path || '',
+                title: '回复我的收件箱', via: 'cloud',
+              }, 180000).catch(function (e) { return { ok: false, error: e.message } })
+              b.disabled = false
+              if (st) st.textContent = rr && rr.ok ? ('✓ 已回复' + (rr.verified ? '' : '（可能被折叠）')) : ('失败：' + ((rr && rr.error) || '?'))
+              if (rr && rr.ok) {
+                // [qqbot-mod] feed-status：本地同步状态，重拉前 UI 也不会再显示成未回
+                x.feedStatus = rr.verified ? '已回复' : '已回复(被折叠)';
+                x.prevReply = msg;
+                var inp = out.querySelector('[data-feedmsg="' + i + '"]')
+                if (inp) inp.value = ''
+                if (state._cwSticker) { state._cwSticker = null; var sE = panel.querySelector('#dk-vr-cw-sticker-st'); if (sE) sE.textContent = '未选 —— 选中后本页所有评论/回复都会带上这张图'; var sB = panel.querySelector('#dk-vr-cw-sticker'); if (sB) sB.textContent = '🎞 评论带表情包' }
+              }
+            }
+          })
         }
         var cwList = panel.querySelector('#dk-vr-cw-list')
         if (cwList) cwList.onclick = async function () {
@@ -4097,6 +4281,169 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           var out = panel.querySelector('#dk-vr-cw-out')
           if (out) out.innerHTML = '<i>读抖音评论中…（a_bogus 本地签名，几秒；风控冷却时会明说）</i>'
           cwRender(await apiPost('bili', { action: 'douyin-comment-watch', url: url }))
+        }
+        // [qqbot-mod] dy-patrol 2026-10-30：手动巡检互动消息 → 没出过草稿的自动生成回复草稿
+        var cwDyPatrol = panel.querySelector('#dk-vr-dy-patrol')
+        if (cwDyPatrol) cwDyPatrol.onclick = async function () {
+          var out = panel.querySelector('#dk-vr-cw-out')
+          if (out) out.innerHTML = '<i>巡检互动消息中…（拉通知流 + 给新评论写文案，一条几秒）</i>'
+          cwDyPatrol.disabled = true
+          var r = await apiPost('bili', { action: 'douyin-patrol', maxNew: 3 }, 180000).catch(function (e) { return { ok: false, error: e.message } })
+          cwDyPatrol.disabled = false
+          if (!r || !r.ok) {
+            if (out) out.innerHTML = (r && r.needCookie)
+              ? '<span style="color:#c2410c">抖音登录已失效（用户未登录）——去上方「抖音」重新粘一次 Cookie 就能巡检了</span>'
+              : '<span style="color:#c2410c">巡检失败：' + esc((r && r.error) || '?') + '</span>'
+            return
+          }
+          if (out) out.innerHTML = '<div style="font-weight:700;font-size:12px;margin:2px 0">⚡ 巡检完成：互动 ' + (r.checked || 0) + ' 条，待写 ' + (r.pending || 0) + ' 条，新草稿 ' + (r.drafted || 0) + ' 条</div>'
+            + (r.results || []).map(function (x) {
+              return '<div style="border:1px solid #eef0f4;border-radius:6px;padding:4px 6px;margin:3px 0">'
+                + '<b style="color:#475467">' + esc(x.user || '抖音网友') + '</b>'
+                + '<div style="color:#344054;white-space:pre-wrap">' + esc(x.comment || '') + '</div>'
+                + '<div style="color:#1c7ed6;font-size:11px">草稿：' + esc(x.reply || '') + '</div>'
+                + '</div>'
+            }).join('')
+            + '<div style="font-size:10.5px;color:#667085">' + esc(r.note || '草稿已存进待审队列；去「📬 评论收件箱」复制手动发') + '</div>'
+        }
+        // [qqbot-mod] 2026-10-30 运营中心「发动态」——以前只有聊天指令能发，浮窗发不了
+        var dynPostBtn = panel.querySelector('#dk-dyn-post')
+        if (dynPostBtn) dynPostBtn.onclick = async function () {
+          var txt = (panel.querySelector('#dk-dyn-text') || {}).value || ''
+          var hint = panel.querySelector('#dk-dyn-hint')
+          if (!txt.trim()) { if (hint) { hint.style.color = '#c2410c'; hint.textContent = '先写点内容再发'; } return }
+          if (!confirm('确认发这条 B 站动态？（发出去就是公开的）')) return
+          dynPostBtn.disabled = true
+          if (hint) { hint.style.color = '#667085'; hint.textContent = '发送中…' }
+          var r = await apiPost('bili', { action: 'bili-dyn-post', text: txt }, 60000).catch(function (e) { return { ok: false, error: e.message } })
+          dynPostBtn.disabled = false
+          if (hint) {
+            hint.style.color = r && r.ok ? '#2f9e44' : '#c2410c'
+            hint.innerHTML = (r && r.ok)
+              ? '已发出 ✓ <a href="https://t.bilibili.com/' + esc(r.dynamicId || '') + '" target="_blank" style="color:#1c7ed6">打开动态</a>（可在「📰 动态」里删）'
+              : '发送失败：' + esc((r && (r.error || (r.err && r.err.human) || r.err)) || '?')
+          }
+          if (r && r.ok) { var ta = panel.querySelector('#dk-dyn-text'); if (ta) ta.value = '' }
+        }
+        var cwDyFeed = panel.querySelector('#dk-vr-dy-feed')
+        if (cwDyFeed) cwDyFeed.onclick = async function () {
+          // [qqbot-mod] dy-interact 2026-10-29：抖音「互动消息」——消息中心式，
+          //   谁评论/回复了我全在这；回复终点=小蓝写文案→复制→人去视频页手发
+          var out = panel.querySelector('#dk-vr-cw-out')
+          if (out) out.innerHTML = '<i>读抖音互动消息中…（消息中心接口，几秒）</i>'
+          var r = await apiPost('bili', { action: 'douyin-feed', count: 15 }, 60000)
+          if (!r || !r.ok) {
+            var msg = (r && (r.error || '?')) || '?'
+            if (out) out.innerHTML = r && r.needCookie
+              ? '<span style="color:#c2410c">抖音登录已失效（用户未登录）——去上方「抖音登录」重新粘一次 Cookie 就能看互动消息了</span>'
+              : '<span style="color:#c2410c">读取失败：' + esc(msg) + '</span>'
+            return
+          }
+          var rows = r.rows || []
+          if (!rows.length) { if (out) out.innerHTML = '<span style="color:#999">' + esc(r.note || '（还没有新的互动消息）') + '</span>'; return }
+          out.innerHTML = '<div style="font-weight:700;font-size:12px;margin:2px 0">💬 抖音互动消息（' + rows.length + ' 条 · 回复=小蓝写文案，你复制手动发）</div>'
+            + rows.map(function (x, i) {
+              return '<div style="border:1px solid #eef0f4;border-radius:6px;padding:4px 6px;margin:3px 0">'
+                + '<b style="color:#475467">' + esc(x.user || '抖音网友') + '</b>'
+                + '<span style="color:#98a2b3;font-size:10.5px"> ' + (x.at ? new Date(x.at).toLocaleString() : '') + '</span>'
+                + (x.sent ? '<span style="color:#2f9e44;font-size:10.5px;font-weight:700"> [已发✓]</span>' : (x.draftText ? '<span style="color:#b54708;font-size:10.5px;font-weight:700"> [有草稿]</span>' : ''))
+                + '<div style="color:#344054;white-space:pre-wrap">' + esc(x.text || '（图片/表情，无文字）') + '</div>'
+                + (x.draftText ? '<div style="color:#1c7ed6;font-size:11px">草稿：' + esc(x.draftText) + '</div>' : '')
+                + (x.awemeId
+                  ? '<div style="display:flex;gap:4px;margin:3px 0;align-items:center;flex-wrap:wrap">'
+                    + '<input data-fdmsg="' + i + '" placeholder="小蓝写完填这里，也可自己改" style="flex:1;min-width:170px;font-size:11.5px;padding:3px 5px;border:1px solid #d0d5dd;border-radius:5px">'
+                    + '<button class="dk-btn" data-fdgen="' + i + '" style="font-size:10.5px;padding:1px 7px">🪄 小蓝写</button>'
+                    + '<button class="dk-btn ok" data-fdcopy="' + i + '" style="font-size:10.5px;padding:1px 7px">📋 复制去发</button>'
+                    + '<a href="' + esc(x.videoUrl) + '" target="_blank" style="font-size:10.5px;color:#7aa2f7">▶ 视频页</a>'
+                    + '</div>'
+                  : '<div style="color:#98a2b3;font-size:10.5px">（定位信息不全，去抖音 App 里回）</div>')
+                + '<div data-fdst="' + i + '" style="font-size:10.5px;color:#667085"></div>'
+                + '</div>'
+            }).join('')
+          out.querySelectorAll('[data-fdgen]').forEach(function (b) {
+            b.onclick = async function () {
+              var i = Number(b.getAttribute('data-fdgen'))
+              var x = rows[i]; if (!x) return
+              b.disabled = true
+              var st = out.querySelector('[data-fdst="' + i + '"]')
+              if (st) st.textContent = '小蓝在想怎么接…（云端几秒）'
+              var rr = await apiPost('bili', { action: 'douyin-gen', awemeId: x.awemeId, user: x.user, comment: x.text, via: 'cloud' }, 120000).catch(function (e) { return { ok: false, error: e.message } })
+              b.disabled = false
+              if (rr && rr.ok && rr.text) {
+                var inp = out.querySelector('[data-fdmsg="' + i + '"]')
+                if (inp) inp.value = rr.text
+                x.draftText = rr.text
+                if (st) st.textContent = '✓ 文案已生成并存进待审队列（不满意再点一次）'
+              } else if (st) st.textContent = '生成失败：' + ((rr && rr.error) || '?')
+            }
+          })
+          out.querySelectorAll('[data-fdcopy]').forEach(function (b) {
+            b.onclick = async function () {
+              var i = Number(b.getAttribute('data-fdcopy'))
+              var x = rows[i]; if (!x) return
+              var msg = (out.querySelector('[data-fdmsg="' + i + '"]') || {}).value || x.draftText || ''
+              var st = out.querySelector('[data-fdst="' + i + '"]')
+              if (!msg.trim()) { if (st) st.textContent = '没有文案可复制——先点「🪄 小蓝写」或自己写一句'; return }
+              try { await navigator.clipboard.writeText(msg); if (st) st.textContent = '✓ 已复制——去视频页粘进评论框发出去' }
+              catch (e) { if (st) st.textContent = '复制失败（浏览器限制）：手动选中输入框里的文字 Ctrl+C' }
+            }
+          })
+        }
+        var cwDyInbox = panel.querySelector('#dk-vr-dy-inbox')
+        if (cwDyInbox) cwDyInbox.onclick = async function () {
+          // [qqbot-mod] dy-inbox 2026-10-29：抖音收件箱 —— 贴过一次链接的视频评论全在这，
+          //   回复=小蓝写文案→复制→人去视频页手发（抖音写接口必风控，不做自动发）
+          var out = panel.querySelector('#dk-vr-cw-out')
+          if (out) out.innerHTML = '<i>读抖音收件箱中…（关注清单里的视频逐个拉评论，几秒~十几秒）</i>'
+          var r = await apiPost('bili', { action: 'douyin-inbox', limit: 12 }, 90000)
+          if (!r || !r.ok) { if (out) out.innerHTML = '<span style="color:#c2410c">读取失败：' + esc((r && r.error) || '?') + '</span>'; return }
+          var items = r.items || []
+          if (!items.length) { if (out) out.innerHTML = '<span style="color:#999">' + esc(r.note || '（收件箱是空的）') + '</span>'; return }
+          out.innerHTML = '<div style="font-weight:700;font-size:12px;margin:2px 0">🎵 抖音收件箱（' + items.length + ' 条评论 · 回复=小蓝写文案，你复制手动发）</div>'
+            + (r.errors && r.errors.length ? '<div style="color:#b54708;font-size:10.5px">' + r.errors.length + ' 个视频没拉到（' + esc((r.errors[0] || {}).error || '') + '）</div>' : '')
+            + items.map(function (x, i) {
+              return '<div style="border:1px solid #eef0f4;border-radius:6px;padding:4px 6px;margin:3px 0">'
+                + '<b style="color:#475467">' + esc(x.user || '抖音网友') + '</b>'
+                + '<span style="color:#98a2b3;font-size:10.5px"> 评论了《' + esc(x.title || x.awemeId) + '》 · ' + (x.at ? new Date(x.at).toLocaleString() : '') + ' · 👍' + (x.likes || 0) + '</span>'
+                + (x.sent ? '<span style="color:#2f9e44;font-size:10.5px;font-weight:700"> [已发✓]</span>' : (x.draftText ? '<span style="color:#b54708;font-size:10.5px;font-weight:700"> [有草稿]</span>' : ''))
+                + '<div style="color:#344054;white-space:pre-wrap">' + esc(x.comment || '') + '</div>'
+                + (x.draftText ? '<div style="color:#1c7ed6;font-size:11px">草稿：' + esc(x.draftText) + '</div>' : '')
+                + '<div style="display:flex;gap:4px;margin:3px 0;align-items:center;flex-wrap:wrap">'
+                + '<input data-dymsg="' + i + '" placeholder="小蓝写完填这里，也可自己改" style="flex:1;min-width:170px;font-size:11.5px;padding:3px 5px;border:1px solid #d0d5dd;border-radius:5px">'
+                + '<button class="dk-btn" data-dygen="' + i + '" style="font-size:10.5px;padding:1px 7px">🪄 小蓝写</button>'
+                + '<button class="dk-btn ok" data-dycopy="' + i + '" style="font-size:10.5px;padding:1px 7px">📋 复制去发</button>'
+                + '<a href="' + esc(x.videoUrl) + '" target="_blank" style="font-size:10.5px;color:#7aa2f7">▶ 视频页</a>'
+                + '</div><div data-dyst="' + i + '" style="font-size:10.5px;color:#667085"></div>'
+                + '</div>'
+            }).join('')
+          out.querySelectorAll('[data-dygen]').forEach(function (b) {
+            b.onclick = async function () {
+              var i = Number(b.getAttribute('data-dygen'))
+              var x = items[i]; if (!x) return
+              b.disabled = true
+              var st = out.querySelector('[data-dyst="' + i + '"]')
+              if (st) st.textContent = '小蓝在想怎么接…（云端几秒，本地十来秒）'
+              var rr = await apiPost('bili', { action: 'douyin-gen', awemeId: x.awemeId, user: x.user, comment: x.comment, title: x.title, via: 'cloud' }, 120000).catch(function (e) { return { ok: false, error: e.message } })
+              b.disabled = false
+              if (rr && rr.ok && rr.text) {
+                var inp = out.querySelector('[data-dymsg="' + i + '"]')
+                if (inp) inp.value = rr.text
+                x.draftText = rr.text
+                if (st) st.textContent = '✓ 文案已生成并存进待审队列（不满意再点一次，或自己改）'
+              } else if (st) st.textContent = '生成失败：' + ((rr && rr.error) || '?')
+            }
+          })
+          out.querySelectorAll('[data-dycopy]').forEach(function (b) {
+            b.onclick = async function () {
+              var i = Number(b.getAttribute('data-dycopy'))
+              var x = items[i]; if (!x) return
+              var msg = (out.querySelector('[data-dymsg="' + i + '"]') || {}).value || x.draftText || ''
+              var st = out.querySelector('[data-dyst="' + i + '"]')
+              if (!msg.trim()) { if (st) st.textContent = '没有文案可复制——先点「🪄 小蓝写」或自己写一句'; return }
+              try { await navigator.clipboard.writeText(msg); if (st) st.textContent = '✓ 已复制——去视频页粘进评论框发出去；发完回来这里的状态下次刷新时会照旧（抖音无法自动感知你发没发）' }
+              catch (e) { if (st) st.textContent = '复制失败（浏览器限制）：手动选中输入框里的文字 Ctrl+C' }
+            }
+          })
         }
       }
       function bindLlmButtons() {
@@ -4130,7 +4477,140 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         }
         loadModels()
       }
+      // ── 🐋 陪玩·桌宠双形态（补丁 pet-companion v2 2026-10-31） ──
+      // 数据来自 hooks/pet-panel.mjs（/api/qqbot-settings/pet-anim）：
+      //   GET  → {form, forms:[{id,label,emoji,petId,active}], anims:[{name,label}], petOn}
+      //   POST → {action:'switch-form',target} / {action:'random'} / {name} / {action:'pet-display',on}
+      // 视频素材走 dsh-pet 的 /dsh-pet-7340/thumb/<petId>/<动画名>.webm（要 ?token=，从地址栏取）。
+      var PET_STATE = { form: 'xiaolan', forms: [], anims: [] }
+      function petMediaUrl(formId, name) {
+        // 2026-11-01：改走 pet-panel.mjs 的服务端代理（不依赖地址栏 token ——
+        // 以前直连 dsh-pet /thumb 取不到 token 时视频永远空白，这就是「完全不显示」的根因）
+        return '/api/qqbot-settings/pet-media?form=' + encodeURIComponent(formId) + '&name=' + encodeURIComponent(name)
+      }
+      function petCompanionHtml() {
+        var html = '<div class="dk-row" style="font-weight:700;font-size:13px;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 2px">'
+          + '<span>🐋 桌宠·多形态</span>'
+          + '<span class="q-pill ok">零模型 · 纯动作</span>'
+          + '<button class="dk-btn" id="dk-pet-toggle" style="font-size:12px;padding:2px 10px;margin-left:auto">⏻ 关闭桌宠</button>'
+          + '</div>'
+        html += '<div id="dk-pet-box"><div class="dk-msg" style="font-size:11px;color:#888">桌宠面板加载中…（宿主没启动时会提示原因，不会一直空着）</div></div>'
+        html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6;margin:4px 0 0">点动作按钮 = 桌面上的桌宠立刻做这个动作；右上按钮整体开关桌宠；手机/平板也能用网页版（见浮窗页脚地址）。</div>'
+        return html
+      }
+      function petRender() {
+        var box = panel && panel.querySelector('#dk-pet-box')
+        if (!box) return
+        var f = PET_STATE.form || 'xiaolan'
+        var off = PET_STATE.petOn === false
+        var tabs = ''
+        for (var i = 0; i < PET_STATE.forms.length; i++) {
+          var x = PET_STATE.forms[i]
+          tabs += '<button class="dk-btn" data-pet-form="' + esc(x.id) + '" style="font-size:12px;padding:2px 10px'
+            + (x.active ? ';font-weight:700' : '') + '">' + esc(x.emoji + ' ' + x.label) + (x.active ? '（当前）' : '') + '</button>'
+        }
+        var btns = ''
+        for (var j = 0; j < PET_STATE.anims.length; j++) {
+          var a = PET_STATE.anims[j]
+          btns += '<button class="dk-btn" data-pet="' + esc(a.name) + '" style="font-size:12px;padding:2px 10px">' + esc(a.label) + '</button>'
+        }
+        var video0 = (PET_STATE.anims[0] || {}).name || ''
+        box.innerHTML = '<div class="dk-row" style="gap:6px;flex-wrap:wrap;margin:4px 0"><span style="font-size:11px;color:#888">形态：</span>' + tabs + '</div>'
+          + (off ? '<div class="dk-msg" style="font-size:11px;color:#b8860b;margin:4px 0">桌宠当前处于关闭状态（右上按钮可重新开启；点形态/动作会自动把它叫回来）</div>' : '')
+          + '<div class="dk-row" style="gap:10px;align-items:flex-start;flex-wrap:wrap;margin:4px 0">'
+          + '<video id="dk-pet-video" src="' + petMediaUrl(f, video0) + '" autoplay loop muted playsinline'
+          + ' style="width:128px;height:128px;object-fit:contain;border-radius:10px;background:#f2f6ff;flex:none"></video>'
+          + '<div style="flex:1;min-width:200px">'
+          + '<div class="dk-row" style="gap:6px;flex-wrap:wrap;margin:2px 0">' + btns
+          + '<button class="dk-btn" id="dk-pet-random" style="font-size:12px;padding:2px 10px">🎲 逗逗TA</button>'
+          + '</div>'
+          + '<div class="dk-msg" id="dk-pet-status" style="font-size:11px;color:#888;line-height:1.5;margin:4px 0 0">点按钮 = 桌面上的桌宠立刻做这个动作（不调用任何模型）。左边是动作预览；切形态时桌面会闪一下（窗口重建，正常现象）。</div>'
+          + '</div></div>'
+        var v0 = box.querySelector('#dk-pet-video')
+        if (v0) v0.onended = function () { petPlay(f, video0, true) }
+      }
+      function petPlay(formId, name, loop) {
+        var v = panel && panel.querySelector('#dk-pet-video')
+        if (!v || !name) return
+        v.loop = !!loop
+        v.src = petMediaUrl(formId, name)
+        if (v.play) { try { v.play() } catch (ePV) { } }
+      }
+      function petError(msg) {
+        var box = panel && panel.querySelector('#dk-pet-box')
+        if (box) box.innerHTML = '<div class="dk-msg" style="font-size:11px;color:#c66;line-height:1.6">🐋 ' + esc(msg)
+          + '<br>桌宠动作/预览不可用；启动宿主（DSH Desktop）后本面板自动恢复。</div>'
+      }
+      function petRefresh() {
+        fetch('/api/qqbot-settings/pet-anim').then(function (r) { return r.json() }).then(function (d) {
+          if (!d || !d.ok) { petError('桌宠接口没就绪（桌宠插件没跑起来）'); return }
+          PET_STATE.form = (d.form && d.form.id) || 'xiaolan'
+          PET_STATE.forms = d.forms || []
+          PET_STATE.anims = d.anims || []
+          PET_STATE.petOn = d.petOn
+          var tg = panel && panel.querySelector('#dk-pet-toggle')
+          if (tg) tg.textContent = (d.petOn === false) ? '⏻ 开启桌宠' : '⏻ 关闭桌宠'
+          petRender()
+        }).catch(function () { petError('连不上桌宠服务（宿主没开？）') })
+      }
+      function bindPetCompanion() {
+        if (!panel || panel._petBound) return
+        panel._petBound = 1
+        petRefresh()
+        // 事件委托挂 panel（仿 _modelsBound），body 重绘不丢
+        panel.addEventListener('click', function (ev) {
+          var t = ev.target
+          if (!t || !t.getAttribute) return
+          // ── 桌宠总开关（2026-11-01）──
+          if (t.id === 'dk-pet-toggle') {
+            if (t.disabled) return
+            t.disabled = true
+            var turningOn = (PET_STATE.petOn === false)
+            apiPost('pet-anim', { action: 'pet-display', on: turningOn }, 15000).then(function (d) {
+              t.disabled = false
+              var stf = panel.querySelector('#dk-pet-status')
+              if (stf) stf.textContent = (d && d.ok)
+                ? (d.message || (turningOn ? '桌宠已开启' : '桌宠已关闭'))
+                : ('✗ ' + ((d && (d.message || d.reason)) || '操作失败'))
+              petRefresh()
+            }).catch(function () { t.disabled = false })
+            return
+          }
+          var fm = t.getAttribute('data-pet-form')
+          if (fm) {
+            if (t.disabled) return
+            t.disabled = true
+            var stf = panel.querySelector('#dk-pet-status')
+            apiPost('pet-anim', { action: 'switch-form', target: fm }, 15000).then(function (d) {
+              if (t) t.disabled = false
+              if (stf) stf.textContent = (d && d.ok)
+                ? ('✔ 已切换到 ' + (d.label || fm) + '（桌面换角中…）')
+                : ('✗ ' + ((d && (d.message || d.reason)) || '切换失败'))
+              petRefresh()
+            }).catch(function () { if (t) t.disabled = false })
+            return
+          }
+          var nm = t.getAttribute('data-pet')
+          var rnd = t.id === 'dk-pet-random'
+          if (!nm && !rnd) return
+          if (t.disabled) return
+          t.disabled = true
+          var st = panel.querySelector('#dk-pet-status')
+          var done = function (d) {
+            if (t) t.disabled = false
+            if (st) st.textContent = (d && d.ok)
+              ? ('✔ 已触发 ' + (d.anim || nm || '随机动作') + '（' + (d.playbackId || '') + '）')
+              : ('✗ ' + ((d && (d.message || d.reason)) || '触发失败'))
+          }
+          var p = rnd ? apiPost('pet-anim', { action: 'random' }, 8000) : apiPost('pet-anim', { name: nm }, 8000)
+          p.then(function (d) {
+            done(d)
+            if (d && d.ok) petPlay(PET_STATE.form, d.anim || nm || '', false)
+          }).catch(function () { done(null) })
+        })
+      }
       function bindGamesCard() {
+        try { bindPetCompanion() } catch (eP) { console.warn('[qqbot] bindPetCompanion', eP && eP.message) }
         var rf = panel && panel.querySelector('#dk-games-refresh')
         if (rf) rf.onclick = loadGames
         var cl = panel && panel.querySelector('#dk-games-clear')
@@ -4293,7 +4773,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         if (!state.acctDetail) state.acctDetail = {}
         var html = '<div style="padding:10px;border:1px solid #e9ecef;border-radius:10px;background:#fff;margin-bottom:8px">'
           + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-          + '<div style="font-weight:700;font-size:14px">🔗 账号管理</div>'
+          + '<div style="font-weight:700;font-size:14px">🔗 账号登录</div>'
           + '<span style="font-size:11px;color:#888">B 站 / 抖音 分页管理；一个平台出问题不拖累另一个</span>'
           + '<button id="dk-acct-refresh" class="qqs-btn" style="margin-left:auto">🔄 刷新</button>'
           + '</div>'
@@ -4617,6 +5097,71 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           if (b && b.loggedIn !== true) { state._biliQrTried = true; startBiliQr() }
         }
       }
+      // ═══ [[qqbot-mod] ops-center 2026-10-30] 运营中心新增两块 ═══
+      // 评论中心：从创作台整体搬来（渲染），绑定仍在 bindVideoRadar（两页签共用）
+      function commentCenterHtml() {
+        function cwTabBtn(tab, label) {
+          var act = (state._cwTab || 'feed') === tab
+          return '<button class="dk-btn" data-ctab="' + tab + '" style="font-size:11.5px;padding:3px 12px;border-radius:14px 14px 0 0;border-bottom:none;'
+            + (act ? 'background:#eef4ff;border-color:#1c7ed6;color:#1d4ed8;font-weight:700' : '') + '">' + label + '</button>'
+        }
+        var h = '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">💬 评论中心<span style="font-weight:400;font-size:11px;color:#888;margin-left:8px">B站评论后台每 30 分钟自动巡检一轮；抖音不自动跑，点「巡检」才拉。B站能直发（拟人间隔）；抖音写接口必风控 → 小蓝出文案、你复制手发</span></div>'
+        h += '<div class="dk-row" id="dk-vr-cw-tabs" style="gap:4px;margin:2px 0;align-items:flex-end">'
+          + cwTabBtn('feed', '📬 B站收件箱')
+          + cwTabBtn('list', '📺 B站视频评论')
+          + cwTabBtn('dy', '🎵 抖音')
+          + '</div>'
+        // ── 页签①：B站收件箱（消息中心式「回复我的」）──
+        h += '<div id="dk-vr-cw-pane-feed" class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0;' + ((state._cwTab || 'feed') === 'feed' ? '' : 'display:none') + '">'
+          + '<button class="dk-btn ok" id="dk-vr-cw-feed">🔄 刷新收件箱</button>'
+          + '<button class="dk-btn" id="dk-vr-cw-list">📜 已回复台账</button>'
+          + '<span style="font-size:10.5px;color:#98a2b3">别人回我的评论一条不漏；回过的带 [已回复] 徽标，不会重复回</span>'
+          + '</div>'
+        // ── 页签②：B站视频评论（巡检）──
+        h += '<div id="dk-vr-cw-pane-list" style="' + (state._cwTab === 'list' ? '' : 'display:none') + '">'
+        h += '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0">'
+          + '<button class="dk-btn" id="dk-vr-cw-show">💬 出评论列表</button>'
+          + '<button class="dk-btn" id="dk-vr-cw-draft">📝 巡检（只出草稿）</button>'
+          + '<button class="dk-btn ok" id="dk-vr-cw-auto">🚀 巡检并自动回复</button>'
+          + '</div>'
+        h += '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0">'
+          + '<span style="font-size:11px;color:#666">捞评论方向：</span>'
+          + '<select class="qqs-sel" id="dk-vr-cw-sort" style="font-size:11px"><option value="latest">🕐 最新在前（利于抢前排）</option><option value="hot">🔥 按热度</option></select>'
+          + '<select class="qqs-sel" id="dk-vr-cw-age" style="font-size:11px"><option value="0">时间窗：不限</option><option value="6">近 6 小时</option><option value="24" selected>近 24 小时</option><option value="72">近 3 天</option><option value="168">近 7 天</option></select>'
+          + '<label style="font-size:11px;color:#666;display:inline-flex;gap:3px;align-items:center"><input type="checkbox" id="dk-vr-cw-sub" checked> 含楼中楼（回「评论的评论」）</label>'
+          + '<span style="font-size:10.5px;color:#98a2b3">新评论在前排，回复它才有人看</span>'
+          + '</div>'
+        h += '</div>'
+        // ── 页签③：抖音（互动消息 / 收件箱 / 链接出草稿）──
+        h += '<div id="dk-vr-cw-pane-dy" style="' + (state._cwTab === 'dy' ? '' : 'display:none') + '">'
+        h += '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0">'
+          + '<button class="dk-btn ok" id="dk-vr-dy-feed">💬 互动消息</button>'
+          + '<button class="dk-btn" id="dk-vr-dy-patrol">⚡ 巡检并出草稿</button>'
+          + '<button class="dk-btn" id="dk-vr-dy-inbox">📬 评论收件箱</button>'
+          + '<span style="font-size:10.5px;color:#98a2b3">读不到 → 先去上方「抖音」重粘 Cookie（会话很容易过期）；巡检不自动跑，点了才拉</span>'
+          + '</div>'
+        h += '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0">'
+          + '<input class="qqs-txt" id="dk-vr-dy-url" placeholder="抖音视频链接/分享文本（贴过一次就进收件箱关注清单）" style="flex:1;min-width:200px;font-size:11px">'
+          + '<button class="dk-btn" id="dk-vr-dy-go">🔗 这条视频出草稿</button>'
+          + '</div>'
+        h += '</div>'
+        // 表情包（全页签共用）
+        h += '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0 2px;border-top:1px dashed #e5e7eb;padding-top:4px">'
+          + '<button class="dk-btn" id="dk-vr-cw-sticker">🎞 评论带表情包</button>'
+          + '<span id="dk-vr-cw-sticker-st" style="font-size:10.5px;color:#98a2b3">未选 —— 选中后本页所有评论/回复都会带上这张图</span>'
+          + '</div>'
+        h += '<div id="dk-vr-cw-out" class="dk-msg" style="font-size:11.5px;line-height:1.6;margin:4px 0;max-height:320px;overflow:auto">（选上面的页签开始；这里显示评论/互动消息和回复框）</div>'
+        return h
+      }
+      // 发动态：运营中心专属入口（以前只有聊天指令能发，浮窗一直发不了 —— 主人 2026-10-30 点名）
+      function dynPostHtml() {
+        return '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">📢 发动态<span style="font-weight:400;font-size:11px;color:#888;margin-left:8px">纯文字动态，写完点发送（发出去就是公开的）；发过的可在「📰 动态」里删</span></div>'
+          + '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:flex-start;margin:2px 0">'
+          + '<textarea id="dk-dyn-text" rows="3" placeholder="想说的内容（≤2000 字）……" style="flex:1;min-width:240px;font-size:12px;padding:6px;border:1px solid #d0d5dd;border-radius:8px;box-sizing:border-box;resize:vertical"></textarea>'
+          + '<button class="dk-btn ok" id="dk-dyn-post">📣 发送</button>'
+          + '</div>'
+          + '<div id="dk-dyn-hint" class="dk-msg" style="font-size:11.5px;color:#2f9e44;margin:2px 0"></div>'
+      }
       function biliCardHtml() {
         return accountsHtml() + '<div class="dk-card" style="padding:10px;border:1px solid #e9ecef;border-radius:10px;background:#fff">'
           + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
@@ -4641,6 +5186,9 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           + '<input id="dk-bili-panels" class="qqs-txt" type="number" min="2" max="12" value="7" style="width:54px;font-size:12px" title="分镜屏数 2~12">'
           + '<span>🛤 路子</span>'
           + '<select id="dk-bili-vroute" class="qqs-sel" style="font-size:12px" title="出片路子：前端截图拼帧=分镜卡片；文字动画=金句歌词；程序化画画=氛围片头（零成本）"><option value="frames">A 截图拼帧</option><option value="text">B 文字动画</option><option value="art">C 程序化画画</option></select>'
+          + '<span>🎙 配音</span>'
+          + '<select id="dk-bili-dubbing" class="qqs-sel" style="font-size:12px" title="本任务的配音引擎：GSV 快（聊天质感）；Breeze 自然较慢（约10×实时）；IndexTTS 情感最足最慢（约20-30×实时，首轮会先预热引擎）——离线出片推荐后两者">'
+          + '<option value="">默认（跟随全局）</option><option value="gsv">GSV · 快</option><option value="breeze">Breeze · 自然</option><option value="index">IndexTTS · 情感</option></select>'
           + '<span id="dk-bili-planstate" style="font-size:11px;color:#999"></span>'
           + '</div>'
           + '<div id="dk-bili-scheme" style="font-size:11px;color:#555;line-height:1.6;margin:2px 0 4px"></div>'
@@ -4654,9 +5202,20 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           + '<button id="dk-bili-draft" class="qqs-btn">📝 生成图文草稿</button>'
           + '<button id="dk-bili-agent" class="qqs-btn" title="把需求整理成高质量视频工单，复制后粘到 DSH 对话框 —— 那边才能调用 HyperFrames/Remotion 技能渲染高规格成片">🧬 交给 DSH Agent（高清版）</button>'
           + '</div></div>'
+          // [qqbot-mod] script-drafts 2026-10-28：文稿草稿箱 —— 灵感随手存、反复改思路、改好一键转视频
+          + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0 6px">'
+          + '<button id="dk-bili-dsave" class="qqs-btn" title="把上面输入框里的想法存成草稿：来了灵感先记下，回头慢慢改思路，改好了直接转视频任务">💾 存为草稿</button>'
+          + '<button id="dk-bili-dbox" class="qqs-btn">📋 草稿箱</button>'
+          + '<span style="font-size:11px;color:#999">灵感没想好就先存草稿，想好了再转视频</span>'
+          + '</div>'
+          + '<div id="dk-bili-drafts" style="display:none;font-size:12px;line-height:1.6;margin:2px 0 6px;padding:6px;background:#fafaff;border:1px solid #eef0ff;border-radius:8px"></div>'
           + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0;padding:6px;background:#faf8ff;border-radius:8px">'
           + '<span style="font-size:12px;color:#555">高赞评论:</span>'
           + '<input id="dk-bili-bvid" class="qqs-txt" placeholder="BV 号，如 BV1xx411c7mD" style="flex:1;min-width:180px;font-size:12px">'
+          + '<select id="dk-bili-csort" class="qqs-sel" style="font-size:12px" title="最新=按时间，回复新评论利于抢占前排；热门=按点赞">'
+          + '<option value="latest">🕐 最新在前</option><option value="hot">🔥 按热度</option></select>'
+          + '<select id="dk-bili-cage" class="qqs-sel" style="font-size:12px" title="只看最近 N 小时的评论：把回复配额留给新评论，定向捞新比纯随机更容易占前排">'
+          + '<option value="0">时间窗：不限</option><option value="6">近 6 小时</option><option value="24" selected>近 24 小时</option><option value="72">近 3 天</option><option value="168">近 7 天</option></select>'
           + '<button id="dk-bili-pull" class="qqs-btn">⬇ 拉取并起草回复</button>'
           + '<span style="font-size:11px;color:#999">只起草，不发送；一次最多2条</span>'
           + '</div>'
@@ -5011,7 +5570,8 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           var panels = Number((panelsEl && panelsEl.value) || 0) || 7
           if (panels < 2 || panels > 12) { alert('屏数要在 2~12 之间'); return }
           try {
-            var r = await apiPost('bili', { action: 'plan', topic: topic, orientation: orientation, panels: panels })
+            var r = await apiPost('bili', { action: 'plan', topic: topic, orientation: orientation, panels: panels,
+              dubbing: (document.querySelector('#dk-bili-dubbing') || {}).value || '' })
             if (r && r.ok) {
               state._biliPollUntil = Date.now() + 15 * 60 * 1000
               dkPollJobs(0)
@@ -5036,7 +5596,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           //   改走本项目 bili_ops 工具的整条管线（脚本→分镜出图→GSV 配音→字幕→拼片，全部修复可用）。
           //   让 DSH 主模型自己写 scriptJson（对象直传）——文案质量由它保证，比本地 7b 模板强得多。
           var brief = [
-            '请用 bili_ops 工具生成一支视频（action=plan，走本项目整条管线：脚本→分镜出图→GSV配音→字幕→拼片；不要用其它图文拼接路径）：',
+            '请用 bili_ops 工具生成一支视频（action=plan，走本项目整条管线：脚本→分镜出图→配音→字幕→拼片；不要用其它图文拼接路径）：',
             '',
             '选题：' + topic,
             '',
@@ -5045,19 +5605,25 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
             '  "title": "≤20字，有钩子",',
             '  "desc": "≤80字简介",',
             '  "tags": ["标签最多4个"],',
-            '  "panels": [  // 共 ' + panels + ' 屏',
-            '    { "narration": "每屏≤26字口播，口语化、有情绪",',
+            '  "panels": [  // 屏数不限，按内容需要分屏',
+            '    { "narration": "每屏≤26字口播；全片总字数≥280字（约60秒）",',
             '      "imagePrompt": "英文画面描述。只写场景/构图/氛围（如: underwater whale library, glowing jellyfish lamps, moonlight shafts through water），不要写人物外观——人物由管线按立绘自动合成" }',
             '  ]',
             '}',
             '',
+            '【文案质量红线（比画面更重要）】：',
+            '· 选题里点到的每件事（功能/数据/学习内容/参考文献/心情）都必须在至少一屏里讲具体：带数字、例子、进展；',
+            '· 禁止空话凑屏——“昨天学会了，慢一点，说清楚”这种没有信息的句子不许出现；',
+            '· 好旁白示范：“昨天把记忆库接回了主线，读到第三千四百条聊天记录，连主人爱听的歌单都记住了”——有数字、有事情、有结果；',
+            '· 屏数 2~16 屏都行（管线已放开上限），把内容讲开比屏数好看重要得多；',
+            '【黑话禁令（2026-10-30 新增，违者拒稿重写）】：口播/标题/简介里禁止工程词——出图、拼片、立绘、显存、显卡、管线、引擎、召回、向量、数据库、日志、索引、接口、参数、部署、API、GPU、适配层、缓存、工单、队列、帧率、编码、渲染、前端、后端；技术的事要翻译成生活比喻和具体时刻的小故事；',
             '画面硬规则（imagePrompt 必须遵守）：',
             '· 背景统一"深海蓝+月白"柔和色调，有景深层次与地面投影带；',
             '· 禁止空旷渐变底、禁止恐怖谷脸、禁手部特写；大字号短句排版由管线字幕负责，画面里不要塞文字；',
-            '· 角色形象基准：F:/qqbot/设定/小蓝_2D三视图_建模基准.png（透明立绘 pose/{idle,talk,wave,happy,point}.png 管线自动用）。',
+            '· 角色形象基准：F:/qqbot/设定/小蓝_2D三视图_建模基准.png；透明立绘两套：assets/char/pose/*.png（v1 720×980）与 assets/char-v2/pose-alpha/*.png（v2 已抠透明，动作渲染用这套）。',
             '',
-            '规格：orientation=vertical（B站竖屏 1080×1920），共 ' + panels + ' 屏。',
-            '音频：管线自动用 xiaolan_cute（GSV）配音，不用你管 TTS。',
+            '规格：orientation=vertical（B站竖屏 1080×1920）。成片目标 ≥60 秒——管线会自动检查：总旁白不足 240 字会拒收重写，所以别拷电报体。',
+            '音频：dubbing 参数【必传】——主人的选题里写了什么引擎就传什么：提到 IndexTTS/Index → dubbing="index"；提到 Breeze → dubbing="breeze"；完全没提 → dubbing="gsv"。注意管线有 dubbingOverride（默认强制 index）：LLM 怕超时自己改 gsv 也会被拉回来；index 拉起前管线会自动腾卡（停 gsv/breeze），慢是正常的，不要中途重试。',
             '提交后用任务列表跟踪进度；失败了直接对那条任务发起重试。',
           ].join('\n')
           try {
@@ -5070,16 +5636,88 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         }
         var pullBtn = document.querySelector('#dk-bili-pull')
         var bvidEl = document.querySelector('#dk-bili-bvid')
+        // [qqbot-mod] script-drafts 2026-10-28：文稿草稿箱 —— 灵感随手存、反复改思路、改好一键转视频。
+        //   替代没用处的记事本：草稿会一直留着，转成视频任务后自动标注，不会丢。
+        var draftsBox = document.querySelector('#dk-bili-drafts')
+        async function renderDrafts() {
+          if (!draftsBox) return
+          var r = await apiPost('bili', { action: 'draft-list', limit: 20 }).catch(function (e) { return { ok: false, error: e.message } })
+          var ds = (r && r.drafts) || []
+          if (!ds.length) { draftsBox.innerHTML = '<div style="color:#999;font-size:11px">草稿箱还是空的 —— 在上面输入框写点灵感，点「💾 存为草稿」</div>'; return }
+          draftsBox.innerHTML = '<div style="font-weight:700;font-size:12px;margin:1px 0 3px">📋 文稿草稿（' + ds.length + ' 条）<span style="font-weight:400;color:#98a2b3;font-size:10.5px;margin-left:6px">✏=填回输入框改思路　🎬=转视频任务　🗑=删</span></div>'
+            + ds.map(function (d) {
+              var when = d.editedAt ? new Date(d.editedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
+              return '<div style="border-bottom:1px dashed #eef0ff;padding:3px 0">'
+                + '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">'
+                + '<b style="font-size:11.5px;color:#475467">' + esc(d.title || '未命名') + '</b>'
+                + '<span style="color:#98a2b3;font-size:10.5px">' + esc(when) + (d.usedJobId ? ' · 已转任务 ' + esc(d.usedJobId) : '') + '</span>'
+                + (d.usedJobId ? '' : '<button class="qqs-btn" data-dsub="' + esc(d.id) + '" style="font-size:10.5px;padding:0 6px">🎬 转视频</button>')
+                + '<button class="qqs-btn" data-dedit="' + esc(d.id) + '" style="font-size:10.5px;padding:0 6px">✏ 填入</button>'
+                + '<button class="qqs-btn" data-ddel="' + esc(d.id) + '" style="font-size:10.5px;padding:0 6px">🗑</button>'
+                + '</div>'
+                + '<div style="color:#475467;font-size:11px;white-space:pre-wrap;max-height:56px;overflow:auto">' + esc(String(d.text || '').slice(0, 300)) + '</div>'
+                + '<div data-dst="' + esc(d.id) + '" style="font-size:10.5px;color:#667085"></div>'
+                + '</div>'
+            }).join('')
+          draftsBox.querySelectorAll('[data-dsub]').forEach(function (b) {
+            b.onclick = async function () {
+              var id = b.getAttribute('data-dsub')
+              if (!window.confirm('把这条草稿转成视频任务？（进渲染管线，几分钟出片）')) return
+              b.disabled = true
+              var st = draftsBox.querySelector('[data-dst="' + id + '"]')
+              var db = document.querySelector('#dk-bili-dubbing')
+              var r2 = await apiPost('bili', { action: 'draft-submit', draftId: id, dubbing: (db && db.value) || '', orientation: (document.querySelector('#dk-bili-orient') || {}).value || 'vertical' }).catch(function (e) { return { ok: false, error: e.message } })
+              b.disabled = false
+              if (st) st.textContent = r2 && r2.ok ? ('✓ 已转任务 ' + (r2.jobId || '') + '，下面列表会刷新进度') : ('失败：' + ((r2 && r2.error) || '?'))
+              if (r2 && r2.ok) { state._biliPollUntil = Date.now() + 15 * 60 * 1000; if (typeof dkPollJobs === 'function') dkPollJobs(0); renderDrafts() }
+            }
+          })
+          draftsBox.querySelectorAll('[data-dedit]').forEach(function (b) {
+            b.onclick = async function () {
+              var id = b.getAttribute('data-dedit')
+              var r2 = await apiPost('bili', { action: 'draft-get', draftId: id }).catch(function (e) { return { ok: false } })
+              if (r2 && r2.ok && r2.draft && cmd) { cmd.value = r2.draft.text; cmd.setAttribute('data-editing-draft', id); if (typeof cmd.focus === 'function') cmd.focus() }
+            }
+          })
+          draftsBox.querySelectorAll('[data-ddel]').forEach(function (b) {
+            b.onclick = async function () {
+              if (!window.confirm('删除这条草稿？')) return
+              await apiPost('bili', { action: 'draft-del', draftId: b.getAttribute('data-ddel') })
+              renderDrafts()
+            }
+          })
+        }
+        var dsaveBtn = document.querySelector('#dk-bili-dsave')
+        if (dsaveBtn) dsaveBtn.onclick = async function () {
+          var text = (cmd && cmd.value || '').trim()
+          if (!text) { alert('先在输入框写点灵感，再存草稿'); return }
+          var editing = cmd.getAttribute('data-editing-draft')
+          var firstLine = text.split(/\n|。/)[0] || ''
+          var r = await apiPost('bili', { action: 'draft-save', draftId: editing || '', title: firstLine.slice(0, 30), text: text }).catch(function (e) { return { ok: false, error: e.message } })
+          if (r && r.ok) {
+            cmd.value = ''; cmd.removeAttribute('data-editing-draft')
+            dsaveBtn.textContent = '✓ 已存'; setTimeout(function () { dsaveBtn.textContent = '💾 存为草稿' }, 2000)
+            renderDrafts()
+          } else { alert('存草稿失败：' + ((r && r.error) || '?')) }
+        }
+        var dboxBtn = document.querySelector('#dk-bili-dbox')
+        if (dboxBtn) dboxBtn.onclick = function () {
+          if (!draftsBox) return
+          var show = draftsBox.style.display === 'none'
+          draftsBox.style.display = show ? 'block' : 'none'
+          if (show) renderDrafts()
+        }
         if (pullBtn) pullBtn.onclick = async function () {
           var bvid = (bvidEl && bvidEl.value || '').trim()
           if (!bvid) { alert('先填 BV 号'); return }
           pullBtn.disabled = true
           try {
-            var r = await apiPost('bili', { action: 'comment-from-video', bvid: bvid })
+            var r = await apiPost('bili', { action: 'comment-from-video', bvid: bvid }, 300000)
             if (r && r.ok) {
-              state._biliCrows = { bvid: bvid, rows: r.commentRows || [] }
+              state._biliCrows = { bvid: bvid, rows: r.commentRows || [], myThreads: r.myThreads || null }
               renderBiliCrows()
-              alert('已起草 ' + ((r.drafts || []).length) + ' 条评论' + (r.video ? '（' + r.video + '）' : ''))
+              var mt = r.myThreads && r.myThreads.count
+              alert('已起草 ' + ((r.drafts || []).length) + ' 条评论' + (r.video ? '（' + r.video + '）' : '') + (mt != null ? '；你在这个视频下有 ' + mt + ' 栋相关楼（含收到的回复），见下方「我的评论树」' : ''))
             } else {
               alert('失败：' + ((r && r.error) || '?'))
             }
@@ -5092,9 +5730,37 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           var box = document.querySelector('#dk-bili-crows')
           var data = state._biliCrows
           if (!box) return
-          if (!data || !(data.rows || []).length) { box.innerHTML = ''; return }
-          box.innerHTML = '<div style="font-weight:700;font-size:12px;margin:4px 0 2px">💬 评论详情（可对单条写回复，进待审后发送为楼中楼）</div>'
-            + data.rows.slice(0, 12).map(function (c, i) {
+          var mt = data && data.myThreads
+          if ((!data || !(data.rows || []).length) && !(mt && mt.ok)) { box.innerHTML = ''; return }
+          // [qqbot-mod] my-threads 2026-10-29：我的评论树 —— 主人在别人视频下发过的评论 +
+          //   收到的全部楼中楼回复（以前这条链路完全没有，别人的回复根本看不到）
+          var h = ''
+          if (mt && mt.ok && (mt.threads || []).length) {
+            h += '<div style="font-weight:700;font-size:12px;margin:4px 0 2px">🌳 我的评论树（我发的评论 + 它收到的回复）</div>'
+            mt.threads.forEach(function (t) {
+              h += '<div style="border:1px solid #eef0f4;border-radius:6px;padding:4px 6px;margin:3px 0">'
+                + (t.isMine ? '<span style="color:#1d4ed8;font-size:10.5px">[我的评论]</span> ' : '')
+                + '<b style="color:#475467">' + esc(t.user || '') + '</b>'
+                + '<span style="color:#98a2b3;font-size:11px">　👍 ' + (t.likes || 0) + '</span>'
+                + '<div style="color:#344054;white-space:pre-wrap">' + esc(t.text) + '</div>'
+                + (t.replies || []).map(function (s) {
+                  return '<div style="margin-left:14px;border-left:2px solid #dbe2ea;padding-left:6px;margin-top:2px">'
+                    + (s.isMine ? '<span style="color:#1d4ed8;font-size:10.5px">[我]</span> ' : '')
+                    + '<b style="font-size:11.5px;color:#475467">' + esc(s.user || '') + '</b>'
+                    + '<span style="color:#98a2b3;font-size:10.5px"> ' + (s.at ? new Date(s.at * 1000).toLocaleDateString() : '') + '</span>'
+                    + '<div style="color:#344054;font-size:12px;white-space:pre-wrap">' + esc(s.text) + '</div></div>'
+                }).join('')
+                + (!(t.replies || []).length ? '<div style="color:#98a2b3;font-size:11px">　（还没有回复）</div>' : '')
+                + '</div>'
+            })
+          } else if (mt && mt.ok && !(mt.threads || []).length) {
+            h += '<div style="color:#98a2b3;font-size:11.5px;margin:3px 0">这个视频下没找到我发过的评论（确认 BV 号没贴错；手动发的评论 B 站可能有几分钟延迟）</div>'
+          } else if (mt && !mt.ok) {
+            h += '<div style="color:#c2410c;font-size:11.5px;margin:3px 0">我的评论树拉取失败：' + esc(mt.error || '?') + '</div>'
+          }
+          if (data && (data.rows || []).length) {
+            h += '<div style="font-weight:700;font-size:12px;margin:4px 0 2px">💬 评论详情（可对单条写回复，进待审后发送为楼中楼）</div>'
+              + data.rows.slice(0, 12).map(function (c, i) {
               return '<div style="border-bottom:1px dashed #eee;padding:3px 0">'
                 + '<b style="color:#475467">' + esc(c.user || '（匿名）') + '</b>'
                 + '<span style="color:#98a2b3;font-size:11px">　👍 ' + (c.likes || 0) + '</span>'
@@ -5104,6 +5770,8 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
                 + '<button class="qqs-btn" data-btofb="' + i + '">➕ 进待审</button>'
                 + '</div></div>'
             }).join('')
+          }
+          box.innerHTML = h
           box.querySelectorAll('[data-btofb]').forEach(function (b) {
             b.onclick = async function () {
               var i = Number(b.getAttribute('data-btofb'))
@@ -6276,7 +6944,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         h.innerHTML = '<img src="data:image/png;base64,' + QQS_WHALE_B64 + '" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover;flex:none;background:#e3f4ff"><span>QQ 群管理台</span>'
           + '<select class="qqs-sel" id="dk-ns" style="max-width:220px">' + (opts || '<option value="">无账号(去账号页添加)</option>') + '</select>'
           + '<span style="flex:1"></span>'
-          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1028b</span>'
+          + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发 · v1101a</span>'
           + '<button class="dk-btn" id="dk-full" title="全屏/还原">⛶</button>'
           + '<button class="dk-btn" id="dk-close" title="收回成球">➖</button>'
         var fb = h.querySelector('#dk-full')
@@ -7160,9 +7828,9 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           // 主标签 join/mute/send 已并入「群组管理」（补丁 merge-group-tabs）
           + '<button data-t="out" class="' + (state.tab === 'out' ? 'on' : '') + '">💠 联系方式</button>'
           + '<button data-t="session" class="' + (state.tab === 'session' ? 'on' : '') + '">⚙ 会话设置</button>'
-          + '<button data-t="bili" class="' + (state.tab === 'bili' ? 'on' : '') + '">🔗 账号管理</button>'
-          + '<button data-t="video" class="' + (state.tab === 'video' ? 'on' : '') + '">🎬 视频雷达</button>'
-          + '<button data-t="games" class="' + (state.tab === 'games' ? 'on' : '') + '">🎮 游戏</button>'
+          + '<button data-t="bili" class="' + (state.tab === 'bili' ? 'on' : '') + '">🛰 运营中心</button>'
+          + '<button data-t="video" class="' + (state.tab === 'video' ? 'on' : '') + '">🎬 创作台</button>'
+          + '<button data-t="games" class="' + (state.tab === 'games' ? 'on' : '') + '">🐋 陪玩</button>'
           + '<button data-t="llm" class="' + (state.tab === 'llm' ? 'on' : '') + '">🖥 本地模型</button>'
           + '</div>'
         var body = tabs
@@ -7361,9 +8029,14 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           body += contactHtml()
         } else if (state.tab === 'bili') {
           body += biliCardHtml()
+          // [qqbot-mod] ops-center 2026-10-30：评论中心并入运营中心 + 发动态入口
+          body += commentCenterHtml()
+          body += dynPostHtml()
         } else if (state.tab === 'video') {
           // [qqbot-mod] video-radar 2026-10-27：拉视频→生评论→B站可选直发/笔记/分享QQ群
-          body += '<div class="dk-row" style="font-weight:700;font-size:13px">🎬 视频雷达<span style="font-weight:400;font-size:11px;color:#888;margin-left:8px">粘贴抖音/B站链接，或 B站随机来一个；生成评论后抖音复制去发，B站可一键直发（S4，人点头）</span></div>'
+          // [qqbot-mod] ops-center 2026-10-30 改名「创作台」：专注做视频/看视频内容，
+          //   运营类（评论/收件箱/互动/发动态）全在「🛰 运营中心」页。
+          body += '<div class="dk-row" style="font-weight:700;font-size:13px">🎬 创作台<span style="font-weight:400;font-size:11px;color:#888;margin-left:8px">粘贴抖音/B站链接，或 B站随机来一个；生成评论后抖音复制去发，B站可一键直发（S4，人点头）</span></div>'
           body += '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center">'
             + '<select class="qqs-sel" id="dk-vr-plat" style="min-width:90px"><option value="bili">B站</option><option value="douyin">抖音</option></select>'
             + '<input class="qqs-txt" id="dk-vr-url" placeholder="视频链接 / 分享文本整段粘 / 留空点🎲随机(仅B站)" style="flex:1;min-width:200px;font-size:12px">'
@@ -7377,19 +8050,9 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
             + '<button class="dk-btn" id="dk-vr-notes-btn">📝 笔记本</button>'
             + '</div>'
           body += '<div id="dk-vr-notes" style="font-size:11px;color:#555;line-height:1.5;margin-top:4px;display:none;max-height:180px;overflow:auto"></div>'
-          // [qqbot-mod] 2026-10-28 评论巡检：我们视频下的评论 → 自动回复（B站直发）/出草稿（抖音）；回复过不再回
-          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">💬 评论巡检<span style="font-weight:400;font-size:11px;color:#888;margin-left:8px">后台每 30 分钟自动跑一轮；这里手动触发。B站=自动回复（拟人间隔，1条约1~2分钟），抖音=出草稿（自动发会被风控）</span></div>'
-          body += '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center">'
-            + '<button class="dk-btn" id="dk-vr-cw-show">💬 出评论列表</button>'
-            + '<button class="dk-btn" id="dk-vr-cw-draft">💬 B站巡检（只出草稿）</button>'
-            + '<button class="dk-btn ok" id="dk-vr-cw-auto">🚀 巡检并自动回复</button>'
-            + '<button class="dk-btn" id="dk-vr-cw-list">📜 已回复台账</button>'
-            + '</div>'
-          body += '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center;margin-top:2px">'
-            + '<input class="qqs-txt" id="dk-vr-dy-url" placeholder="抖音视频链接/分享文本（给自己作品出评论草稿）" style="flex:1;min-width:200px;font-size:11px">'
-            + '<button class="dk-btn" id="dk-vr-dy-go">🎵 抖音评论出草稿</button>'
-            + '</div>'
-          body += '<div id="dk-vr-cw-out" class="dk-msg" style="font-size:11.5px;line-height:1.6;margin:4px 0;max-height:240px;overflow:auto">（还没跑过巡检）</div>'
+          // [qqbot-mod] ops-center 2026-10-30：评论中心整体搬到「🛰 运营中心」页（主人要求：
+          //   创作台只管做视频/看视频，运营的事——评论/收件箱/互动/发动态——全归运营中心）。
+          //   渲染见 commentCenterHtml()，绑定仍走 bindVideoRadar（它现在同时服务两个页签）。
         } else if (state.tab === 'games') {
           body += gamesCardHtml()
         } else if (state.tab === 'llm') {
@@ -7751,7 +8414,8 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         if (state.tab === 'bili') { try { bindAccounts() } catch (eAB) {} try { loadAccounts(false) } catch (eAC) {} }
         if (state.tab === 'games') { try { bindGamesCard() } catch (eG) { console.warn('[qqbot] bindGamesCard', eG && eG.message) } }
         // [qqbot-mod] video-radar 2026-10-27：视频雷达页绑定
-        if (state.tab === 'video') { try { bindVideoRadar() } catch (eV) { console.warn('[qqbot] bindVideoRadar', eV && eV.message) } }
+        // [qqbot-mod] ops-center 2026-10-30：评论中心搬进运营中心页，绑定两页都要跑
+        if (state.tab === 'video' || state.tab === 'bili') { try { bindVideoRadar() } catch (eV) { console.warn('[qqbot] bindVideoRadar', eV && eV.message) } }
         if (state.tab === 'llm') { try { bindLlmCard() } catch (eL) { console.warn('[qqbot] bindLlmCard', eL && eL.message) } if (!state.voices) try { loadVoices()  } catch (eV) { } try { bindAudition() } catch (eA) { console.warn('[qqbot] bindAudition', eA && eA.message) }
           // [qqbot-mod] llm-tab-extbind 2026-10-27：本页也渲染了 extCardHtml（本地代答/语音/工具报错三张卡），
           //   但 bindExtCard/bindToolErrCard 原先只在「单会话」页的 bindLocalModel 里调用 ——
@@ -9468,6 +10132,21 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
       useEffect(function () { if (tab === 'market' && !market && !loadingMarket) loadMarket() }, [tab])
       var _filter = useState(''), filter = _filter[0], setFilter = _filter[1]
       var _tog = useState(false), toggling = _tog[0], setToggling = _tog[1]
+      // ── QQ bot 在线状态胶囊（2026-10-31 主人要求：浮窗对应窗口里直接看 QQ 在没在线）──
+      // 数据源 /pet-status：gateway bootstrap 事件驱动落盘的 bot-status.json（准确，非猜日志）
+      var _on = useState(null), botOnline = _on[0], setBotOnline = _on[1]
+      useEffect(function () {
+        var dead = false
+        function poll() {
+          fetch('/api/qqbot-settings/pet-status', { credentials: 'same-origin' })
+            .then(function (r) { return r.json() })
+            .then(function (j) { if (!dead) setBotOnline(j && j.ok ? !!j.online : null) })
+            .catch(function () { if (!dead) setBotOnline(null) })
+        }
+        poll()
+        var t = setInterval(poll, 10000)
+        return function () { dead = true; clearInterval(t) }
+      }, [])
       function toggleExt(info) {
         setToggling(true)
         var body = { kind: info.kind, file: info.file, enabled: info.enabled }
@@ -9681,7 +10360,8 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         // 头部
         h('div', { style: S.head },
           h('div', null,
-            h('div', { style: S.title }, 'QQ 机器人扩展'),
+            h('div', { style: S.title }, 'QQ 机器人扩展',
+              h('span', { title: 'QQ 机器人 websocket 在线状态（10 秒自动刷新）', style: { fontSize: 12, fontWeight: 600, marginLeft: 10, padding: '2px 10px', borderRadius: 99, verticalAlign: '2px', whiteSpace: 'nowrap', color: botOnline === null ? '#889' : (botOnline ? '#2b8a3e' : '#c92a2a'), background: botOnline === null ? '#f1f3f5' : (botOnline ? '#ebfbee' : '#fff5f5'), border: '1px solid ' + (botOnline === null ? '#dee2e6' : (botOnline ? '#b2f2bb' : '#ffc9c9')) } }, botOnline === null ? '⚪ QQ 未知' : (botOnline ? '🟢 QQ 在线' : '🔴 QQ 离线'))),
             h('div', { style: S.sub }, '当前工作区已装的扩展；放独立目录的扩展包也能在这里看到')),
           h('button', { style: S.btn, onClick: function () { setTick(tick + 1) } }, loading ? '刷新中…' : '刷新')),
 

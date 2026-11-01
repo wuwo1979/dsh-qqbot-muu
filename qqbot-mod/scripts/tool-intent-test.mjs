@@ -5,7 +5,9 @@
  * 「啊这，画画可真难。」把消息摘掉；同一时间另一个会话云端在真画
  * ⇒ 一遍说画不出、一遍把图发出来，前后矛盾。
  */
-import { needsTools, worthLocalSafe, gagReply } from 'file:///F:/qqbot/dshqqbot/.qqbot-extensions/inbound/local-answer.mjs';
+// [qqbot-mod] test-drift 2026-10-30：gagReply（死梗直答）已在 local-answer 精简中移除，
+//   import 不存在的导出会让整个套件直接挂 —— 拿掉；"2+3 不被 needsTools 误伤"由 no 组覆盖。
+import { needsTools, worthLocalSafe } from 'file:///F:/qqbot/dshqqbot/.qqbot-extensions/inbound/local-answer.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -43,8 +45,8 @@ if (typeof worthLocalSafe === 'function') {
   ok('worthLocalSafe 未导出（跳过三条）', true);
 }
 
-// ── 梗仍然优先（2+3 这条不能被 needsTools 挡掉） ──
-ok('死梗 2+3 仍由本地直答', gagReply('2+3等于多少') === '6');
+// ── 死梗 2+3 仍不被 needsTools 误伤（原 gagReply 直答已移除，语义由 needsTools 守住）──
+ok('死梗 2+3 不被当工具意图', needsTools('2+3等于多少') === false);
 
 console.log('\nPASS ' + pass + ' / FAIL ' + fail);
 process.exit(fail === 0 ? 0 : 1);

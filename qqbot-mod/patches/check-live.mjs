@@ -57,6 +57,8 @@ const PROBES = [
   { file: 'settings-host.js', mark: 'lm-bases-permodel', desc: '判定模型下载源按所选模型走（10/27）' },
   { file: 'client/qqbot-settings.js', mark: 'llm-tab-extbind 2026-10-27', desc: '本地模型页绑定代答/语音/工具报错卡' },
   { file: 'settings-host.js', mark: 'lm-bases-permodel 2026-10-27', desc: '判定模型下载源按所选模型走' },
+  { file: 'dist/transport/inbound.js', mark: '时间头垫底', desc: '时间头垫底护 prompt 缓存（10/31，曾被回退无人发现）' },
+  { file: 'dist/transport/inbound.js', mark: '稳定块置顶', desc: '历史剥块+稳定块置顶（11/01，防注入块逐条重发）' },
 ]
 let missing = 0
 for (const p of PROBES) {
@@ -69,7 +71,7 @@ for (const p of PROBES) {
 
 // ── ③ 与 ours 源文件逐字节比对 ──
 let drift = 0
-for (const f of ['settings-host.js', 'client/qqbot-settings.js']) {
+for (const f of ['settings-host.js', 'client/qqbot-settings.js', 'dist/transport/inbound.js']) {
   const src = join(REPO, f)
   const dst = join(best.dir, f)
   if (!existsSync(src)) { console.log(`  ⚠ ours 源缺失：${src}`); continue }
@@ -81,13 +83,22 @@ for (const f of ['settings-host.js', 'client/qqbot-settings.js']) {
 
 console.log(`\n③ 扩展目录：${existsSync('F:/qqbot/dshqqbot/.qqbot-extensions/lib/platforms/index.mjs') ? '✓ 在位（升级不影响）' : '✗ 丢失！'}`)
 
-if (missing === 0 && drift === 0) {
+// ── ④ dsh-pet 插件禁用探针（2026-11-01：桌宠「消失」根因 = 被加进 .dsh-market
+//    state.json 的 disabled 数组，重启无效；曾于 10-31 22:45 被禁导致整晚排查）──
+let petDisabled = false
+try {
+  const st = JSON.parse(readFileSync(join(homedir(), 'AppData', 'Roaming', 'dsh-desktop', 'harness', 'profiles', 'web', '.dsh-market', 'state.json'), 'utf8'))
+  petDisabled = Array.isArray(st.disabled) && st.disabled.includes('dsh-pet')
+} catch { /* 读不到按未禁用处理 */ }
+console.log(`④ dsh-pet 插件：${petDisabled ? '✗ 被市场禁用（.dsh-market/state.json disabled 含 dsh-pet，桌宠会整个消失）' : '✓ 未禁用'}`)
+
+if (missing === 0 && drift === 0 && !petDisabled) {
   console.log('\n体检通过：补丁全在位，live 与 ours 一致。')
   process.exit(0)
 }
 console.log(`\n体检不通过：缺标记 ${missing} 个，源不一致 ${drift} 个文件。`)
 if (APPLY) {
-  for (const f of ['settings-host.js', 'client/qqbot-settings.js']) {
+  for (const f of ['settings-host.js', 'client/qqbot-settings.js', 'dist/transport/inbound.js']) {
     copyFileSync(join(REPO, f), join(best.dir, f))
     console.log(`已覆盖：${f} → ${best.dir}/${f}`)
   }

@@ -198,6 +198,27 @@ console.log('\n[9] 出图 / 视频分层');
   chk(O.pickSfxCues(ROOT, { panel: { index: 1 }, dur: 3 }, 'image', { sfx: { maxPerPanel: 0 } }).length === 0, 'maxPerPanel=0 时不出音效');
 }
 
+console.log('\n[10] 文案 prompt v3（分区+范例）与屏数上限');
+{
+  // [qqbot-mod] script-prompt-v3 2026-10-30：prompt 重构后最容易退步的两点——
+  //   范例丢了（模型又回到电报体）、隐私词混进请求体。逐条守牢。
+  const body = SWm.buildRequestBody({ topic: '测试选题甲', panels: 14, seconds: 60 });
+  const sys = String(body.messages?.[0]?.content || '');
+  chk(sys.includes('【完整范例'), 'system 含完整 few-shot 范例（防电报体回潮）');
+  chk(sys.includes('【黑话禁令'), 'system 保留黑话禁令');
+  chk(sys.includes('【丝滑衔接'), 'system 保留丝滑衔接要求');
+  chk(sys.includes('【隐私红线'), 'system 保留隐私红线');
+  chk(sys.includes('panels 数量固定为 14'), '屏数按入参（14 屏不被钳回 8）');
+  const norm = SWm.normalizeScript({
+    title: '长片测试', desc: 'x', tags: [],
+    panels: Array.from({ length: 14 }, (_, i) => ({ narration: '第' + i + '屏讲一件具体的事，有数字。', imagePrompt: 'underwater room scene ' + i })),
+  }, { panels: 14 });
+  chk(norm && norm.panels.length === 14, 'normalizeScript 支持 14 屏（上限 8→16 已对齐）');
+  const s2 = JSON.stringify(body);
+  chk(!/SESSDATA|bili_jct|cookie|openid|senderId/i.test(s2), 'v3 请求体依旧不含 Cookie / 账号标识');
+  chk(!/记忆库|聊天记录/.test(s2), 'v3 请求体不含记忆库 / 聊天记录字样');
+}
+
 console.log(`\nPASS ${pass} / FAIL ${fail}`);
 console.log(`结论：${pass} 通过 / ${fail} 失败`);
 process.exit(fail === 0 ? 0 : 1);

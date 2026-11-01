@@ -75,6 +75,9 @@ else bad('收件箱没被清空');
 
 // ③ 下一句应该能召回刚记的那条
 console.log('\n[3] 再问一句 → 应召回"不吃香菜"');
+// [qqbot-mod] 2026-10-30：召回有 5 分钟时间闸（连续聊天不重发，历史里那份还在），
+//   测试里两条消息背靠背 → 必须显式清掉节流备忘，否则 [3] 永远测不到召回。
+if (typeof ext._testResetRecallMemo === 'function') ext._testResetRecallMemo();
 const rewritten2 = [];
 const ctx2 = {
   text: '今天点外卖吃啥好',

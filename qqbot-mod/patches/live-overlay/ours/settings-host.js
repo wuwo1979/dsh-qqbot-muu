@@ -384,6 +384,34 @@ function writeOwnSettings(ns, obj) {
   try { writeFileSync(nsWriterPath(ns), JSON.stringify({ profile: me, at: Date.now(), file: p }, null, 2), 'utf8'); } catch { /* 指纹写失败不阻塞 */ }
   return p;
 }
+/** [qqbot-mod 2026-10-31] 真 secret 镜像进 secrets（主人要求：凭据真身永远有一份在 secrets 里）。
+ *  背景：2026-10-31 10:14 设置页保存把掩码 '********' 写进自有存储，bot 全天 100016 掉线；
+ *  当时靠 .bak 手工找回。今后每次拿到**非掩码真 secret** 就同步一份到
+ *  `<cwd>/secrets/runtime/qqbot-account-<ns>.json`（secrets/ 整体 gitignored，绝不出仓库），
+ *  配合 bootstrap 的启动自愈，即使再被掩码污染也能开机自动找回。
+ *  纪律：绝不打日志、绝不回显内容；写入失败静默（不影响保存主流程）。 */
+function mirrorSecretToSecrets(ns, appId, secret) {
+  try {
+    const s = String(secret ?? '');
+    if (!s || s === SECRET_MASK || /^\*+$/.test(s) || s.length < 16) return false;
+    // cwd 取自有存储里存的（saveInstances 会写）；取不到再退 parsePatch / F:/qqbot
+    let cwd = '';
+    try { cwd = String(readOwnSettings(ns)?.cwd || '').trim(); } catch { /* ignore */ }
+    if (!cwd) {
+      try {
+        const bots = parsePatch().bots || [];
+        const hit = bots.find((b) => b.id === String(ns) && b.cfg?.cwd) || bots.find((b) => b.cfg?.cwd);
+        if (hit) cwd = String(hit.cfg.cwd);
+      } catch { /* ignore */ }
+    }
+    if (!cwd) cwd = 'F:/qqbot';
+    const dir = join(cwd, 'secrets', 'runtime');
+    try { mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+    const p = join(dir, `qqbot-account-${String(ns).replace(/[^\w.-]/g, '_')}.json`);
+    writeFileSync(p, JSON.stringify({ appId: String(appId || ''), appSecret: s, savedAt: new Date().toISOString() }, null, 2), 'utf8');
+    return true;
+  } catch { return false; }
+}
 /** 深合并一层（够用：本插件嵌套只到 groupAdmin / sticker.gates 这一层）。 */
 function mergeDeepOne(cur, patch) {
   const out = Object.assign({}, cur);
@@ -612,9 +640,21 @@ export function apply(ctx) {
     //    若凭据无效会再写配置，形成自反馈闭环（实测把 dsh 启动刷死、无限弹二维码）。
     //    自有存储还让「用户不必手改任何配置文件」（可视化的初衷）。
     try {
+      // [qqbot-mod 2026-10-31 掩码事故根治] /read 永远只回掩码；前端若把整个配置对象原样
+      //     提交回来，'********' 会经 mergeDeepOne 落进自有存储 → bot 100016 掉线一整天
+      //     （2026-10-31 10:14 事故）。这里在合并前把掩码/空 secret 剥掉 = 永不覆盖真身。
+      const patch = body.patch;
+      if (patch && typeof patch === 'object' && patch.appSecret !== undefined) {
+        const s = String(patch.appSecret ?? '');
+        if (!s || s === SECRET_MASK || /^\*+$/.test(s)) delete patch.appSecret;
+      }
       const cur = readOwnSettings(ns);
       const merged = mergeDeepOne(cur, body.patch ?? {});
       const file = writeOwnSettings(ns, merged);
+      // 真 secret 落盘的同时镜像一份进 secrets（防掩码循环再把真身弄丢）
+      if (patch && typeof patch === 'object' && patch.appSecret !== undefined) {
+        mirrorSecretToSecrets(ns, merged.appId, patch.appSecret);
+      }
       // 通知插件实例重新读取（桥与插件同进程；不写宿主配置 → 不触发任何热更新）
       try { ctx.emit('qqbot/settings-changed', ns); } catch { /* 无监听者也无妨 */ }
       const base = viewOf(ctx.settings, ns) || {};
@@ -1146,6 +1186,13 @@ export function apply(ctx) {
       const r = await dy.commentList(root, id.awemeId, { cursor, count })
       // [qqbot-mod] douyin-ops：拉过谁家评论也记一笔，方便回溯
       if (r && r.ok) try { dy.opsLog(root, 'comments-pull', { awemeId: id.awemeId, total: r.total || 0, count: (r.comments || []).length, via: id.via || '' }) } catch {}
+      // [qqbot-mod] dy-inbox 2026-10-29：只读速览过的视频也进关注清单（收件箱才有内容可看）
+      if (r && r.ok) {
+        try {
+          const CWw = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'))
+          CWw.douyinWatchAdd(root, { awemeId: id.awemeId })
+        } catch {}
+      }
       return writeJson(res, 200, { ...r, via: id.via || '', awemeId: id.awemeId, videoUrl: 'https://www.douyin.com/video/' + id.awemeId })
     } catch (e) {
       return writeJson(res, 200, { ok: false, error: '拉评论失败：' + String((e && e.message) || e) })
@@ -1288,9 +1335,11 @@ export function apply(ctx) {
     },
     {
       id: 'index', label: 'IndexTTS-2.5（情感克隆）', kind: 'local', port: 9890, dir: '.models/index-tts',
-      voices: ['xiaolan_emo', 'xiaolan_emo_soft'],
+      // [qqbot-mod] vram-soft 2026-10-28：xiaolan_cute 放首位 —— 切到 IndexTTS 时默认音色保持
+      // xiaolan_cute（参考音克隆对后端无关，适配层会 voice-reuse，不用被迫换 xiaolan_emo）
+      voices: ['xiaolan_cute', 'xiaolan_emo', 'xiaolan_emo_soft'],
       speed: 'RTF≈22-30（比 GSV 慢约 25 倍）',
-      use: '离线视频配音 / 读评论：情感最足',
+      use: '离线视频配音 / 读评论：情感最足；开共享显存兜底后 6GB 卡也能起',
     },
   ];
 
@@ -1345,6 +1394,8 @@ export function apply(ctx) {
       const curEngine = String(cfg.provider || 'edge') === 'edge' ? 'edge' : (TTS_ENGINES.find((x) => x.id === cur) ? cur : 'gsv');
       return writeJson(res, 200, {
         ok: true, root, path: extCfgPath(root, 'voice'), config: cfg,
+        // [qqbot-mod] vram-soft 2026-10-28：显存预检策略开关（6GB 卡上 IndexTTS 5300MB 门槛物理达不到）
+        vramSoft: cfg.vramSoft === true || cfg.vramSoft === 'true',
         adapter: { port: 9881, up: adapterUp, endpoint: 'http://127.0.0.1:9881/v1/audio/speech' },
         current: { engine: curEngine, provider: String(cfg.provider || 'edge'), model: cur, voice: String(cfg.voice || ''), mode: String(cfg.mode || 'sometimes'), prob: cfg.prob },
         engines,
@@ -1357,20 +1408,33 @@ export function apply(ctx) {
   route(ctx, 'POST', '/api/qqbot-settings/tts-engines', async (req, res) => {
     try {
       const body = await readJsonBody(req);
-      const engineId = String((body && body.engine) || '').trim();
-      const wanted = TTS_ENGINES.find((x) => x.id === engineId);
-      if (!wanted) return writeJson(res, 400, { ok: false, error: '未知方案：' + engineId });
       const bot = nsBot(String((body && body.ns) || ''));
       const root = resolveMemoryRoot(bot);
       const p = extCfgPath(root, 'voice');
       if (!p) return writeJson(res, 400, { ok: false, error: '找不到数据目录' });
       const cur = readExtCfg(p);
+      // [qqbot-mod] vram-soft 2026-10-28：只改开关（不动引擎/音色）——
+      //   下一次合成时 tts-core 会发现适配层策略不一致并自动重启它。
+      if (body && body.engine == null && body.vramSoft !== undefined) {
+        const nextOnly = Object.assign({}, cur, { vramSoft: body.vramSoft === true || body.vramSoft === 'true' });
+        try { if (existsSync(p)) copyFileSync(p, p + '.bak-' + Date.now()); } catch { }
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify(nextOnly, null, 2), 'utf8');
+        return writeJson(res, 200, { ok: true, vramSoft: nextOnly.vramSoft, path: p,
+          note: nextOnly.vramSoft ? '已开启：显存不够也强启本地引擎（共享显存兜底，慢但能出声），下一条语音生效'
+                                  : '已关闭：显存不够会先拒绝启动本地引擎' });
+      }
+      const engineId = String((body && body.engine) || '').trim();
+      const wanted = TTS_ENGINES.find((x) => x.id === engineId);
+      if (!wanted) return writeJson(res, 400, { ok: false, error: '未知方案：' + engineId });
       const voice = String((body && body.voice) || '').trim() || wanted.voices[0] || '';
       const patch = engineId === 'edge'
         ? { provider: 'edge', voice, endpoint: 'http://127.0.0.1:9881/v1/audio/speech', model: '' }
         : { provider: 'http', voice, model: engineId, endpoint: 'http://127.0.0.1:9881/v1/audio/speech' };
       if (body && typeof body.mode === 'string' && body.mode) patch.mode = body.mode;
       if (body && typeof body.prob === 'number') patch.prob = Math.max(0, Math.min(1, body.prob));
+      // 开关随引擎切换一起存（没传就保留现值）
+      if (body && body.vramSoft !== undefined) patch.vramSoft = body.vramSoft === true || body.vramSoft === 'true';
       const next = Object.assign({}, cur, patch);
       for (const k of ['systemPrompt', 'baseUrl']) if (next[k] === '') delete next[k];
       try {
@@ -2141,6 +2205,7 @@ export function apply(ctx) {
         try {
           const nsKey = String(inst.settingsNs || inst.id);
           writeOwnSettings(nsKey, Object.assign(readOwnSettings(nsKey), ownKv));
+          if (secret) mirrorSecretToSecrets(nsKey, inst.appId, secret); // [qqbot-mod 2026-10-31] secrets 镜像
         } catch { /* 自有存储失败 → 退化到写 patch（下面仍会处理 disabled） */ }
         if (inst.disabled !== undefined) kv.disabled = inst.disabled ? 'true' : 'false';
         if (Object.keys(kv).length) updates.push({ id: String(inst.id), kv });
@@ -2184,6 +2249,7 @@ export function apply(ctx) {
         if (inst.cwd) cur.cwd = String(inst.cwd);
         if (inst.disabled !== undefined) cur.disabled = !!inst.disabled;
         writeOwnSettings(nsKey, cur);
+        if (sec) mirrorSecretToSecrets(nsKey, inst.appId, sec); // [qqbot-mod 2026-10-31] secrets 镜像
       }
     } catch { /* 自有存储失败不阻塞 patch 写入 */ }
     writeFileSync(PATCH_FILE, out, 'utf8');
@@ -3054,6 +3120,27 @@ export function apply(ctx) {
     const ext = extname(p).replace('.', '').toLowerCase();
     res.writeHead(200, { 'content-type': MIME[ext] ?? 'application/octet-stream', 'cache-control': 'private, max-age=3600' });
     res.end(buf);
+  });
+
+  // [qqbot-mod] cw-sticker-img 2026-10-29 主人需求：评论表情包选择器要能看见原图，
+  //   不是纯文字（人看不来文字对的是哪张图）。缩略图走 sticker-resolve 库（pathOfId
+  //   自带白名单：只解析表情包库目录内的 id，不外接路径），和 /sticker-img（sticker-store）是两个库。
+  route(ctx, 'GET', '/api/qqbot-settings/cw-sticker-img', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const id = u.searchParams.get('id') || '';
+      const bot = nsBot(__qqNsOf(req));
+      const rootS = resolveMemoryRoot(bot);
+      const SRCW = await import('file:///' + join(rootS, '.qqbot-extensions', 'lib', 'sticker-resolve.mjs').split(String.fromCharCode(92)).join('/'));
+      const p = SRCW.pathOfId(rootS, id);
+      if (!p) return writeJson(res, 404, { error: 'not found' });
+      const buf = readFileSync(p);
+      const ext = extname(p).replace('.', '').toLowerCase();
+      res.writeHead(200, { 'content-type': MIME[ext] === 'application/octet-stream' ? 'image/jpeg' : (MIME[ext] ?? 'image/jpeg'), 'cache-control': 'private, max-age=3600' });
+      res.end(buf);
+    } catch (e) {
+      return writeJson(res, 500, { error: String((e && e.message) || e) });
+    }
   });
 
   // 批量: {op:'promote'|'trash'|'restore'|'tag', ids:[], tags?:string[], desc?:string}
@@ -4200,7 +4287,8 @@ function extCfgPath(root, which) {
         let secret = {};
         try { secret = lib.readSecret(root) || {}; } catch { }
         lib
-          .planAndRender(root, cfg, { jobId, topic, panels, orientation, scriptJson, secret })
+          .planAndRender(root, cfg, { jobId, topic, panels, orientation, scriptJson, secret,
+            dubbing: ['gsv', 'breeze', 'index'].includes(String(body.dubbing || '').toLowerCase()) ? String(body.dubbing).toLowerCase() : '' })
           .then((x) => {
             lib.appendRecord(root, {
               type: 'plan',
@@ -4236,10 +4324,18 @@ function extCfgPath(root, which) {
           const d = await lib.draftComment(root, { bvid, intent: c.text }, cfg);
           if (d && d.ok) made.push(d.draft);
         }
+        // [qqbot-mod] my-threads 2026-10-29：主人需求 —— 「我给某个视频发了评论，别人回复我看不到」。
+        //   把「我发过的评论 + 收到的全部楼中楼回复」一并回传（comment-watch.biliMyThreads）。
+        let myThreads = null;
+        try {
+          const CWt = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+          myThreads = await CWt.biliMyThreads(root, { bvid, aid: v.video.aid });
+        } catch (eT) { myThreads = { ok: false, error: String((eT && eT.message) || eT) }; }
         r = { ok: made.length > 0, drafts: made, error: made.length ? '' : '没有生成出草稿', video: v.video.title,
           // [qqbot-mod] reply-thread：把评论本尊也回传（rpid/昵称/内容/赞数），浮窗可以对单条评论起草楼中楼回复
           commentRows: (cs.replies || []).filter((x) => x && x.text).sort((a, b) => (Number(b.likes) || 0) - (Number(a.likes) || 0))
             .map((x) => ({ rpid: String(x.rpid || ''), user: x.user || '', text: x.text, likes: Number(x.likes) || 0 })),
+          myThreads,
           bvid };
       } else if (action === 'login-qr-start') {
         // [qqbot-mod] bili-qr-login 2026-10-27：浮窗内直接扫码登录（cookie 会失效是 B 站风控常态，
@@ -4287,23 +4383,153 @@ function extCfgPath(root, which) {
         r = { ok: true, msg: '已删除 ' + jobId };
       } else if (action === 'comment-watch') {
         // [qqbot-mod] 2026-10-28 评论巡检：auto=true 直接回复 B 站评论（拟人间隔，可能要 1~3 分钟）
+        // [qqbot-mod] pull-sort 2026-10-28：排序（最新/热度）+ 时间窗（只捞新评论，利于抢前排）+ 楼中楼开关
         const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
-        r = await CW.biliCheck(root, { auto: body.auto === true, maxReply: Number(body.maxReply) || 3, limit: Number(body.limit) || 10 });
+        r = await CW.biliCheck(root, { auto: body.auto === true, maxReply: Number(body.maxReply) || 3, limit: Number(body.limit) || 10,
+          sort: body.sort === 'hot' ? 'hot' : 'latest', maxAgeHours: Number(body.maxAgeHours) || 0,
+          withSub: body.withSub !== false, via: body.via === 'local' ? 'local' : 'cloud' });
       } else if (action === 'comment-list') {
         // [qqbot-mod] 2026-10-28 主人要求：B站巡检要能「出评论」——只读列表（带回复状态），不调 LLM 秒回
         const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
-        r = await CW.biliList(root, { limit: Number(body.limit) || 10 });
+        r = await CW.biliList(root, { limit: Number(body.limit) || 10,
+          sort: body.sort === 'hot' ? 'hot' : 'latest', maxAgeHours: Number(body.maxAgeHours) || 0 });
       } else if (action === 'comment-reply') {
         // 单条操作：mode='send' 直接回复该条评论；mode='draft' 重新生成草稿（可反复刷新）
         const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
         r = await CW.biliReply(root, body);
+      } else if (action === 'my-threads') {
+        // [qqbot-mod] my-threads 2026-10-29：独立查询 —— 粘任意 BV，看我发过的评论和收到的回复
+        const CWt = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWt.biliMyThreads(root, { bvid: String(body.bvid || '').trim(), aid: Number(body.aid) || 0, limit: Number(body.limit) || 20 });
+      } else if (action === 'reply-feed') {
+        // [qqbot-mod] 2026-10-29 主人需求：B 站消息中心式「回复我的」收件箱 ——
+        //   别人回复我评论/评论我视频，一个列表全看到，每条带定位（oid/root/parent）可一键回
+        const apiF = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await apiF.replyFeed(root, { limit: Number(body.limit) || 15 });
+        // [qqbot-mod] feed-status 2026-10-29：把已回复台账对齐到收件箱 ——
+        //   以前回复完条目还是「无状态」，主人看不出回过 → 重复回复。现在每条带
+        //   feedStatus（已回复/折叠/有草稿）+ prevReply（上次回的话），台账是真事实源。
+        if (r && r.ok && Array.isArray(r.rows)) {
+          try {
+            const CWs = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+            const store = CWs.repliedStore(root);
+            for (const row of r.rows) {
+              const prev = store['bili:' + row.oid + ':' + row.parentRpid] || store['bili:' + row.oid + ':' + row.targetRpid];
+              if (prev) {
+                row.feedStatus = prev.kind === 'reply' ? '已回复' : prev.kind === 'shadowed' ? '已回复(被折叠)' : '有草稿';
+                row.prevReply = String(prev.text || '').slice(0, 120);
+                row.repliedAt = Number(prev.at) || 0;
+              }
+            }
+          } catch { /* 台账对不上就按原样展示，不挡收件箱 */ }
+        }
+      } else if (action === 'douyin-inbox') {
+        // [qqbot-mod] dy-inbox 2026-10-29：抖音收件箱 —— 贴过链接的视频逐个拉评论，
+        //   带草稿/已发状态；回复终点=小蓝写文案→复制→人去视频页手发（写接口必风控）
+        const CWdy = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWdy.douyinInbox(root, { limit: Number(body.limit) || 12 });
+      } else if (action === 'douyin-gen') {
+        // [qqbot-mod] dy-inbox：单条「小蓝写」——性格引擎出文案并存抖音待审队列
+        const CWdy2 = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWdy2.douyinGenOne(root, { awemeId: String(body.awemeId || ''), user: String(body.user || ''), comment: String(body.comment || ''), title: String(body.title || ''), via: body.via === 'local' ? 'local' : 'cloud' });
+      } else if (action === 'sticker-list') {
+        // [qqbot-mod] 2026-10-29 主人需求：评论时能选本地表情包 —— 先列库（只给 id/描述，不洩路径）
+        const SR = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'sticker-resolve.mjs').split(String.fromCharCode(92)).join('/'));
+        const rec = SR.loadIndex(root);
+        const items = (rec.items || []).slice(0, 60).map((it) => ({
+          id: String(it.id || ''), layer: String(it.layer || 'candidate'), ext: String(it.ext || 'png'),
+          tags: Array.isArray(it.tags) ? it.tags.slice(0, 4).join(' ') : String(it.tags || '').slice(0, 30),
+          desc: String(it.desc || it.descZh || '').slice(0, 30),
+        }));
+        r = { ok: true, count: items.length, items, dirExists: SR.stickerDir(root) };
+      } else if (action === 'sticker-path') {
+        // 表情包 id → 库内绝对路径（白名单：只允许库目录内文件，防任意路径上传）
+        const SR = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'sticker-resolve.mjs').split(String.fromCharCode(92)).join('/'));
+        const p = SR.pathOfId(root, String(body.itemId || ''));
+        r = p ? { ok: true, path: p } : { ok: false, error: '表情包库里没有这个 id' };
       } else if (action === 'comment-replied') {
         const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
         r = { ok: true, items: CW.repliedList(root) };
+      } else if (action === 'douyin-feed') {
+        // [qqbot-mod] dy-interact 2026-10-29：抖音「互动消息」（消息中心式）——
+        //   /aweme/v1/web/notice/ 拉谁评论/回复了我，对齐草稿状态；needCookie=8 时如实提示重粘 cookie
+        const CWdy3 = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWdy3.douyinInteract(root, { count: Number(body.count) || 15, group: String(body.group || '2') });
       } else if (action === 'douyin-comment-watch') {
         // 抖音评论只读：出草稿（回复走手工，避免风控）
         const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
         r = await CW.douyinCheck(root, { url: String(body.url || ''), limit: Number(body.limit) || 15 });
+      } else if (action === 'douyin-patrol') {
+        // [qqbot-mod] dy-patrol 2026-10-30：手动「巡检互动消息」——拉互动通知流，
+        //   对没出过草稿的评论自动生成回复草稿（终点仍是人手工发）。默认不自动跑（主人定的）。
+        const CWp = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWp.douyinPatrol(root, { maxNew: Number(body.maxNew) || 3 });
+      } else if (action === 'bili-dyn-post') {
+        // [qqbot-mod] 2026-10-30 主人需求：浮窗发动态入口 —— 底层 bili-api.postDynamic
+        //   （新版 JSON 接口 2026-10-25 实测可用），成功/失败都落 records.jsonl，和聊天指令同款
+        const apiD = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        const text = String(body.text || '').trim();
+        if (!text) r = { ok: false, error: '动态内容为空' };
+        else {
+          r = await apiD.postDynamic(root, { content: text });
+          if (r.ok) lib.appendRecord(root, { type: 'dynamic', dynamicId: r.dynamicId || '', via: r.via || '', text: text.slice(0, 200), url: 'https://t.bilibili.com/' + (r.dynamicId || ''), at: Date.now() });
+          else lib.appendRecord(root, { type: 'dynamic-failed', text: text.slice(0, 200), error: String(r.error || ''), at: Date.now() });
+        }
+      } else if (action === 'bili-dyn-remove') {
+        const apiD2 = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await apiD2.removeDynamic(root, { dynamicId: String(body.dynamicId || '') });
+        if (r && r.ok) lib.appendRecord(root, { type: 'dynamic-delete', dynamicId: String(body.dynamicId || ''), at: Date.now() });
+      } else if (action === 'draft-save') {
+        // [qqbot-mod] script-drafts 2026-10-28：文稿草稿箱 —— 灵感随手存、反复改思路、一键转视频任务
+        r = lib.saveScriptDraft(root, { id: body.draftId, title: body.title, text: body.text, tags: body.tags });
+      } else if (action === 'draft-list') {
+        r = { ok: true, drafts: lib.listScriptDrafts(root, { limit: Number(body.limit) || 30, q: String(body.q || '') }) };
+      } else if (action === 'draft-get') {
+        const d = lib.getScriptDraft(root, body.draftId);
+        r = (d && d.status !== 'deleted') ? { ok: true, draft: d } : { ok: false, error: '找不到草稿' };
+      } else if (action === 'draft-del') {
+        r = lib.deleteScriptDraft(root, body.draftId);
+      } else if (action === 'draft-submit') {
+        // 草稿 → 视频任务：整篇是脚本 JSON 就直传分镜；否则当选题由 renderJob 自动补脚本。
+        // 渲染异步跑（同 retry 通道），响应立刻返回，前端轮任务列表。
+        const d = lib.getScriptDraft(root, body.draftId);
+        if (!d || d.status === 'deleted') return writeJson(res, 200, { ok: false, error: '找不到草稿' });
+        if (d.usedJobId) return writeJson(res, 200, { ok: true, jobId: d.usedJobId, msg: '这条草稿已经转过任务 ' + d.usedJobId });
+        let script = null;
+        try {
+          const raw = JSON.parse(d.text);
+          const ps = Array.isArray(raw && raw.panels) ? raw.panels : [];
+          if (raw && ps.length >= 2 && ps.every((p) => p && String(p.narration || p.text || '').trim())) script = raw;
+        } catch { /* 不是 JSON，当选题 */ }
+        const job = lib.newJob(root, {
+          topic: script ? String(script.title || d.title) : (d.title + '。' + d.text.replace(/\s+/g, ' ').slice(0, 180)),
+          style: 'default',
+        });
+        if (script) {
+          job.title = String(script.title || d.title).slice(0, 80);
+          job.desc = String(script.desc || '').slice(0, 900);
+          job.tags = (Array.isArray(script.tags) ? script.tags : []).map((x) => String(x).slice(0, 20)).slice(0, 8);
+          job.llm = 'draft';
+          job.panels = script.panels.map((p) => ({
+            narration: String(p.narration || p.text || '').trim().slice(0, 200),
+            imagePrompt: String(p.imagePrompt || p.image || p.prompt || p.narration || '').trim().slice(0, 500),
+          }));
+        } else {
+          job.llm = 'draft-topic';   // 半截任务：renderJob 会自动 writeScript 补分镜
+        }
+        job.orientation = body.orientation === 'horizontal' ? 'horizontal' : 'vertical';
+        if (['gsv', 'breeze', 'index'].includes(String(body.dubbing || '').toLowerCase())) job.dubbing = String(body.dubbing).toLowerCase();
+        else if (!script) job.dubbing = 'breeze';   // 从草稿选题转的任务默认 breeze（离线、效果稳）
+        lib.saveJob(job);
+        lib.updateJob(root, job.id, { status: 'rendering', stage: 'render' });
+        const job2 = lib.getJob(root, job.id);
+        lib.renderJob(job2, cfg, { dataRoot: root })
+          .then((x) => {
+            if (!x || x.ok === false) lib.updateJob(root, job.id, { status: 'failed', stage: 'failed', error: String((x && (x.error || x.reason)) || '渲染失败') });
+          })
+          .catch((e) => lib.updateJob(root, job.id, { status: 'failed', stage: 'failed', error: String((e && e.message) || e) }));
+        lib.saveScriptDraft(root, { id: d.id, usedJobId: job.id });
+        r = { ok: true, jobId: job.id, title: job.title, msg: '草稿已转任务 ' + job.id + '（渲染中，几分钟；breeze/index 配音首轮会先预热）' };
       } else if (action === 'open-folder') {
         const job = lib.getJob(root, jobId);
         if (!job || !job.dir) return writeJson(res, 200, { ok: false, error: '找不到任务目录：' + jobId });
@@ -4318,6 +4544,12 @@ function extCfgPath(root, which) {
         if (job.status === 'rendering') return writeJson(res, 200, { ok: false, error: '正在渲染中，别急' });
         if (job.status === 'awaiting_review') return writeJson(res, 200, { ok: false, error: '已在待审核，直接投稿即可' });
         if (job.published && job.published.bvid) return writeJson(res, 200, { ok: false, error: '这条已经发布过了（' + job.published.bvid + '）' });
+        // [qqbot-mod] dubbing-hint 2026-10-29：旧任务没记 dubbing（当年全落 gsv）——重试前
+        //   从选题/简介里补识别一次，主人指定过 Index/Breeze 的任务重试就用对引擎。
+        if (!job.dubbing) {
+          const dub = lib.detectDubbing(job.topic, job.title, job.desc);
+          if (dub) lib.updateJob(root, jobId, { dubbing: dub });
+        }
         lib.updateJob(root, jobId, { status: 'rendering', stage: 'render', error: '', updatedAt: Date.now() });
         const job2 = lib.getJob(root, jobId);
         lib

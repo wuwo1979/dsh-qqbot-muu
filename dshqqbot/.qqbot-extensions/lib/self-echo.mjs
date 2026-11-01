@@ -42,8 +42,10 @@ export function recentSelfLines(dataRoot, scope, limit = 3) {
  * @returns {{block:string, lines:string[]}}
  */
 export function formatEchoBlock(dataRoot, scope, opts = {}) {
-  const maxChars = Math.max(40, Math.min(240, Number(opts.maxChars) || 110));
-  const lines = recentSelfLines(dataRoot, scope, opts.limit || 3)
+  // 2026-10-31 主人拍板（token 调度）：反重复提醒压到 2 句/80 字 —— 它每条消息都会带，
+  //   3 句 110 字版一天下来也是一笔可观的固定开销；两句足够拦住复读。
+  const maxChars = Math.max(40, Math.min(240, Number(opts.maxChars) || 80));
+  const lines = recentSelfLines(dataRoot, scope, opts.limit || 2)
     .map((t) => t.replace(/\s+/g, ' ').slice(0, 28));
   if (!lines.length) return { block: '', lines: [] };
 

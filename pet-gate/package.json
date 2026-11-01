@@ -1,0 +1,14 @@
+{
+  "name": "pet-gate",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "桌宠公网网关（云端侧）：访问码+单席位+防爆破；本机 agent 反向连接代答",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

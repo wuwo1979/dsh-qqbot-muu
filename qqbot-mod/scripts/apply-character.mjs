@@ -76,7 +76,7 @@ export function renderPrompt(c) {
     for (const it of c.influences) {
       const bits = [
         it.role ? `${it.who}（${it.role}）` : it.who,
-        it.trait ? `她/他${it.trait}` : '',
+        it.trait ? it.trait : '',   // [N5 2026-10-30] 原来硬拼「她/他」，读着别扭；trait 原文自洽
         it.effect ? `所以你${it.effect}` : '',
       ].filter(Boolean);
       if (bits.length) l.push(`- ${bits.join('：')}`);
@@ -122,6 +122,15 @@ export function renderPrompt(c) {
   l.push('# 别抽象，说人话');
   const cl = c.clarity || {};
   for (const x of (cl.rules || [])) l.push(`- ${x}`);
+
+  l.push('');
+  l.push('# 想分享的时候（主动说，但别刷屏）');
+  const sh = c.sharing || {};
+  for (const x of (sh.rules || [])) l.push(`- ${x}`);
+  if ((sh.forbid || []).length) {
+    l.push('绝对不要：');
+    for (const x of sh.forbid) l.push(`- ${x}`);
+  }
 
   l.push('');
   l.push('# 你会什么（别说自己不会）');

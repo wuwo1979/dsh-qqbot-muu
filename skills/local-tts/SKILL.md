@@ -38,8 +38,10 @@ skills/local-tts/
 ### 推荐方式：管家模式（2026-10-25 起，按需启停不占显存）
 
 适配层（9881）内置**管家**：GSV/Breeze 平时一个都不跑（0 显存），插件来请求才现场拉起，
-空闲 10 分钟自动关闭还显存（打游戏不抢卡）；启动前查 `nvidia-smi`，空闲显存不够
-（GSV 要 ≥3.4GB / Breeze 要 ≥4.8GB）就回 503 说明原因，不会硬挤到 OOM。
+空闲自动关闭还显存（打游戏不抢卡；2026-10-28 起按引擎分级回收：GSV 遵配置值、
+Breeze 不低于 5 分钟、Index 不低于 30 分钟——冷加载太贵，闲着多留会儿）；
+启动前查 `nvidia-smi`，空闲显存不够（GSV 要 ≥3.4GB / Breeze 要 ≥4.8GB）
+就回 503 说明原因，不会硬挤到 OOM（除非 --vram-policy soft）。
 
 ```powershell
 # 起（推荐用 detach 脚本：WMI 脱离会话，不受父进程退出影响）
@@ -54,9 +56,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File F:\qqbot\skills\local-tts\sc
 
 - 插件侧不用改：voice-config.json 永远指 9881。第一条语音会冷启动（GSV 实测 ≈30s，
   客户端超时已放宽到 240s+），之后秒级；空闲被回收后再次冷启动。
-- `/health` 里 `supervisor` 字段可看：显存余量、各后端运行中/空闲多久。
-- 调参：`--idle-minutes`（回收阈值，0=不自动关）、`--need-gsv-mb / --need-breeze-mb`（显存门槛）、
+- `/health` 里 `supervisor` 字段可看：显存余量、各后端运行中/空闲多久、显存策略。
+- 调参：`--idle-minutes`（回收阈值，0=不自动关）、`--need-gsv-mb / --need-breeze-mb / --need-index-mb`（显存门槛，
+  2026-10-28 之前 `--need-index-mb` 根本没接线）、`--vram-policy strict|soft|off`、
   `--no-manage`（退回老行为：后端自己管自己）。
+- **--vram-policy soft（2026-10-28）**：显存不够打 WARN 照样拉起，超出部分走 Windows WDDM
+  的 CUDA Sysmem Fallback（共享显存）——慢但能出声。为什么需要它：6GB 卡整机空闲上限
+  实测 ~5.1GB（桌面合成器自己吃 ~1GB），IndexTTS 的 5300MB strict 门槛物理上永远达不到
+  （日志实锤 free=5152 < need=5300，28 次拒绝）。浮窗开关存在 voice-config.json 的
+  `vramSoft`，开启后插件发现适配层策略不一致会自动重启它（2.3.0）。
+- index 冷启动提醒：共享显存溢出时 15GB 权重首次加载要 7~12 分钟+，管家等待上限已提到 900s；
+  加载完之后的请求走热的。另有 indextts_server 时序修复：非 lazy 模式现在**加载完才开端口**，
+  不然管家误判就绪 → 第一发请求 503"model not loaded"。
 - 2026-10-25 实测：冷启动 28s→出 mp3；空闲 0.5 分钟档 54s 自动回收、显存 4.95GB 还回；
   门槛不够时 503 带友好提示且不 spawn。
 
@@ -76,6 +87,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File F:\qqbot\skills\local-tts\sc
   （30s 解说稿约 10 分钟合成，可接受；出片时反正不用抢实时性）
 - BigVGAN 自带 CUDA kernel 没编（本机无 MSVC cl.exe，日志有 `CalledProcessError(1, ['where', 'cl'])`），
   自动回退 torch 实现，只慢不坏；想提速装 VS Build Tools 后重跑可试
+
+### 出片配音链路固化（2026-10-29，全部实锤后修的）
+
+写脚本/排布管线时**必须**知道这四条，别再踩一遍：
+
+1. **两阶段渲染**：出图全停 → 停 SD + `/admin/stop-backend` 还显存 → 按 index→breeze 梯队预热（`strict_engine=true`，防 gsv 出声冒充预热成功）→ 统一配音。主管型 LLM 怕超时自作主张传 `dubbing=gsv` 会让预热链为空直接滑 GSV —— `ops.video.dubbingOverride`（默认 `index`）会强制改判，传 `"off"` 才放开。
+2. **段时长 = ffmpeg 实测音频**（`probeMediaSec`），不是合成耗时 `r.ms` —— 以前把耗时当时长，合成慢的屏段视频比音频短、尾巴被截（bb-201438 实锤 09 屏 8.14s 被压到 6.30s）。
+3. **单屏配音三连保险**：同引擎重试一次 → gsv 单屏兜底（秒出必成）→ 真全败才静音+警告。杜绝「某屏没声音、后续时间轴全断」。
+4. **wsl-index 主人专属开关**（voice-config.json，默认关）：开启后本地语音**只允许 index**，直连 WSL 的 IndexTTS2（:9891，`~/projects/bot/start-index.sh`），完全拒绝 gsv/breeze/edge 降级。WSL 与 Windows 共用同一块卡，图的是 Linux 侧没桌面抢显存。
 
 部署状态（全部就绪）：`index-tts-code/`=代码+venv（py3.11.13 + torch 2.8.0+cu128）；
 `index-tts/`=权重 + `hf_cache/` 辅助资源（w2v-bert-2.0 2.3GB / bigvgan 449MB /

@@ -23,6 +23,8 @@ export async function run(env = {}) {
   let stopped = false;
   let busy = false;
   let lastRunAt = 0;
+  // [qqbot-mod] dy-patrol 2026-10-30：抖音巡检独立计时（默认关，主人明确「点运行再搞」）
+  let lastDyAt = 0;
 
   async function tick() {
     if (stopped || busy) return;
@@ -43,6 +45,14 @@ export async function run(env = {}) {
       });
       if (r.ok && (r.replied > 0 || (r.results || []).length)) {
         logger?.info?.(`[comment-watch] B站巡检：${r.videos} 个视频，新评论 ${(r.results || []).length} 条，已回复 ${r.replied} 条${auto ? '' : '（草稿）'}`);
+      }
+      // 抖音互动巡检：**默认关闭**；要开在 bili-ops-config.json 加
+      //   "douyinPatrol": { "enabled": true, "maxNew": 3 }  → 每 45 分钟一轮
+      const dp = cfg.douyinPatrol || {};
+      if (dp.enabled === true && Date.now() - lastDyAt >= 45 * 60_000) {
+        lastDyAt = Date.now();
+        const d = await CW.douyinPatrol(dataRoot, { maxNew: Number(dp.maxNew) || 3 });
+        if (d.ok) logger?.info?.(`[comment-watch] 抖音巡检：互动 ${d.checked} 条，新草稿 ${d.drafted} 条（人手工发）`);
       }
     } catch (e) {
       logger?.warn?.(`[comment-watch] 出错：${e?.message || String(e)}`);

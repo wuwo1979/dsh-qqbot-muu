@@ -237,8 +237,10 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
     //   重复的时间头(每行 ~25 字符)没有信息量, 直接省掉。见 groupTimeHead()。
     if (scope === 'group') {
         const _head = groupTimeHead(lastGroupTimeHead, scope, peerId, new Date());
+        // 2026-10-31 主人拍板「时间头垫底」：放开头会让每轮首 token 都变（prompt 缓存全废），
+        //   放在消息末尾同样能让 AI 知道当前时间，且不破坏前缀缓存命中。
         if (_head)
-            agentBody = `${_head}\n\n${agentBody}`;
+            agentBody = `${agentBody}\n${_head}`;
     }
     logger.debug(`Processing: scope=${scope} peerId=${peerId} body="${agentBody.slice(0, 200)}"`);
     // ── 获取或创建会话 ──
@@ -1009,7 +1011,7 @@ function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msg
         .filter(h => !h.messageId || h.messageId !== msg.messageId)
         // 省 token: 历史里的 `[图片: <250 字符长链接>]` → 本地路径 / 干脆 `[图片]`
         .map(h => ({ ...h, content: localizeHistoryImages(String(h.content ?? ''), stickerDir) }));
-    const agentBody = buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch, aggregated);
+    const agentBody = buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch, aggregated, scope);
     return agentBody;
 }
 /**
@@ -1395,39 +1397,103 @@ function buildDynamicCtx(msg, downloaded) {
 /**
  * Layer 5: 最终 agentBody 拼合
  */
-function buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch = false, aggregated = false) {
-    // 群内：真实 @ 或冷却派发(batchDispatch)时，把累积的群历史打包给 AI（后者不打假 @you 标签）
+// ════════════════════════════════════════════════════════════
+// 注入块剥离 + 稳定块置顶（2026-11-01 重建；10-31 版随回退丢失 →
+// 主人贴的实盘 prompt 实锤：每条历史拖着全套 [印象]/[成长]/[记忆]/[别重复] + 时间头，
+// 设定类静态块每轮重发，浪费巨大）。
+// 设计：
+//   ① 历史条目 → 剥掉一切注入块/时间头/消息号，只留裸对话（历史里的注入已过时，
+//      当前轮的注入才是有效的）；
+//   ② 当前轮注入里的稳定块（信条/印象/成长/旧识/性格观察/约定/手边/设定/关系）→
+//      按 scope 记账，内容没变就不重发（历史里那份已被剥掉，但**稳定区**里始终有
+//      一份最新的 → 模型永远看得见，且稳定区字节级不变 → prompt 缓存全命中）；
+//   ③ 稳定区固定在最前 + [历史]裸对话居中 + 当前消息/易变块垫底 + 时间头最后。
+// ════════════════════════════════════════════════════════════
+const _PAIRED_TAGS = ['信条', '印象', '成长', '旧识', '性格观察', '约定', '手边', '设定', '关系', '记忆', '状态'];
+const _STABLE_TAGS = ['信条', '设定', '旧识', '印象', '性格观察', '成长', '约定', '手边', '关系']; // 稳定区顺序
+const _stableMemo = new Map(); // scope → Map(tag → text)
+const _TIME_HEAD_RE = /^\[20\d{2}-\d{2}-\d{2}[^\]]*\]\s*/gm; // 任意行首的时间头（含同行接 [历史] 与行尾独立行）
+const _MSGNO_RE = /^\[消息号:\s*[^\]]+\]\s*/;
+function _pairedRe(tag) {
+    return new RegExp(`\\n?\\[${tag}\\][\\s\\S]*?\\[/${tag}\\]\\n?`, 'g');
+}
+/** 把一条历史/正文里的一切注入痕迹剥成裸文本 */
+function stripInjectedBlocks(text) {
+    let t = String(text ?? '');
+    t = t.replace(_MSGNO_RE, '');
+    t = t.replace(_TIME_HEAD_RE, ''); // 先剥时间头（它与 [历史] 同行时，后者的 ^ 锚定才能命中）
+    for (const tag of _PAIRED_TAGS) t = t.replace(_pairedRe(tag), '\n');
+    t = t.replace(/^\[别重复\][^\n]*(?:\n[^\n\[]*)*/gm, ''); // 单行块（无闭标记）
+    t = t.replace(/^\[历史\]\s*/gm, '');
+    t = t.replace(/^\[\/历史\]\s*/gm, '');
+    t = t.replace(/^\[当前\]\s*/gm, '');
+    t = t.replace(/^（以下是你上次开口之后[^）]*）\s*$/gm, ''); // 旧版长说明
+    t = t.replace(/^\[系统提示\][^\n]*$/gm, ''); // 聚合提示随历史过时，只在当轮加
+    t = t.replace(_TIME_HEAD_RE, '');
+    return t.replace(/\n{3,}/g, '\n\n').trim();
+}
+/** 从当前轮注入里抽出稳定块：{header: 置顶文本, rest: 剩余正文}；scope 记账去重 */
+function splitStableBlocks(base, scope) {
+    let rest = String(base ?? '');
+    const found = new Map(); // tag → text
+    for (const tag of _PAIRED_TAGS) {
+        const re = _pairedRe(tag);
+        rest = rest.replace(re, (m) => {
+            const body = m.replace(/^\n?/, '').replace(/\n?$/, '');
+            found.set(tag, body);
+            return '\n';
+        });
+    }
+    let memo = _stableMemo.get(scope);
+    if (!memo) { memo = new Map(); _stableMemo.set(scope, memo); }
+    const headerParts = [];
+    for (const tag of _STABLE_TAGS) {
+        const cur = found.get(tag) ?? memo.get(tag);
+        if (!cur) continue;
+        if (found.has(tag) && memo.get(tag) !== cur) memo.set(tag, cur); // 变了才记账
+        if (!found.has(tag) && !memo.has(tag)) continue;
+        headerParts.push(cur);
+        if (found.has(tag)) rest = rest.replace(cur, ''); // 从正文里移走（已在稳定区）
+    }
+    rest = rest.replace(/\n{3,}/g, '\n\n').trim();
+    return { header: headerParts.join('\n'), rest };
+}
+function buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch = false, aggregated = false, scope = '') {
     const includeHistory = isGroup && (wasMentioned || batchDispatch) && !!history && history.length > 0;
+    // 稳定块置顶（私聊/群聊都生效；历史里旧注入会被剥掉，稳定区永远有一份最新的）
+    const { header: stableHeader, rest: currentBody } = splitStableBlocks(base, scope);
     // 聚合投递提示(2026-09-07 主人定): 这些消息是我上一轮回合进行中群友发的, 攒到回合结束
-    // 才统一入站 —— 时间上早于我的上一次回复, 不是群友在回复我。必须显式说明, 否则 AI 会
-    // 误以为它们是"我回完之后群友接着说的"(dsh 队列特性: 攒的消息看起来像新的一轮)。
-    // ⚠️ 2026-10-07 主人: "系统提示太长了, 浪费 token" → 压缩到一句(只留"何时发的+怎么处理")。
+    // 才统一入站 —— 必须显式说明, 否则 AI 会误以为它们是"我回完之后群友接着说的"。
+    // ⚠️ 2026-10-07 主人: "系统提示太长了, 浪费 token" → 压缩到一句。
     const aggregatedNote = aggregated
         ? '[系统提示] 以下是你思考/输出期间群友发的消息(非对你的回应), 通读后综合回应(如需回应)。\n\n'
         : '';
     if (!includeHistory) {
-        // 私聊等无历史打包场景: 聚合提示直接置于正文前
-        return aggregatedNote + base;
+        // 私聊等无历史打包场景: 稳定区 → 聚合提示 → 正文
+        return [stableHeader, aggregatedNote + currentBody].filter(Boolean).join('\n\n');
     }
     const historyLines = history.map((h, _hi) => {
         const name = h.senderName ?? shortSenderId(h.senderId);
-        // 2026-09-12 token 瘦身(主人定): 历史行默认**只给昵称**; 只有"当时 @ 过 bot 的那条"带 openid ——
-        // 32 位 openid 每行占 20+ token, limit=20 时每轮白烧 ~640; 要 id 时用 session_list / 台账反查。
+        // 2026-09-12 token 瘦身(主人定): 历史行默认**只给昵称**; 只有"当时 @ 过 bot 的那条"带 openid。
+        // 2026-11-01: 历史条目剥掉一切注入块/时间头 → 裸对话（注入只活在稳定区与当前轮）。
         const mentioned = h.mentioned === true;
-        // 排版: 多行 content 退 2 格 —— 让"一条消息"视觉成块
-        const raw = String(h.content ?? '');
+        const raw = stripInjectedBlocks(String(h.content ?? ''));
+        if (!raw) return ''; // 整条都是注入的消息（罕见）→ 不占编号
         const c = raw.includes('\n') ? raw.split('\n').map((l) => '  ' + l).join('\n') : raw;
         return mentioned && h.senderId ? `${_hi + 1}. [${name} (${h.senderId})] ${c}` : `${_hi + 1}. [${name}] ${c}`;
-    });
+    }).filter(Boolean);
+    // 2026-11-01 主人: 说明性文字精简 —— 一行说清"独立消息+编号"就够
+    const historyExplainer = `（群友近况 ${historyLines.length} 条，逐条独立）`;
     return [
+        stableHeader,
         aggregated ? '[系统提示] 以下是上次回复前群友所发(非对你的回应), 通读后综合回应。' : '',
         MK.HISTORY_BEGIN,
-        `（以下是你上次开口之后群友陆续发的 ${historyLines.length} 条**独立**消息，逐条编号；每行是一个不同的人/不同时刻说的一句话，不是你一条消息被拆开。）`,
+        historyExplainer,
         ...historyLines,
         '',
         MK.HISTORY_END,
         MK.CURRENT,
-        base,
+        currentBody,
     ].filter(Boolean).join('\n');
 }
 function extractVoiceTexts(attachments, processed, _logger) {

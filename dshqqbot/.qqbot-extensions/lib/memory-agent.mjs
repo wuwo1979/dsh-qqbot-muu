@@ -599,12 +599,27 @@ export async function runTurnAgent({
     //   **旧的 state 对象**（growthTs=undefined）覆盖回去 ⇒ growthTs 每次被抹掉，
     //   下一轮反思门重新满足，本地模型被反复整块调用（token/显存掉、面板卡）。
     //   修复：反思成功就在 stateOut 里带上 now，最终只写这一次。
-    const stateOut = { ...state, lastTs, lastRun: now, growthTs: (reflected && reflected.ok) ? now : state.growthTs };
+    // [qqbot-mod] daydream 2026-10-29：空闲胡思乱想（参考 Companion-AI-Memory）——
+    //   默认每 3 小时左右一次（±30min 抖动），从记忆库抽碎片发散一句碎念存回库（噪声）。
+    //   走本地模型、只碰 GLOBAL_SCOPE，与反思共用本轮的本地调用窗口。
+    let daydream = null;
+    if (profileOn && c.daydream !== false) {
+      const ddInt = Math.max(1, Number(c.daydreamIntervalHours) || 3) * 3600 * 1000;
+      const ddState = getChatState(root, 'daydream:ts') || {};
+      const ddDue = Date.now() - (Number(ddState.ts) || 0) >= ddInt + Math.floor(Math.random() * 1800000);
+      if (ddDue) {
+        try {
+          daydream = await runDaydream({ dataRoot: root, cfg, chatImpl: typeof chatImpl === 'function' ? chatImpl : null, now });
+        } catch { daydream = null; }
+        setChatState(root, 'daydream:ts', { ts: Date.now() });
+      }
+    }
+    const stateOut = { ...state, lastTs, lastRun: now, growthTs: (reflected && reflected.ok) ? now : state.growthTs, daydreamTs: daydream && daydream.ok ? now : (state.daydreamTs || 0) };
     setChatState(root, stateKey, stateOut);
     const out = {
       ok: true, ms: Date.now() - started, newMessages: fresh.length,
-      facts, cards, mood, relation, traits, insights, reflected, consolidated,
-      wrote: !!(facts.some((f) => f.ok) || cards.length || mood || relation || traits.length || insights.length),
+      facts, cards, mood, relation, traits, insights, reflected, consolidated, daydream,
+      wrote: !!(facts.some((f) => f.ok) || cards.length || mood || relation || traits.length || insights.length || (daydream && daydream.ok)),
     };
     if (c.log !== false) {
       writeAgentLog(root, {
@@ -612,6 +627,7 @@ export async function runTurnAgent({
         facts: facts.map((f) => `${f.kind}:${f.text}`), cards: cards.map((x) => x.text), mood,
         relation, insights: insights.map((x) => `[${x.source}]${x.text}`),
         reflected: reflected && reflected.ok ? reflected.text : '',
+        daydream: daydream && daydream.ok ? daydream.text : '',
       });
     }
     return out;
@@ -694,4 +710,71 @@ export async function runSelfReflection({
   }
 }
 
-export default { runTurnAgent, runSelfReflection, parseAgentJson, loadAgentCfg, DEFAULTS };
+/**
+ * 空闲胡思乱想（2026-10-29 参考 Companion-AI-Memory 的 daydream 机制）。
+ * 现有反思（runSelfReflection）是结构化的「总结心得」；这个是**发散**：空闲时从记忆库
+ * 随机抽几条碎片串成一句没头没尾的碎念，再存回记忆库 —— 给记忆加噪声，让她像人一样
+ * 有不确定性（以后聊到相关话题时这些胡思乱想会被自然召回）。
+ * 隐私边界：只在 GLOBAL_SCOPE（心得/心得级）采样与写入，不碰 person:qq:* 的个人库；
+ * 走本地模型（chatImpl/llmChat），不外发云端。
+ */
+export async function runDaydream({
+  dataRoot, cfg = {}, chatImpl = null, now = Date.now(),
+} = {}) {
+  const c = loadAgentCfg(cfg);
+  const root = String(dataRoot || '').trim();
+  if (!root) return { ok: false, reason: 'no-root' };
+  const started = Date.now();
+  try {
+    const pool = (loadMemories(root, GLOBAL_SCOPE) || []).filter((m) => {
+      const k = String(m.kind || '');
+      return k && k !== 'daydream' && String(m.text || '').length >= 8;   // 不拿旧胡思乱想当素材（防自发酵失控）
+    });
+    if (pool.length < 3) return { ok: false, reason: 'too-few-memories', ms: Date.now() - started };
+    // 一半偏好「常被想起的」，一半纯随机 —— 像人发呆：有时想起印象深刻的事，有时想起犄角旮旯
+    const hotTop = [...pool].sort((a, b) => (b.hits || 0) - (a.hits || 0)).slice(0, 5);
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
+    const picks = [];
+    const seen = new Set();
+    for (const m of [...hotTop.slice(0, 2), ...shuffled]) {
+      if (picks.length >= 3) break;
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      picks.push(m);
+    }
+    if (!picks.length) return { ok: false, reason: 'no-pick', ms: Date.now() - started };
+
+    const sys = [
+      '你是"小蓝"的发呆分身。她是一只深海鲸鱼娘，信条：去探究何为爱；完善自我。',
+      '输入是她记忆库里的几条碎片。她现在空闲发呆，把它们串成一句**胡思乱想**：',
+      '- ≤50 字、第一人称、像人发呆时的碎念，可以没头没尾、自问自答、有点跳跃；',
+      '- 不是总结、不是心得，不要结论腔（「所以我明白了…」这种不要）；',
+      '- 不生成对具体某个人的承诺；不做好坏极端化评价。',
+      '只输出那一句碎念本身，不要 JSON、不要解释。',
+    ].join('\n');
+    const user = '记忆碎片：\n' + picks.map((m) => '- ' + clean(m.text, 70)).join('\n');
+
+    const callChat = typeof chatImpl === 'function' ? chatImpl : llmChat;
+    const lc = loadLlmConfig(root);
+    const r = await callChat({
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
+      cfg: lc,
+      timeoutMs: Number(c.timeoutMs) || DEFAULTS.timeoutMs,
+      maxTokens: 120,
+      temperature: 0.95,   // 发散要高一点温度
+    });
+    if (!r || !r.ok || !r.text) return { ok: false, reason: 'llm-empty', error: (r && r.error) || '', ms: Date.now() - started };
+    const text = clean(String(r.text).replace(/^"|"$/g, ''), 60);
+    if (!text || text.length < 8) return { ok: false, reason: 'parse', raw: clean(r.text, 120), ms: Date.now() - started };
+
+    // 落库：kind='daydream'，向量与其它记忆同库 —— 之后聊到相关话题会被自然召回（噪声成真）
+    let saved = { ok: false };
+    try { saved = await remember(root, GLOBAL_SCOPE, { text, kind: 'daydream', subj: 'self' }); } catch { /* ignore */ }
+    if (c.log !== false) writeAgentLog(root, { ts: Date.now(), scope: 'daydream', text, savedOk: !!saved.ok, seeds: picks.map((m) => clean(m.text, 30)) });
+    return { ok: true, text, id: saved.id || '', ms: Date.now() - started };
+  } catch (e) {
+    return { ok: false, reason: 'throw', error: e instanceof Error ? e.message : String(e), ms: Date.now() - started };
+  }
+}
+
+export default { runTurnAgent, runSelfReflection, runDaydream, parseAgentJson, loadAgentCfg, DEFAULTS };

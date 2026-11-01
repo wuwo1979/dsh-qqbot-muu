@@ -311,6 +311,68 @@ export async function profileSelf(cookie, opts = {}) {
 }
 
 /**
+ * [qqbot-mod] dy-interact 2026-10-29 主人需求：抖音「互动消息」——
+ *   对标 B 站消息中心：谁评论了我/回复了我，一个列表全看到（不用逐个视频扫评论）。
+ * 端点：/aweme/v1/web/notice/（抖音 web 消息中心同款；数据在 notice_list_v2）。
+ *   notice_group: 2=评论 3=点赞 401=粉丝 601=@我 520=弹幕 700=全部。
+ * 只读：is_mark_read=0，不动用户 App 里的已读状态。
+ * 字段结构以线上为准，这里做防御式提取（取不到的字段落 raw 兜底展示）。
+ */
+export async function interactFeed(root, { group = '2', count = 15, minTime = 0 } = {}) {
+  // [qqbot-mod] 2026-10-29 主人实锤 read ECONNRESET：抖音这条通路（node:https 直连/代理隧道）
+  //   偶发被重置，抖动重试三次（间隔 1s/2.5s），全灭才报错。
+  let r = null
+  let lastErr = ''
+  for (let i = 0; i < 3; i += 1) {
+    if (i > 0) await new Promise((res) => setTimeout(res, i === 1 ? 1000 : 2500))
+    try {
+      r = await signedGet(root, '/aweme/v1/web/notice/', {
+        is_new_notice: '1', is_mark_read: '0', notice_group: String(group),
+        count: String(Math.min(20, Number(count) || 15)),
+        min_time: String(Number(minTime) || 0), max_time: '0',
+      }, { referer: 'https://www.douyin.com/message' })
+      if (r && r.ok) break
+      lastErr = 'HTTP ' + r.httpStatus
+      if (r && r.ok !== false && r.httpStatus === 200) break
+      // 非 JSON 也算一次尝试（r.text 有内容时继续走解析，解析失败才算输）
+      if (r && r.httpStatus === 200) break
+    } catch (e) {
+      lastErr = String((e && (e.cause && e.cause.code)) || e.message || e)
+      r = null
+    }
+  }
+  if (!r) return { ok: false, error: lastErr || '请求失败' }
+  if (!r.ok) return { ok: false, error: lastErr || ('HTTP ' + r.httpStatus) }
+  let j
+  try { j = JSON.parse(r.text) } catch { return { ok: false, error: '接口回了非 JSON（可能被风控或 cookie 失效）' } }
+  if (Number(j.status_code ?? 0) !== 0) {
+    // status_code=8 用户未登录 → 让上层如实引导去重新粘 cookie
+    return { ok: false, needCookie: Number(j.status_code) === 8, error: j.status_msg || ('code ' + j.status_code) }
+  }
+  const list = j.notice_list_v2 || j.notice_list || []
+  const rows = list.map((n) => {
+    // [qqbot-mod] dy-interact 2026-10-29 实测结构：type=31 评论通知的正文嵌在
+    //   n.comment.comment（cid/text/aweme_id/user.nickname）；其它类型结构不同，逐层兜底。
+    const c = (n.comment && n.comment.comment) || n.comment || {}
+    const u = c.user || n.user || {}
+    const awemeId = String(c.aweme_id || n.aweme_id || (c.aweme && c.aweme.aweme_id) || '')
+    const ts = Number(n.create_time || c.create_time || 0)
+    return {
+      nid: String(n.nid || ''),
+      group: String(n.notice_group || group),
+      type: Number(n.type || 0),
+      user: String(u.nickname || n.nickname || '').slice(0, 40),
+      text: String(c.text ?? n.text ?? n.content ?? '').slice(0, 200),
+      awemeId,
+      cid: String(c.cid || n.comment_id || n.cid || ''),
+      at: ts > 0 && ts < 10 ** 12 ? ts * 1000 : ts,   // 秒→毫秒
+      raw: JSON.stringify(n).slice(0, 400),            // 字段不认识时至少能看到原文
+    }
+  })
+  return { ok: true, rows, hasMore: Number(j.has_more || 0) === 1, minTime: Number(j.min_time || 0) }
+}
+
+/**
  * 登录态检测。抖音对裸请求很敏感，所以：
  *  - 没有 cookie → 直接 logged-out（不打扰服务器）；
  *  - 有 cookie → 只打一个只读接口，命中风控就记冷却并如实返回 blocked，绝不重试。

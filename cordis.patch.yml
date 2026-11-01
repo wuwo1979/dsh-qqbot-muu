@@ -1,23 +1,36 @@
-# dsh bundle patch —— dsh-qqbot-muu
+# dsh-qqbot-muu bundle patch（独立完整版：底盘+全部本地心血，2026-11-01 起不再依赖 @zaofan）
 #
-# 这是什么：`@zaofan/dsh-qqbot` 的扩展包 + 补丁集（统一记忆库、群分级、印象卡、
-# 浮窗 UI、B 站运营、本地语音、逐帧视频）。它自己**不重复加载 QQ 通道**，
-# 只注册一个插件行，把 `.qqbot-extensions/` 与 `qqbot-mod/patches/` 的补丁装进
-# 机器人的数据根。
+# 当本包通过 `dsh plugin --profile <name> add @tencent-connect/dsh-qqbot` 安装后，
+# dsh 启动时自动加载此 patch。
 #
-# 安装：
-#   dsh plugin --profile <name> add dsh-qqbot-muu
-#   dsh-qqbot-muu-install        # 把扩展与补丁落进 {dataRoot}
-#
-# 依赖：`@zaofan/dsh-qqbot` 已锁版本 1.10.39（见 package.json 的 dependencies）。
-# 上游版本变了要先 `node qqbot-mod/patches/live-overlay/install.mjs --apply`
-# 做一次三路合并，再升级，否则定制补丁会被新 generation 冲掉。
-#
-# 环境变量（都可选）：
-#   QQBOT_MEMORY_DATA_ROOT  - 机器人数据根（默认 <cwd>/dshqqbot）
-#   QQBOT_PLUGIN_DIR        - 显式指定 @zaofan/dsh-qqbot 的安装目录
+# 环境变量：
+#   QQBOT_APPID  - QQ Bot AppID（必填）
+#   QQBOT_SECRET - QQ Bot AppSecret（必填）
 #
 # 叠加顺序：dsh-base → 本 bundle patch → profile cordis.patch.yml → --patch
+
+# ── 插入 im-qqbot 插件行 ──
 - insert:
-    - id: dsh-qqbot-muu
+    - id: im-qqbot
       name: 'dsh-qqbot-muu'
+      config:
+        appId: __FROM_ENV__
+        appSecret: __FROM_ENV__
+        # provider/model 留空：从宿主默认模型路由继承
+        # 用户可通过 /model 命令在聊天中切换
+        requireMention: true
+        textChunkLimit: 4500
+        sessionIdleTimeout: 1800000
+        maxQueue: 20
+        processingTimeoutMs: 120000
+        historyLimit: 10
+        access:
+          c2cMode: open
+          c2cAllow: []
+          groupMode: open
+          groupAllow: []
+        debug: false
+
+# ── 设置面板(单包自含): host 桥由 im-qqbot 插件 apply 内动态装载(settings-host.js,
+#    仅 web profile 有 settings/webServer 服务时生效); 设置页 client 经 dsh.client
+#    (exports ./client) 自动出现在 dsh Web 设置里 —— 无需再单独安装 dsh-qqbot-settings。

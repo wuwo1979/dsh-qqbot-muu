@@ -413,36 +413,58 @@ export async function comments(dataRoot, { aid, limit = 10, sort = 'latest' } = 
   const mode = sort === 'hot' ? 2 : 3;
   const mine = String(c?.cookies?.DedeUserID || '');
 
-  const q = await wbiQuery(dataRoot, {
-    oid: Number(aid), type: 1, mode, next: 0, ps: ps,
-    plat: 1, pagination_str: '{"offset":""}', web_location: 1315875,
+  // [qqbot-mod] reply-paging 2026-10-29 修复「只能看到第一条评论」：wbi/main 新版接口
+  //   分页粒度很小（第一批常只有 1~2 条），以前只拉 next=0 的第一批就返回 —— 实锤
+  //   total=3 只回来 1 条，评论区里后来的评论全看不见。现在按 cursor.next +
+  //   pagination_reply_next_offset 翻页，拉满 ps 条或 is_end 为止（最多 8 页防失控）。
+  const mapOne = (x) => ({
+    rpid: String(x.rpid_str || x.rpid || ''),
+    user: x.member?.uname,
+    mid: String(x.mid || ''),
+    text: x.content?.message,
+    likes: x.like,
+    replies: x.rcount,
+    state: Number(x.state ?? 0),
+    isSelf: mine && String(x.mid) === mine,
+    time: x.ctime,
   });
-  if (q.ok) {
+  const byRpid = new Map();
+  let pages = 0;
+  let next = 0;
+  let offset = '';
+  let total = null;
+  while (pages < 8 && byRpid.size < ps) {
+    const pagination = offset ? JSON.stringify({ offset }) : '{"offset":""}';
+    const q = await wbiQuery(dataRoot, {
+      oid: Number(aid), type: 1, mode, next, ps, plat: 1, web_location: 1315875,
+      pagination_str: pagination,
+    });
+    if (!q.ok) break;
     const r = await request(`${API}/x/v2/reply/wbi/main?${q.query}`, { cookie: c?.cookies });
-    if (!r.ok) return r;
+    if (!r.ok) break;
     const j = r.json;
     if (needLogin(j)) return { ok: false, needLogin: true, error: '登录已失效，请重新扫码' };
-    if (j.code === 0) {
-      const replies = (j.data?.replies || []).map((x) => ({
-        rpid: String(x.rpid_str || x.rpid || ''),
-        user: x.member?.uname,
-        mid: String(x.mid || ''),
-        text: x.content?.message,
-        likes: x.like,
-        replies: x.rcount,
-        state: Number(x.state ?? 0),
-        isSelf: mine && String(x.mid) === mine,
-        time: x.ctime,
-      }));
-      return { ok: true, replies, total: j.data?.cursor?.all_count ?? j.data?.page?.count ?? null, via: 'wbi/main' };
-    }
-    // -404 = 该 oid 没评论；其它 → 落回老接口
-    if (j.code !== -404) {
-      const fb = await legacyComments(dataRoot, { aid, limit: ps, mine });
-      if (fb.ok) return { ...fb, wbiError: `${j.message || ''}（code ${j.code}）` };
-    }
     if (j.code === -404) return { ok: true, replies: [], total: 0, via: 'wbi/main' };
+    if (j.code !== 0) break;   // 其它错误 → 落 legacy
+    pages += 1;
+    total = j.data?.cursor?.all_count ?? j.data?.page?.count ?? total;
+    for (const x of (j.data?.replies || [])) {
+      const rp = String(x.rpid_str || x.rpid || '');
+      if (rp && !byRpid.has(rp)) byRpid.set(rp, mapOne(x));
+    }
+    const cur = j.data?.cursor || {};
+    if (cur.is_end) break;
+    // 2026-10-29 实测：pagination_reply.next_offset 是**纯字符串**（"CAES..."），
+    // 直接作为 offset 值传回去；多包一层 JSON 引号服务器会静默忽略（翻页失效）。
+    const nextOffset = cur.pagination_reply?.next_offset ?? cur.pagination_next_offset ?? null;
+    if (nextOffset == null && !(j.data?.replies || []).length) break;
+    if (nextOffset != null) offset = String(nextOffset);
+    next = Number.isFinite(Number(cur.next)) ? Number(cur.next) : next + 1;
   }
+  if (byRpid.size) {
+    return { ok: true, replies: [...byRpid.values()].slice(0, ps), total, via: 'wbi/main', pages };
+  }
+  // wbi 翻页彻底走不通（签名/风控）→ 老接口兜底
   return legacyComments(dataRoot, { aid, limit: ps, mine });
 }
 
@@ -815,7 +837,7 @@ export async function assertInHistory(dataRoot, bvid, { pages = 2 } = {}) {
   return { ok: true, hit: null };
 }
 
-export async function postComment(dataRoot, { aid, message, root, parent, verifyMs = 15000, bvid = '', watchFirst = true } = {}) {
+export async function postComment(dataRoot, { aid, message, root, parent, verifyMs = 15000, bvid = '', watchFirst = true, pictures = null } = {}) {
   if (!aid) return { ok: false, error: '缺少 aid' };
   const text = String(message || '').trim();
   if (!text) return { ok: false, error: '评论内容为空' };
@@ -826,6 +848,15 @@ export async function postComment(dataRoot, { aid, message, root, parent, verify
 
   const csrf = c.cookies.bili_jct;
   const body = { oid: String(aid), type: '1', message: text, csrf, plat: '1' };
+  // [qqbot-mod] 2026-10-29：评论区发图 —— pictures = [{img_url, img_width, img_height}]，
+  // 图片先经 uploadCommentImage 传到 B 站图床拿到 url 再传进这里
+  if (Array.isArray(pictures) && pictures.length) {
+    body.pictures = JSON.stringify(pictures.slice(0, 1).map((p) => ({
+      img_url: String(p.img_url || p.url || ''),
+      img_width: Number(p.img_width || p.width) || 200,
+      img_height: Number(p.img_height || p.height) || 200,
+    })));
+  }
   // 回复某条评论：root = 顶层评论 rpid，parent = 被回复的 rpid（回复顶层时两者相同）
   const rootId = String(root || '').trim();
   if (rootId) {
@@ -1144,16 +1175,95 @@ export async function fetchImage(url, { timeoutMs = 20000 } = {}) {
   }
 }
 
-// ═══ [[bili-msgs] 私信收件箱 2026-10-27：会话列表 / 读消息 / 发消息 ═══
+// ═══ [bili-msgs] 私信收件箱 2026-10-27：会话列表 / 读消息 / 发消息 ═══
 // 参考 bilibili-API-collect 的 web IM 端点；发消息要 bili_jct（csrf）。只收发文本，别的不碰。
 
 const VC = 'https://api.vc.bilibili.com';
+
+/**
+ * 「回复我的」收件箱（消息中心，2026-10-29）：别人回复我评论/评论我视频的统一通知流。
+ * 主人需求：不用按视频一个个扫，像 B 站 App 那样一个窗口看到所有「别人回复我」，直接回。
+ * 实测字段：item.subject_id=oid(视频aid)、root_id=楼中楼root、source_id=对方那条的rpid、
+ * source_content=对方说的内容、root_reply_content=我被回复的原文、uri 含 bvid、
+ * type='reply' 才是评论回复（'video' 是点赞/关注类通知，透传展示但不可回复）。
+ */
+export async function replyFeed(dataRoot, { limit = 15 } = {}) {
+  const c = loadCookie(dataRoot);
+  if (!c) return { ok: false, needLogin: true, error: '还没登录 B 站' };
+  const r = await request(`https://api.bilibili.com/x/msgfeed/reply?platform=web&build=0&mobi_app=web&ps=${Number(limit) || 15}`, { cookie: c.cookies, referer: 'https://message.bilibili.com/' });
+  if (!r.ok) return { ok: false, error: r.error };
+  const j = r.json;
+  if (needLogin(j)) return { ok: false, needLogin: true, error: '登录已失效，请重新扫码' };
+  if (j.code !== 0) return { ok: false, error: `${j.message || '读回复通知失败'}（code ${j.code}）` };
+  const myMid = String(c.cookies.DedeUserID || '');
+  const rows = (j.data?.items || []).map((it) => {
+    const m = it.item || {};
+    const bv = String(m.uri || '').match(/BV[0-9A-Za-z]{10}/)?.[0] || '';
+    return {
+      idKey: String(it.id || ''),
+      kind: m.type === 'reply' ? 'reply' : m.business || m.type || 'other',
+      user: m.type === 'reply' ? String(it.user?.nickname || '') : String(it.user?.nickname || ''),
+      userMid: String(it.user?.mid || ''),
+      // 评论回复：定位三件套（oid/root/parent）齐了就能直接回楼中楼
+      oid: Number(m.subject_id) || 0,
+      rootRpid: String(m.root_id || ''),
+      parentRpid: String(m.source_id || ''),
+      targetRpid: String(m.target_id || ''),
+      myText: String(m.root_reply_content || m.title || '').slice(0, 120),   // 我被回复的那条
+      replyText: String(m.source_content || m.target_reply_content || '').slice(0, 200),   // 对方说的
+      bvid: bv,
+      title: String(m.desc || '').slice(0, 80),
+      at: Number(it.reply_time || 0) * 1000,
+      canReply: m.type === 'reply' && Number(m.subject_id) > 0 && String(m.root_id || '') !== '',
+      fromMe: String(it.user?.mid || '') === myMid,
+    };
+  });
+  return { ok: true, rows, myMid };
+}
+
+/**
+ * 上传一张本地图片到 B 站评论图床（评论区发图第一步）。
+ * 2026-10-29：主人要求评论能带本地表情包。path 由宿主按表情包库白名单解析后才传进来。
+ */
+export async function uploadCommentImage(dataRoot, { filePath } = {}) {
+  const c = loadCookie(dataRoot);
+  if (!c) return { ok: false, needLogin: true, error: '还没登录 B 站' };
+  if (!c.cookies.bili_jct) return { ok: false, error: 'Cookie 里缺 bili_jct（csrf），请重新扫码' };
+  let buf;
+  try { buf = readFileSync(filePath); } catch (e) {
+    return { ok: false, error: '读不到图片文件：' + (e instanceof Error ? e.message : String(e)) };
+  }
+  if (buf.length > 5 * 1024 * 1024) return { ok: false, error: '图片超过 5MB（B 站评论区限制）' };
+  try {
+    const fd = new FormData();
+    fd.append('csrf', c.cookies.bili_jct);
+    const ext = /\.(png|jpe?g|gif|webp)$/i.test(filePath) ? RegExp.$1.toLowerCase().replace('jpeg', 'jpg') : 'png';
+    fd.append('file_up', new Blob([buf], { type: 'image/' + (ext === 'jpg' ? 'jpeg' : ext) }), 'sticker.' + ext);
+    const res = await fetch(`${API}/x/v2/reply/image/upload`, {
+      method: 'POST',
+      headers: {
+        cookie: cookieHeader(c.cookies), referer: REFERER, origin: 'https://www.bilibili.com', 'user-agent': UA,
+      },
+      body: fd,
+    });
+    const j = await res.json().catch(() => ({}));
+    if (needLogin(j)) return { ok: false, needLogin: true, error: '登录已失效，请重新扫码' };
+    if (j.code !== 0) return { ok: false, error: `${j.message || '上传失败'}（code ${j.code}）` };
+    const d = j.data || {};
+    if (!d.image_url) return { ok: false, error: '上传返回成功但没有 image_url' };
+    return { ok: true, url: d.image_url, width: Number(d.image_width) || 0, height: Number(d.image_height) || 0 };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 /** 会话列表（私信收件箱）：type=1 为普通私聊。 */
 export async function sessions(dataRoot, { limit = 20 } = {}) {
   const c = loadCookie(dataRoot);
   if (!c) return { ok: false, needLogin: true, error: '还没登录 B 站' };
-  const r = await request(`${VC}/session_svr/v1/session_svr/get_sessions?type=1&group_fold=1&unfollow_fold=0&need_rule=1&build=0&mobi_app=web&ps=${Number(limit) || 20}`, { cookie: c.cookies });
+  // [qqbot-mod] 2026-10-29 修「拉会话报错」：参数名 type → session_type（旧名回 code 2 非法参数），
+  //   ps → size，need_rule 已废弃（实测组合 2026-10-29 全过：code 0）。
+  const r = await request(`${VC}/session_svr/v1/session_svr/get_sessions?session_type=1&group_fold=1&unfollow_fold=0&sort_rule=2&build=0&mobi_app=web&size=${Number(limit) || 20}`, { cookie: c.cookies });
   if (!r.ok) return r;
   const j = r.json;
   if (needLogin(j)) return { ok: false, needLogin: true, error: '登录已失效，请重新扫码' };
@@ -1164,7 +1274,8 @@ export async function sessions(dataRoot, { limit = 20 } = {}) {
     return {
       talkerId: s.talker_id,
       sessionId: s.session_id,
-      name: u.nickname || String(u.uname || s.talker_id_desc || s.talker_id),
+      // [qqbot-mod] 系统会话（官方通知号等）account_info 为空 —— 不再显示成「undefined」
+      name: u.nickname || String(u.uname || s.talker_id_desc || '') || (s.session_type === 1 ? '未知会话' : '系统通知'),
       avatar: u.avatar || '',
       unread: Number(s.unread_count || 0),
       ack: Number(s.new_msg_ack || 0),
@@ -1175,12 +1286,13 @@ export async function sessions(dataRoot, { limit = 20 } = {}) {
   return { ok: true, sessions: rows };
 }
 
-/** 某个会话的历史消息（talkerId = 对方 mid）。 */
+/** 某个会话的历史消息（talkerId = 对方 mid）。
+ *  [qqbot-mod] 2026-10-29 修：旧端点 /sv_sync/v1/sync 已废（报错），换成 fetch_session_msgs。 */
 export async function msgs(dataRoot, { talkerId, size = 20 } = {}) {
   const c = loadCookie(dataRoot);
   if (!c) return { ok: false, needLogin: true, error: '还没登录 B 站' };
   if (!talkerId) return { ok: false, error: '缺少会话（talkerId）' };
-  const r = await request(`${VC}/sv_sync/v1/sync?client_type=web&ps=${Number(size) || 20}&session_id=${encodeURIComponent(talkerId)}&build=0&mobi_app=web`, { cookie: c.cookies });
+  const r = await request(`${VC}/svr_sync/v1/svr_sync/fetch_session_msgs?talker_id=${encodeURIComponent(String(talkerId))}&session_type=1&size=${Number(size) || 20}&begin_seqno=0&build=0&mobi_app=web`, { cookie: c.cookies });
   if (!r.ok) return r;
   const j = r.json;
   if (j.code !== 0) return { ok: false, error: `${j.message || '读消息失败'}（code ${j.code}）` };
@@ -1208,7 +1320,8 @@ export async function msgSend(dataRoot, { receiverId, text } = {}) {
   const myMid = String(c.cookies.DedeUserID || '');
   if (!myMid) return { ok: false, error: 'Cookie 缺 DedeUserID（你的 mid）' };
   const devId = randomUUID().toUpperCase();
-  const r = await request(`${VC}/web_im/v1/web_im_send_msg`, {
+  // [qqbot-mod] 2026-10-29 修「私信回复报错」：端点 web_im_send_msg → web_im/send_msg（旧路径已 404）
+  const r = await request(`${VC}/web_im/v1/web_im/send_msg`, {
     method: 'POST', form: true, cookie: c.cookies,
     body: {
       'msg[sender_uid]': myMid,

@@ -48,6 +48,9 @@ const DEFAULTS = {
   cooldownMs: 45000,
   keepText: true,
   timeoutMs: 20000,
+  // [qqbot-mod] vram-soft 2026-10-28：显存不够也强启本地引擎（Windows 共享显存兜底，
+  // 慢但能出声）。没有它，6GB 卡上 IndexTTS 的 5300MB 门槛物理上达不到 → 永远滑档。
+  vramSoft: false,
 };
 
 /** 数据根：优先环境变量，其次本文件所在扩展目录的上一级，最后默认路径 */
@@ -179,6 +182,7 @@ function ttsOpts(cfg, dataRoot) {
     pitchJitter: num(cfg.pitchJitter, 6),
     tailProb: num(cfg.tailProb, 0.3),
     timeoutMs: num(cfg.timeoutMs, 20000),
+    vramSoft: cfg.vramSoft === true || cfg.vramSoft === 'true',
   };
 }
 

@@ -247,8 +247,36 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
         record = await manager.getOrCreate(scope, peerId, msg.senderId, replyTarget);
     }
     catch (err) {
-        logger.error(`ERROR creating session: ${err instanceof Error ? err.message : String(err)}`);
-        return;
+        const _msg1 = err instanceof Error ? err.message : String(err);
+        logger.error(`ERROR creating session: ${_msg1}`);
+        // 2026-10-23 修（真机 harness.log 里每条消息一次的 "already exists"）：
+        //   resume 失败 → create 撞上宿主里同 id 的会话 ⇒ 抛错 ⇒ 这里原来直接 return，
+        //   把用户刚发的整条消息静默吞掉（这就是"漏消息"的一条真因）。
+        //   改成：换一个 sessionId 重开（forceNew）。宁可这段历史另起一档，也不丢消息。
+        // [qqbot-mod] retry2 —— 先普通重试两次（不换 id、不丢历史），最后才 forceNew
+        let _ok = false;
+        for (const _wait of [300, 700]) {
+            try {
+                await new Promise((r) => setTimeout(r, _wait));
+                record = await manager.getOrCreate(scope, peerId, msg.senderId, replyTarget);
+                logger.warn(`getOrCreate 第 ${_wait}ms 普通重试成功（会话没换）: ${_msg1}`);
+                _ok = true;
+                break;
+            }
+            catch (_e) {
+                logger.warn(`getOrCreate 第 ${_wait}ms 普通重试仍失败: ${_e instanceof Error ? _e.message : String(_e)}`);
+            }
+        }
+        if (!_ok) {
+            try {
+                record = await manager.getOrCreate(scope, peerId, msg.senderId, replyTarget, { forceNew: true });
+                logger.warn(`getOrCreate 自愈成功(最后手段：已轮换 sessionId 重开): ${_msg1}`);
+            }
+            catch (err2) {
+                logger.error(`ERROR creating session (重试也失败, 这条只能丢): ${err2 instanceof Error ? err2.message : String(err2)}`);
+                return;
+            }
+        }
     }
     // ── 工具自愈：setup 竞态漏装时补注册通道工具(幂等,几乎零开销) ──
     try {
@@ -773,7 +801,15 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
                     //   （原来"带图不拦"里那个 firstImg 是**不区分格式**的，视频/文件跟着沾光 ✗）
                     // ★ 2026-10-12 加 `!forced`：入站扩展用 `ctx.forceWake()` 显式要求"这条必须进站"时，
                     //   连价值评分拦截也不再适用（forceWake 的定义就是"跳过一切值不值得回的判断"）。
-                    if (gate === 'block' && !mentioned && !aggMentioned && !forced && !worth) {
+                    const _scCfg = (lmCfg && lmCfg.specialCare && typeof lmCfg.specialCare === 'object') ? lmCfg.specialCare : {};
+                    const _scGroups = Array.isArray(_scCfg.groups) ? _scCfg.groups.map(String) : [];
+                    const _scPeople = Array.isArray(_scCfg.people) ? _scCfg.people.map(String) : [];
+                    const specialCare = _scGroups.includes(String(peerId)) || _scGroups.includes(String(ovKey))
+                        || _scPeople.includes(String(msg.senderId)) || _scPeople.includes(String(srcSenderId));
+                    if (specialCare) {
+                        try { traceContextless('[gate] special-care=true sender=' + String(srcSenderId) + ' group=' + String(peerId)); } catch { }
+                    }
+                    if (gate === 'block' && scope === 'group' && !mentioned && !aggMentioned && !forced && !specialCare && !worth) {
                         const ag = record.agent;
                         const sess = ag?.session;
                         let appended = false;
@@ -907,9 +943,14 @@ function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msg
     // 2026-10-01 主人实测「别人 @ 别人怎么没转换成昵称，依然是 id」：
     //   正文里 @ 别人的 `<@openid>` 查**群成员台账**换成 `@昵称`（查不到退化成 @短id）；
     //   顺手省 token —— `<@07B470BDA5052489D2D0532C2CC2A2EB>`(35 字符) → `@难崩`(3 字符)。
-    const userContent = resolveMentionNames(userContentRaw, stickerDir, scope === 'group' ? msg.groupOpenid : undefined);
-    if (!userContent && (!msg.attachments || msg.attachments.length === 0))
-        return null;
+    let userContent = resolveMentionNames(userContentRaw, stickerDir, scope === 'group' ? msg.groupOpenid : undefined);
+    // ★ P0-2 修复：原来这里 return null → 上游静默 return，而 debounce 早已把这条从
+    //   窗口删掉、也打过群冷却 ⇒ 只要有人"只 @ 她、不打字"，同批里排在前面的真实消息会
+    //   **一起被吞掉**，且全链路零日志。改为给一句占位正文继续走，消息不再丢。
+    if (!userContent && (!msg.attachments || msg.attachments.length === 0)) {
+        try { logger?.warn?.('[im-qqbot] 入站正文为空(只@未打字?) → 用占位正文继续，避免吞掉同批消息'); } catch { }
+        userContent = '（只 @ 了你一下，没有文字）';
+    }
     // ⚠️ 2026-10-01: QQ 引用**纯图片**时 msg_elements 给不出图 —— 先用本地台账补一把（见 msg-content-cache.ts）
     const quotePeer = `${scope}:${scope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId}`;
     const quote = enrichQuoteFromCache(state.quote, dataRoot, quotePeer);
@@ -1368,7 +1409,7 @@ function buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch = fa
         // 私聊等无历史打包场景: 聚合提示直接置于正文前
         return aggregatedNote + base;
     }
-    const historyLines = history.map(h => {
+    const historyLines = history.map((h, _hi) => {
         const name = h.senderName ?? shortSenderId(h.senderId);
         // 2026-09-12 token 瘦身(主人定): 历史行默认**只给昵称**; 只有"当时 @ 过 bot 的那条"带 openid ——
         // 32 位 openid 每行占 20+ token, limit=20 时每轮白烧 ~640; 要 id 时用 session_list / 台账反查。
@@ -1376,11 +1417,12 @@ function buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch = fa
         // 排版: 多行 content 退 2 格 —— 让"一条消息"视觉成块
         const raw = String(h.content ?? '');
         const c = raw.includes('\n') ? raw.split('\n').map((l) => '  ' + l).join('\n') : raw;
-        return mentioned && h.senderId ? `[${name} (${h.senderId})] ${c}` : `[${name}] ${c}`;
+        return mentioned && h.senderId ? `${_hi + 1}. [${name} (${h.senderId})] ${c}` : `${_hi + 1}. [${name}] ${c}`;
     });
     return [
         aggregated ? '[系统提示] 以下是上次回复前群友所发(非对你的回应), 通读后综合回应。' : '',
         MK.HISTORY_BEGIN,
+        `（以下是你上次开口之后群友陆续发的 ${historyLines.length} 条**独立**消息，逐条编号；每行是一个不同的人/不同时刻说的一句话，不是你一条消息被拆开。）`,
         ...historyLines,
         '',
         MK.HISTORY_END,

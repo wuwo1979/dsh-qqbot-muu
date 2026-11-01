@@ -13,6 +13,8 @@
 # README 截图 / 图标（插件市场 icon 与 screenshots.json 都指向这里）
 !/assets/
 !/assets/**
+# 小蓝桌宠素材整套备份（私人素材 + manifest 含本机路径，不入库）
+/assets/pet-xiaolan-backup/
 !/screenshots.json
 # 截图是脱敏设计稿（只留字号/结构，不带真实群名、昵称、群号），市场条目要引用这些 URL，必须公开
 # 以后要放带真实数据的截图，先脱敏再覆盖，不要直接提交原始截图
@@ -82,6 +84,7 @@
 dshqqbot/.qqbot/
 dshqqbot/表情包/
 dshqqbot/bili-cookie.json
+dshqqbot/douyin-cookie.json
 dshqqbot/bili-config.json
 dshqqbot/bili-ops-secret.json
 dshqqbot/botplay-events.json
@@ -110,3 +113,33 @@ __pycache__/
 !/docs/
 !/docs/publish-flow.md
 /data/
+
+# 桌宠形态运行时状态（2026-10-31）
+dshqqbot/.qqbot-extensions/lib/.pet-form.json
+
+# pet-gate：桌宠公网网关 —— 密钥/席位状态绝不入库；素材由脚本从 harness 拷贝（见 pet-gate/README.md）
+pet-gate/secrets.json
+pet-gate/seats.json
+pet-gate/media/
+
+# pet-gate 网关代码入库存档（密钥/席位/素材仍排除，见上方 pet-gate 段）
+!/pet-gate/
+!/pet-gate/**
+/pet-gate/secrets.json
+/pet-gate/seats.json
+/pet-gate/media/
+
+# 底盘目录里的备份文件不进包/仓库（改前快照只在本地留）
+client/*.bak*
+client/*.orig*
+dist/**/*.bak*
+dist/**/*.orig*
+
+# 三形态桌宠的立绘源图（私人角色素材，同 pet-xiaolan-backup 口径；渲染产物也不入库）
+/assets/char-pet/
+/assets/char-v2/
+/assets/char-v3/
+
+# Remotion 渲染工作目录（拷贝的素材副本/抽帧产物，不入库）
+skills/video-frame-render/remotion/public/
+skills/video-frame-render/remotion/node_modules/

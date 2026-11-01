@@ -15,8 +15,11 @@ const LOG = join(ROOT, '.qqbot', 'tool-errors.jsonl');
 
 process.env.QQBOT_MEMORY_DATA_ROOT = ROOT;
 
+// [qqbot-mod] 2026-10-30 路径改走 plugin-dir 解析器：以前硬编码 1.10.22 generation，
+//   harness 升级删掉旧目录后整个套件直接挂（plugin-dir 的血泪教训 2 就是干这个的）。
+const { PLUGIN } = await import('../patches/plugin-dir.mjs');
 const mod = await import(
-  'file:///C:/Users/Administrator/AppData/Roaming/dsh-desktop/harness/profiles/.generations/live/zaofan+dsh-qqbot+1.10.22+7e82c7977ddc/node_modules/@zaofan/dsh-qqbot/dist/transport/tool-presenter.js'
+  'file:///' + join(PLUGIN, 'dist', 'transport', 'tool-presenter.js').split('\\').join('/')
 );
 
 let pass = 0;

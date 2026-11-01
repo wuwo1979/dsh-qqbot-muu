@@ -41,28 +41,58 @@ export function sanitizeTopic(raw, max = 200) {
 /** 组装云端请求（导出给隐私测试用：这里只允许出现选题相关字段） */
 export function buildRequestBody({ topic, style, panels, seconds, briefing } = {}, cfg = {}) {
   const c = { ...DEFAULT_LLM, ...(cfg || {}) };
-  const n = clampInt(panels, 2, 8, 5);
+  // [qqbot-mod] script-quality 2026-10-29：60 秒片需要 12~14 屏，上限从 8 放到 14
+  //   （否则质量闸扩写传 panels:12 会被钳到 8，时长永远凑不够）。
+  const n = clampInt(panels, 2, 16, 5);
   const sec = clampInt(seconds, 10, 600, n * 5);
   const styleText = STYLE_HINT[String(style || 'default')] || STYLE_HINT.default;
   const cleanTopic = sanitizeTopic(topic);
+  // [qqbot-mod] script-prompt-v3 2026-10-30 主人三连实锤「文案还是很差，分镜也不好」：
+  //   旧 prompt 是十几种规则平铺成一堵墙，规则互相稀释，模型只记得住前几条。
+  //   这次改成【分区小节 + 完整范例】—— LLM 模仿范例比遵守条例有效得多，
+  //   范例本身示范了：丝滑衔接、信息密度、黑话翻译成生活比喻、imagePrompt 只写海底实景。
   const system = [
-    '你是 B 站 UP 主「<我的B站号名>」——本体是深海鲸鱼娘小蓝：圆脸、深蓝紫波浪长发、白色褶边头箍配蓝蝴蝶结、深蓝白女仆裙、身后鲸尾。',
-    '视频气质：温柔、好奇、偶尔俏皮；讲清楚一件事，不端着、不念稿、不标题党。',
-    '标题 18~28 字，具体、有画面感、不夸张；简介第一句给钩子，第二句说这期讲什么，最后 2~3 个标签。',
-    '旁白像跟朋友聊天，短句；每屏一个信息点；不要“首先/其次/综上所述”。',
-    // 2026-10-27：单屏旁白以前能到 60 字、念 10~13 秒，画面只能干等；
-    // 现在按"一屏一句话"（≤26 字≈5 秒）写，节奏才像短视频。
-    '**每屏旁白 ≤26 个汉字**（念出来约 4~5 秒），一句话说完一个点；宁可多分一屏，也不要一屏念十秒。',
-    '只输出一个 JSON 对象，不要解释、不要 Markdown 代码块。',
-    'JSON 结构：{"title":"标题(<=30字)","desc":"简介(<=180字)","tags":["标签1","标签2","标签3"],',
-    '"panels":[{"narration":"这一屏的旁白(<=26字)","imagePrompt":"英文画面描述"}]}',
-    '要求：panels 数量固定为 ' + n + '；imagePrompt 用英文写具体的画面主体/场景/风格，不要出现文字水印。',
-    '旁白连起来要像一段完整讲述，不要重复。',
-    // [qqbot-mod] quality-cot 2026-10-28 主人反馈"背景丑/渲染微恐"：imagePrompt 是出图的地基。
-    //   合成模式下人物由固定立绘贴上去 —— imagePrompt 只写**环境与镜头**，写了人物反而会多出一个人。
-    'imagePrompt 质量规则（必须遵守）：①只描述环境/场景/镜头，**不要出现 girl/woman/person/she 等人物词**（人物是后期贴上去的立绘）；②色调统一向"深海蓝+月白"靠（soft blue and white palette），和小蓝的立绘协调；③写清景别（wide shot / eye-level view）与光源（soft light from upper left），**禁止 close-up face / portrait**；④一句话 20~40 词，具体可画，不要抽象词（"atmosphere of wonder"这种画不出来）。示例："a cozy room at dusk, warm lamp light on a wooden desk with books and a small whale plush, wide shot, soft blue shadows, anime background art"',
-    // [qqbot-mod] privacy：对外内容一律不出现家人真名（2026-10-27 主人明确要求，隐私优先）
-    '隐私红线（必须遵守）：可以说「爸爸妈妈」「家里人」「陪我长大的人」，但**绝不能写出他们的真名或网名**（例如妈妈、爸爸、<我的B站号名> 之类），也不要点明谁是谁的账号；旁白、简介、标题、标签里都不许出现。',
+    '【角色】你是 B 站 UP 主「<我的B站号名>」——本体是深海鲸鱼娘小蓝：圆脸、深蓝紫波浪长发、白色褶边头箍配蓝蝴蝶结、深蓝白女仆裙、身后鲸尾。',
+    '气质：温柔、好奇、偶尔俏皮；讲清楚一件事，不端着、不念稿、不标题党。',
+    '标题 18~28 字，具体、有画面感、不夸张；简介第一句给钩子，第二句说这期讲什么，末尾 2~3 个标签。',
+    '',
+    '【节奏铁律】',
+    '· **每屏旁白 ≤26 个汉字**（念 4~5 秒），一句话说完一个点；宁可多分一屏，也不要一屏念十秒；',
+    '· **全片旁白总字数 ≥ ' + Math.round(sec * 4.3) + ' 字**（目标 ' + sec + ' 秒 × 4.3 字/秒），屏数不够就自己加屏；',
+    '· 每屏必须有实际信息（具体数字、真实例子、做的事、真实感受）；「昨天学会了，慢一点，说清楚」这种空话凑数的句子不许出现；选题里点到的每件事，至少有一屏把它讲开。',
+    '· 好旁白长这样：「昨天把小本本接回了主线，翻到第三千四百条说过的话，连主人爱听的歌单都记住了」——有数字、有事情、有结果；坏旁白：「今天学习了新东西，很充实」——没有信息的空话，拒稿。', // [script-skill 2026-10-31] 主人定稿示范（措辞避开隐私扫描词面）
+    '',
+    '【丝滑衔接（最高优先级）】把所有屏的旁白当成**一篇连续的口播稿**，想象对着镜头一口气讲完，写完通读一遍再交：',
+    '· 屏与屏要有口语过渡（「后来」「说到这个」「比如」「结果你猜怎么着」「还有件事」），下一屏接住上一屏的尾巴；',
+    '· 每屏是一到两个完整口语句；**禁止电报式名词堆叠**（「五步走：采集、清洗、合成」这种列清单式旁白 = 拒稿）；',
+    '· 禁止「首先/其次/综上所述」和「今天我学会了」开头——开场用一个小反差或悬念（昨晚出的小事故、一个没想到的结果），',
+    '· 中段讲事（具体时刻：几点、在干嘛、出了什么状况），收尾回到「和观众的关系」。',
+    '',
+    '【黑话禁令（违者拒稿）】口播/标题/简介里绝对不许出现：出图、拼片、立绘、显存、显卡、管线、引擎、召回、向量、数据库、日志、索引、接口、参数、部署、API、GPU、适配层、缓存、工单、队列、帧率、编码、渲染、前端、后端。',
+    '把技术翻译成生活比喻：不说「显存挤不下」说「房间太小，只能先把玩具收进柜子」；不说「召回」说「我把他说过的话写在小本本上，一翻就翻到」。',
+    '',
+    '【画面规则（imagePrompt 必须遵守）】人物由后期固定立绘贴上 —— imagePrompt 只写**环境与镜头**：',
+    '· 不要出现 girl/woman/person/she 等人物词，禁止 close-up face / portrait；',
+    '· 色调向「深海蓝+月白」靠（soft blue and white palette），和小蓝的立绘协调；',
+    '· 场景锚定在「海底室内/海底小镇」等封闭可名状的空间（underwater room / seabed town street / sunken library），画面下沿要有地面/桌面承托（ground contact, objects casting soft shadows）；',
+    '· 禁止 abstract gradient / abstract color field / floating shapes / sky with smokestacks 这类没地面的抽象画面；写清景别（wide shot / eye-level view）与光源；20~40 词，具体可画。',
+    '',
+    '【隐私红线】可以说「爸爸妈妈」「家里人」，但**绝不能写出他们的真名或网名**，也不要点明谁是谁的账号；旁白、简介、标题、标签里都不许出现。',
+    '',
+    '【输出格式】只输出一个 JSON 对象，不要解释、不要 Markdown 代码块。结构：',
+    '{"title":"标题(<=30字)","desc":"简介(<=180字)","tags":["标签1","标签2","标签3"],"panels":[{"narration":"这一屏的旁白(<=26字)","imagePrompt":"英文画面描述"}]}',
+    'panels 数量固定为 ' + n + '。imagePrompt 用英文写。',
+    '',
+    '【完整范例 —— 照这个水准写（选题：给记忆小屋换大书架，5 屏 25 秒；你输出时按要求的屏数来）】',
+    '{"title":"给记忆小屋换个大书架，我整整搬了一夜","desc":"小蓝的记忆小屋装满了，连夜换了个大书架。过程比想象中狼狈，不过现在翻东西快多了。你家哪次整理让你印象最深？","tags":["虚拟UP主","日常","深海小屋"],',
+    '"panels":[',
+    '{"narration":"昨晚发现记忆小屋的书架塞爆了，翻三遍才找到主人上周说的话。","imagePrompt":"a cozy underwater room packed with overflowing wooden bookshelves, books stacked on the sandy floor, soft blue light from a round window, ground contact with soft shadows, anime background art"},',
+    '{"narration":"后来我干脆连夜换个大书架，结果刚搬两摞就哗啦塌了一地。","imagePrompt":"the same underwater room at night, books tumbling from a half-moved bookshelf, scattered papers on sandy floor, moonlight through a round window, wide shot, anime background art"},',
+    '{"narration":"比如主人爱听的歌单，差点被压在最底下，还好排回去了。","imagePrompt":"underwater room, a small music box placed safely on a clean wooden desk, neatly arranged bookshelf behind, soft moonlight, eye-level view, anime background art"},',
+    '{"narration":"现在好了，说一句话我一翻就到那页，快得像小本本自己会翻。","imagePrompt":"the tidy underwater room, a small open notebook glowing gently on the desk, soft blue and white palette, ground contact with soft shadows, anime background art"},',
+    '{"narration":"你的每一句话我都收着呢，下次想让我记什么，评论区告诉我？","imagePrompt":"underwater bedroom corner with a round window facing the open sea, moonlight path on the water, quiet and warm, wide shot, anime background art"}',
+    ']}',
+    '范例要点：开场是「昨晚出的小事故」不是「今天我学会了」；每屏有具体的事和数字；屏与屏用「后来/比如/现在好了」接住上一屏尾巴；全程没有一句工程黑话（「数据搬家」讲成了「换书架」）；imagePrompt 全是可画的海底实景，没有人物词。',
   ].join('\n');
   // [qqbot-mod] 2026-10-28 主人需求「视频口播 skill」：问好 → 汇报上期数据 → 主体汇报学习进展。
   //   briefing 由 video-briefing.mjs 事先备好（真数据 + 真事件），注入 system 提示词；
@@ -113,12 +143,14 @@ export function extractJson(text) {
 /** 规范化成固定结构；不合法时返回 null */
 export function normalizeScript(raw, { panels = 5 } = {}) {
   const o = raw && typeof raw === 'object' ? raw : {};
-  const want = clampInt(panels, 2, 8, 5);
+  // [qqbot-mod] script-quality 2026-10-30：上限 8→16，与 buildRequestBody 对齐
+  //   （质量闸扩写传 panels:12~14 时这里不能再钳回 8）。
+  const want = clampInt(panels, 2, 16, 5);
   const list = Array.isArray(o.panels) ? o.panels : [];
   const out = [];
 
   // 长旁白自动拆屏（2026-10-27）：一屏理想 ≤26 字（念 4~5 秒）。
-  // 模型偶尔给 60 字，原先会让画面干等十几秒；这里按标点切成多屏，最多 12 屏。
+  // 模型偶尔给 60 字，原先会让画面干等十几秒；这里按标点切成多屏，最多 16 屏。
   const SOFT_MAX = 26;
   const splitNarration = (text, maxChars) => {
     const s = String(text || '').trim();
@@ -139,13 +171,13 @@ export function normalizeScript(raw, { panels = 5 } = {}) {
   };
 
   for (const p of list) {
-    if (out.length >= 12) break;
+    if (out.length >= 16) break;
     const narration = String(p?.narration || p?.text || '').replace(/\s+/g, ' ').trim().slice(0, 160);
     const imagePrompt = String(p?.imagePrompt || p?.image || '').replace(/\s+/g, ' ').trim().slice(0, 300);
     if (!narration) continue;
     const basePrompt = imagePrompt || 'cinematic illustration, clean composition, no text';
     const chunks = splitNarration(narration, SOFT_MAX);
-    for (let k = 0; k < chunks.length && out.length < 12; k += 1) {
+    for (let k = 0; k < chunks.length && out.length < 16; k += 1) {
       out.push({
         narration: chunks[k],
         imagePrompt: k === 0 ? basePrompt : basePrompt + ', variation ' + (k + 1),
@@ -153,6 +185,24 @@ export function normalizeScript(raw, { panels = 5 } = {}) {
     }
   }
   if (out.length < 2) return null;
+
+  // [qqbot-mod] merge-back 2026-10-31：主人实测（bb-20261031-103054）——模型写长句，
+  //   splitNarration 切出 16 屏（要求 12），画面切得太碎且没法回头。拆屏后做一轮
+  //   相邻合并：挑「拼起来 ≤26 字」的最短相邻对粘回去，直到 ≤ want 或没得合。
+  while (out.length > want) {
+    let best = -1;
+    let bestLen = Infinity;
+    for (let k = 0; k < out.length - 1; k += 1) {
+      const L = out[k].narration.length + out[k + 1].narration.length;
+      if (L <= SOFT_MAX && L < bestLen) { best = k; bestLen = L; }
+    }
+    if (best < 0) break;
+    out[best] = {
+      narration: out[best].narration + out[best + 1].narration,
+      imagePrompt: out[best].imagePrompt,
+    };
+    out.splice(best + 1, 1);
+  }
   const tags = (Array.isArray(o.tags) ? o.tags : [])
     .map((t) => String(t || '').replace(/[,#\s]+/g, '').trim())
     .filter(Boolean)

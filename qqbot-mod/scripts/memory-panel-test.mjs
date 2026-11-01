@@ -62,7 +62,10 @@ async function main() {
   ok('最近消息按时间倒序', d.chat[0] && d.chat[0].text === '在吗', d.chat[0]);
   ok('私聊/群聊标记', d.chat.some((x) => x.kind === '私聊') && d.chat.some((x) => x.kind === '群聊'));
   ok('记忆带 kind/subj', d.memories[0] && d.memories[0].kind === 'fact' && d.memories[0].subj === '对方', d.memories[0]);
-  ok('印象卡拆出名字', d.cards[0] && d.cards[0].name === '爸爸' && d.cards[0].text.includes('研究生'), d.cards[0]);
+  // [qqbot-mod] 2026-10-30：10-26 起卡片名会按角色档案归并成角色名（爸爸→角色档案中的称呼），
+  //   10-26 起自我卡也顶到 cards[0]。断言改为按 orig（原角色词）找爸爸卡。
+  const dadCard = (d.cards || []).find((c) => c.orig === '爸爸' || c.name === '爸爸');
+  ok('印象卡拆出名字', dadCard && dadCard.text.includes('研究生'), dadCard || d.cards[0]);
   ok('关系温度解析', d.bonds[0] && d.bonds[0].a === 42 && d.bonds[0].t === 35, d.bonds[0]);
   ok('关系名字回填（openid→爸爸）', d.bonds[0] && d.bonds[0].name === '爸爸', d.bonds[0]);
   ok('心情解析', d.moods[0] && d.moods[0].text.includes('困'), d.moods[0]);

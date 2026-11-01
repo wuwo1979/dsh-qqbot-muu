@@ -7,19 +7,50 @@ description: 把分镜/文案 JSON 逐帧渲染成 mp4（中文竖屏 1080x1920 
 
 一句话：**你只写 JSON，别写动画代码。** 版式、动画、字体、编码参数都已经固定在这个 skill 里。
 
-## 三条出片路子（2026-10-25 起本 skill 覆盖三条，浮窗「视频路子」选择默认值）
+## 四条出片路子（2026-10-31 起本 skill 覆盖四条，浮窗「视频路子」选择默认值）
 
 | 路子 | 引擎 | 适合 | 入口 |
 |---|---|---|---|
 | A · 前端截图拼帧（默认） | render.py：分镜模板 → PNG 帧 → x264 | 知识点卡片、数据播报、图文短片 | `render.py --storyboard sb.json --out out.mp4 --yes` |
 | B · 文字排列组合 | render_text.py：纯 PIL 文字动画（打字机/弹字/滑入/波浪），不碰浏览器 | 金句、歌词、公告、快问快答 | `render_text.py --script sb.json --out out.mp4` |
 | C · 算力画画 | render_art.py：numpy 粒子流场/叠浪/星轨，程序化生成 | 氛围片头、情绪片段、直播间背景 | `render_art.py --spec sb.json --out out.mp4` |
+| D · Remotion 立绘动画 | render_remotion.mjs：DSH 自带 Remotion runtime，立绘整图程序化动作 | 桌宠透明 webm、立绘短视频 mp4 | `node scripts/render_remotion.mjs --spec spec.json`（**cwd 必须在 F:\qqbot**） |
 
 - 默认路子读 `dshqqbot/.qqbot-extensions/bili-ops-config.json` 的 `video.route`（frames/text/art），浮窗可改；
   配置缺失或拿不到时用 A。
 - B/C 的 JSON 同样**只写文件、正文只报路径**；C 有 `seed`，同 seed 同画面（可复现）。
 - C 的分辨率 >720p 会自动降采样渲染再放大（速度优先）；要锐利就显式给 `"size":[720,1280]`。
 - B/C 输出与 A 同一套编码规矩（bt709/tv、帧数核对），`verify.py --video` 同样适用。
+
+## 路子 D · Remotion 立绘动画（2026-10-31 新增，桌宠透明 webm 用）
+
+用 DSH 自带的 Remotion runtime（`%APPDATA%\dsh-desktop\harness\data\dsh-remotion\runtime`，
+4.0.532，无需安装任何包）把 v1 立绘做成**整图程序化动作**——不重绘不拆图层，画风 100% 保真。
+
+```powershell
+# 必须在 F:\qqbot 下跑（Remotion 浏览器缓存按 cwd/package.json 定位，落别处会撞 dsh-remotion 只读 ACL）
+node skills\video-frame-render\scripts\render_remotion.mjs --spec tmp\pet.json
+```
+
+spec 字段：`image`（立绘绝对路径，RGBA 透明底 png 最佳）、`motion`、`out`（.webm=透明 /
+.mp4=不透明）、`seconds`、`fps`(30)、`width/height`(720/980)、`shadow`(true，脚下接地阴影)、
+`bg`（mp4 底色；webm 桌宠保持空）。`motion` 预置 7 个（`remotion/PetAnim.jsx` MOTIONS）：
+循环类 `idle-breathe`(3s)/`idle-float`(4s)/`sway`(2.5s)/`talk-nod`(1.5s)，一次性 spring 类
+`happy-bounce`/`point-forward`/`lift-up`。循环动作 seconds 取周期整数倍可无缝循环（非整数倍
+尾帧自动取模对齐）。
+
+实测坑（已内建处理，动模板前先读）：
+- 立绘必须拷进 bundle 的 `public/` 用 `staticFile('/input.png')` 加载——http 页面直接引 file://
+  会被 Chromium 拦死（delayRender 永不 resolve）；且不能用裸 `/input.png`，404。
+- **透明 webm 必须显式 `pixelFormat:'yuva420p' + imageFormat:'png'`**——这版 renderMedia 的
+  `transparent:true` 不会自动切 pix_fmt，缺了就出无 alpha 的假透明（用 webm 里 BlockAdditions
+  元素数量验 alpha：桌宠金标准素材 60~150 处，0~2 处即假透明）。
+- 浏览器用本机 Chrome/Edge（`browserExecutable`），官方 chrome-headless-shell 下载源国内卡死。
+- 模板工程 `remotion/` 通过 node_modules junction 指到 runtime（脚本自动建），Remotion root
+  依 entryPoint 向上最近 package.json 解析，故 `remotion/package.json` 不能删。
+- 速度参考：720×980@30 90 帧 ≈ 18~20s（含 bundle）；样片在 `tmp/pet-anim-test/`。
+
+`--check` 做环境自检（runtime/junction/cwd 五项）。退出码：0 成功；2 用法/环境问题；其他=渲染失败。
 
 ## 什么时候用 / 不用
 
@@ -166,8 +197,13 @@ skills/video-frame-render/
 ├─ references/storyboard-schema.md
 ├─ references/primitives.md
 ├─ references/pitfalls.md
+├─ remotion/                    ← 路子 D 模板工程（node_modules 为自动建的 junction，勿手改）
+│  ├─ index.jsx / PetAnim.jsx   ← Remotion 入口 + 7 动作库
+│  ├─ package.json              ← Remotion root 锚点，不能删
+│  └─ public/                   ← 渲染时自动拷入立绘
 └─ scripts/
    ├─ render.py    ← 主入口：storyboard ➜ 帧 ➜ mp4/webp/gif
+   ├─ render_remotion.mjs ← 路子 D：立绘 spec ➜ 透明 webm / mp4
    ├─ encode.py    ← 帧体检 + ffmpeg 编码 + 数帧核对（可独立跑）
    ├─ verify.py    ← 成片自检（可独立跑）
    ├─ check_env.py ← 环境探测
@@ -182,3 +218,25 @@ skills/video-frame-render/
 `render_at(scene, t)` 是**只依赖 t 的纯函数**：不读系统时钟、不用 requestAnimationFrame、不依赖上一帧。
 所以可以跳帧、可以并开多个进程、可以断点续渲，同参数重渲逐像素一致——这也是为什么它比
 "无头浏览器录屏"更快更稳（本机沙箱里 Chromium 根本起不来，见 `references/pitfalls.md`）。
+
+## 2026-10-28 配音与草稿更新（bili_ops 管线）
+
+- **配音引擎按任务可选**：`bili_ops action=plan` 新增 `dubbing` 参数（`gsv`=快/`breeze`=自然约10×实时/`index`=情感最足约20-30×实时）。宿主面板「🎙 配音」下拉和文稿草稿转任务都走它；不传就跟随 voice-config 全局。浮窗工单模板已同步。
+- **渲染前自动预热**：dubbing 是 breeze/index 时，renderJob 开头先用一句短文本把引擎拉起来（index 冷加载 7~12 分钟），失败只记 warning 不挡单——首段配音不再撞冷加载超时。
+- **文稿草稿箱**：`bili_ops action=draft`（op=save/list/get/del/submit）。灵感随手存（draftText 自由文本）、反复改（同 draftId 覆盖）、改好 `op=submit` 一键转视频任务（文本若是 `{title,desc,panels:[…]}` 脚本 JSON 就直传分镜，否则当选题自动扩写；默认 dubbing=breeze）。面板「账号管理」页有草稿箱 UI。数据落 `{storage.root}/script-drafts.jsonl`。
+- **评论拉取定向**：comment-watch 的 biliCheck/biliList 支持 `sort`（latest/hot）+ `maxAgeHours` 时间窗 + `withSub`（楼中楼被动回复）——回复新评论利于抢前排，面板「视频雷达→评论巡检」和「账号管理→高赞评论」都加了筛选下拉。
+
+## 2026-10-29 两阶段渲染 + 文案质量闸（主人实锤 w11g 单）
+
+- **两阶段渲染（bili-ops renderJob 重构）**：阶段 1 全部出图 → 阶段 1.5 停 SD（draw-core stopServer）+ 适配层 `/admin/stop-backend` 停非目标 TTS 后端还显存 → 阶段 1.6 预热（梯队 **index→breeze→gsv**，出片偏好；适配层通用梯队 gsv 抢跑是滑档主因）→ 阶段 2 统一配音/文字帧/时间轴。背景：SD 出图占满 6GB 卡（free=354MB 实锤），index 15GB 权重靠共享显存分页 900s 载不完 → 预热超时滑 GSV，且 breeze-server 常驻 4.8GB 帮凶。
+- **适配层 v2.3.2**：新增 POST `/admin/stop-backend`（body `{name}`，local-only），停单个后端不关适配层。
+- **文案质量闸（renderJob）**：脚本总旁白 < 240 字（≈55s）自动 writeScript 重写（原稿当参考、briefing 注入，panels 提到 ≥12），失败放行原稿记 warning。根因：agent 硬凑「每屏≤26字」写出 7 屏 77 字 25 秒电报体。
+- **script-writer 规格升级**：全片总字数 ≥ sec×4.3，每屏必须有实际信息（数字/例子/进展），禁空话；panels clamp 上限 8→14；prompt 加好/坏示例。
+- **工单模板 v3**：文案质量红线段（信息覆盖 + 空话禁令 + 好旁白示范 + 屏数放开 9~14）+ 成片 ≥60s + 拒收重写机制说明。
+
+## 2026-10-29 深夜：逻辑自审查出 2 个实锤 bug + 画质升级
+
+- **Bug A 稀疏数组（实锤）**：出图段 `detail.panels[i] = {imageScore/pose}` 写在 push 之前 → 稀疏残骸排在 panels[0]（w11g meta.panels[0]={"pose":"talk.png"}、README "undefined. [?s] undefined"、字幕错位）。修：imageScore/pose 改暂存数组 imgScores/poseByShot，push 时带上。
+- **Bug B 预热误判（高危）**：预热走 synthesize 会被两层降级骗过——适配层梯队（index 起不来 gsv 出声返 200）和 tts-core 的 edge-fallback（显存不够回在线语音）都返回 ok → 预热误判「index 热了」→ 整单配音走冷引擎再超时。修：全链路 `strict_engine`——tts-core body 加 strict_engine 且 strict 时禁 edge-fallback；适配层 v2.3.3 strict 时 chain=[native] 不接力；预热传 strict:true，全梯队失败明确落 gsv。
+- **画质升级**：sceneMode 默认 procedural→ai（程序化渐变底是「空旷 PPT 感」主因，SD 离线时才兜底程序化）；出图分辨率竖屏 576×1024→640×1136、横屏 768×432→832×480（SD1.5 6GB 稳）。
+- 隐私复扫：npm 包 539 文件 + 仓库 417 文件全过（files 白名单排除 tmp/ 备份）。

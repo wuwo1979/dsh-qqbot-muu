@@ -186,14 +186,21 @@ def main() -> int:
 
     eng = Engine(a.ckpt)
     Handler.engine = eng
+    # 2026-10-28 修时序：非 lazy 模式必须**模型加载完再开端口**。原来 socket 先开、
+    # 模型后载（30-60s+），管家的端口探活 2s 就判"就绪"——第一发请求撞上未加载的
+    # 引擎吃 503，适配层把 index 记成硬失败降级 30 分钟，又滑回 GSV。懒启动才允许
+    # 先开端口（那是显式的 opt-in 语义）。
+    if not a.lazy:
+        eng.load()
+        if eng.tts is None:
+            log(f"LOAD FAILED，不再开端口（{eng.failed}）")
+            return 1
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
     log(f"listening http://{a.host}:{a.port} ckpt={a.ckpt}")
     if a.lazy:
         import threading
         threading.Thread(target=eng.load, daemon=True).start()
-    else:
-        eng.load()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

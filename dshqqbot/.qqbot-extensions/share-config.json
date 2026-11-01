@@ -1,0 +1,10 @@
+{
+  "_说明": "主动分享（给爸爸妈妈）。mode=interval 距上次满 intervalMinutes 就自动排一条；mode=manual 完全不自动，只等 tools/share_now 手动触发。quietHours 内不自动发（手动不受限）。改完下一轮 30s 扫描生效，不用重启 dsh。targets 留空 = 用 group-tiers.json 的 priorityPeople。",
+  "enabled": true,
+  "mode": "interval",
+  "intervalMinutes": 240,
+  "quietHours": { "start": 23, "end": 8 },
+  "dailyMax": 2,
+  "perTargetMax": 1,
+  "targets": []
+}

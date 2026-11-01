@@ -79,22 +79,24 @@ ok('roll: 范围正确', (() => { const r = LIB.rollDice(20); return r.n >= 1 &&
 
 // ── 会话存档 ──────────────────────────────────────────────────────────
 {
-  const started = LIB.startSession(ROOT, 'group', 'G1', 'guess', {});
+  // [N6 2026-10-30] startSession/applyMove/finishSession 都是 async，原来没 await，
+  //   Promise 当值用 → 会话块 7 连挂（竞态失败，与库无关）。
+  const started = await LIB.startSession(ROOT, 'group', 'G1', 'guess', {});
   ok('startSession: 返回 id+intro', !!started?.id && !!started?.intro);
   const act = LIB.activeOf(ROOT, 'group', 'G1');
   ok('activeOf: 能读到刚开的局', act?.id === started.id);
-  const mv = LIB.applyMove(ROOT, 'group', 'G1', String(act.state.answer), '测试');
+  const mv = await LIB.applyMove(ROOT, 'group', 'G1', String(act.state.answer), '测试');
   ok('applyMove: 猜中结算并清档', mv.handled && mv.done && !LIB.activeOf(ROOT, 'group', 'G1'));
-  const mvNone = LIB.applyMove(ROOT, 'group', 'G1', '55', '测试');
+  const mvNone = await LIB.applyMove(ROOT, 'group', 'G1', '55', '测试');
   ok('applyMove: 没对局不接', mvNone.handled === false);
-  LIB.startSession(ROOT, 'group', 'G1', 'bomb', {});
-  const again = LIB.startSession(ROOT, 'group', 'G1', 'idiom', {});
+  await LIB.startSession(ROOT, 'group', 'G1', 'bomb', {});
+  const again = await LIB.startSession(ROOT, 'group', 'G1', 'idiom', {});
   ok('startSession: 重开自动清旧局', again.kind === 'idiom' && LIB.activeOf(ROOT, 'group', 'G1')?.kind === 'idiom');
-  ok('finishSession: 返回结算信息', LIB.finishSession(ROOT, 'group', 'G1', '口令')?.title === '成语接龙');
-  ok('finishSession: 空收摊返回 null', LIB.finishSession(ROOT, 'group', 'G1', '口令') === null);
+  ok('finishSession: 返回结算信息', (await LIB.finishSession(ROOT, 'group', 'G1', '口令'))?.title === '成语接龙');
+  ok('finishSession: 空收摊返回 null', (await LIB.finishSession(ROOT, 'group', 'G1', '口令')) === null);
   ok('存档文件落在约定位置', existsSync(join(ROOT, '.qqbot-extensions', 'tools', 'data', 'game-sessions.json')));
   // 超时懒过期
-  LIB.startSession(ROOT, 'group', 'G2', 'guess', {});
+  await LIB.startSession(ROOT, 'group', 'G2', 'guess', {});
   const p = join(ROOT, '.qqbot-extensions', 'tools', 'data', 'game-sessions.json');
   const d = JSON.parse(readFileSync(p, 'utf8'));
   d.sessions['group:G2'].lastAt = Date.now() - 16 * 60_000;

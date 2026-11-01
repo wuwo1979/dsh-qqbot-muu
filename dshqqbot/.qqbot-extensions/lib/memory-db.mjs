@@ -67,8 +67,11 @@ export function loadConfig(dataRoot) {
 const FALLBACK_ROOT = 'F:/qqbot/dshqqbot';
 
 function rootOf(dataRoot) {
-  const v = String(dataRoot || '').trim();
-  return v || String(process.env.QQBOT_MEMORY_DATA_ROOT || '').trim() || FALLBACK_ROOT;
+  // 对象型 dataRoot 会被 String() 串成 '[object Object]'（2026-10-26 就这么生成过一个垃圾库），
+  // 直接拒绝并回落，绝不在垃圾路径上开库。
+  const v = (dataRoot && typeof dataRoot === 'object') ? '' : String(dataRoot || '').trim();
+  const env = String(process.env.QQBOT_MEMORY_DATA_ROOT || '').trim();
+  return v || env || FALLBACK_ROOT;
 }
 
 export function memoryDir(dataRoot) {

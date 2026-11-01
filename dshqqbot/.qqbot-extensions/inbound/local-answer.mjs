@@ -361,6 +361,21 @@ function worthLocal(text, cfg) {
 /** 测试用出口（线上只走内部调用）：把"要不要本地答"的判定暴露出来 */
 export const worthLocalSafe = worthLocal;
 
+// ── 死梗直答：命中人设梗就回固定答案，不命中回空串 ──
+// [restore 2026-10-30] 重构时被误删：worthLocal 的注释（"梗那条路绕过这里"）、
+//   chat-badge 的 🎯死梗直答、扩展面板的 cnt.gag、以及 4 个测试套件都还认这条链。
+//   语义：只有特定梗（2+3→6）直答；1+1 这类真数学**不归梗管**（回空串，交给模型）。
+const GAG_TABLE = [
+  [/^2\+3(?:等于?|=)(多少|几)?\??$/, '6'],
+  [/^2\+3$/, '6'],
+];
+export function gagReply(text) {
+  const t = String(text || '').replace(/\s+/g, '');
+  if (!t) return '';
+  for (const [re, ans] of GAG_TABLE) if (re.test(t)) return ans;
+  return '';
+}
+
 /**
  * 发送本地回复：先摘消息，再发话。
  * 顺序很重要 —— 摘不掉就绝不能发，否则云端还会再回一遍（双回复）。
@@ -464,6 +479,18 @@ export async function onInbound(ctx, next) {
     // not-mentioned 太常见，不刷日志
     if (gate.why === 'not-mentioned') return next();
     return cloud(gate.why);
+  }
+
+  // ── 死梗直答（不走模型，Ollama 挂了也要答）──
+  // 梗要绕过 worthLocal（"2+3"不算 trivial 但必须本地接）；限流走 gate（应Take 内已含）。
+  const gag = gagReply(raw);
+  if (gag) {
+    if (await deliver(ctx, gag, 'gag')) {
+      try { appendLog(root, { by: 'gag', why: 'dead-gag', model: 'gag', scope, text: raw, reply: gag }); } catch { /* ignore */ }
+      try { lockMark(root, scope, 'local', { why: 'dead-gag' }); } catch { /* ignore */ }
+      return;
+    }
+    return cloud('gag-annihilate-failed');
   }
 
   //

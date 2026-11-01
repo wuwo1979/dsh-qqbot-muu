@@ -106,6 +106,10 @@ export default {
         provider: cfg.provider,
         endpoint: cfg.endpoint,
         model: cfg.model,
+        vramSoft: cfg.vramSoft === true || cfg.vramSoft === 'true',
+        // [qqbot-mod] wsl-index 2026-10-29：主人专属开关（默认关闭）。开着时本地档直连
+        // WSL 的 IndexTTS2 且只许 index、绝不降级；别人不开这个开关完全不受影响。
+        wslIndex: cfg.wslIndex || null,
         apiKey: cfg.apiKey,
         speed: cfg.speed,
       });

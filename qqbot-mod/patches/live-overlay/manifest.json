@@ -10,15 +10,17 @@
     "dist/features/local-embed.js",
     "dist/features/msg-history.js",
     "dist/gateway/debounce.js",
-    "dist/transport/tool-presenter.js"
+    "dist/transport/tool-presenter.js",
+    "dist/gateway/middleware-setup.js",
+    "dist/gateway/bootstrap.js"
   ],
   "sha256": {
     "settings-host.js": {
-      "ours": "c1052cb6f164c47b19786060d712142b6785f81ec9e847099b5cfc9689ccae04",
-      "base": "a53f0e2223c1f9646cac0c0f28fa8503ebb195c528cfbcfba943b60d4d8b2dbc"
+      "ours": "17504a3c97080bcb2a3462f3494b45866f8e948bba0aed8f243316afadd74a9c",
+      "base": "72589108b87cdf4b3b9f4a346ed4eff78755cbfff026e2a6c0a780c2945f4547"
     },
     "client/qqbot-settings.js": {
-      "ours": "92b8b95c093a71c134a9b4fbed9d6feed405d307c1974d01664c6196c905bd6f",
+      "ours": "3e65d2799dffce9daf0bbb11965b868b627fff442b0578c01e3c39564f26ca62",
       "base": "c7497839d066b4dfc10ebd6dc5da575f00f309b1b633c05bd3fcc34d869966b5"
     },
     "dist/transport/inbound.js": {
@@ -44,6 +46,14 @@
     "dist/transport/tool-presenter.js": {
       "ours": "8bc9c1811adef89b42ae37fdd0d433bbff37f87ec983ffc02a83db0554f7c947",
       "base": "435cef444ecb0f571c295c84597de31214f9a499d52e921afd1d75cf6463ae66"
+    },
+    "dist/gateway/middleware-setup.js": {
+      "ours": "1a4cb2071f4fec5e0efa6357e62fd3521832cac6a5c9ebd10ae38b51bb2a19df",
+      "base": "7fdcb28b28cc65d450a52772d0ffec2c435f39c6fd68b36ba1c5b77dc3158485"
+    },
+    "dist/gateway/bootstrap.js": {
+      "ours": "dfcf627948d27bc0975882d520fa34e08b3a4503ac7b4651925251e0053a5e0e",
+      "base": "dff801975ae69913970f97e27309838b1763931a155876f6d382280b917952c2"
     }
   }
 }

@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync, appendFileSync, rmSync, mkdirSync, existsSync, readdirSync, statSync, cpSync, renameSync, openSync, readSync, closeSync, createWriteStream } from 'node:fs';
 import { basename, extname, join, resolve, dirname, normalize, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { getStickerStore } from '@zaofan/dsh-qqbot/sticker-store';
@@ -654,6 +654,12 @@ export function apply(ctx) {
         if (cfg.cwd) return join(String(cfg.cwd), 'dshqqbot');   // 与 DEFAULT_DATA_SUBDIR 一致
       }
     } catch { /* 推不出来就交给 ensurePath 兜底 */ }
+    // [qqbot-mod] panel-v5 patch 里没有 cwd/dataRoot（早在 2026-09-24 就搬进插件自有存储了）时，
+    // 用 nsBot 合并自有存储后的 dataRoot 兜底——否则边栏扩展面板会报「还没绑过机器人？」。
+    try {
+      const b = nsBot('im-qqbot');
+      if (b && b.cfg && b.cfg.dataRoot) return String(b.cfg.dataRoot);
+    } catch { /* ignore */ }
     return '';
   }
   /** 确保 contextless-store 绑定到正确的数据根（幂等；路径变了会重新绑定） */
@@ -899,7 +905,131 @@ export function apply(ctx) {
           if (l.ts > cur.lastSeen) { cur.lastSeen = l.ts; if (l.name) cur.name = l.name; }
         }
       }
-      const chats = [...map.values()].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 80);
+      // [qqbot-mod] known-chats-merge：台账会漏，把"她聊过的群/人"也补进来
+      try {
+        const _kcNs = String(u.searchParams.get("ns") || "");
+        const _kcBot = (typeof nsBot === "function" ? nsBot(_kcNs) : null) || (typeof bots !== "undefined" ? bots[0] : null);
+        const _kcRoot = _kcBot ? resolveMemoryRoot(_kcBot) : "";
+        if (_kcRoot) {
+          const _kcAdd = (scope, id, name, ts) => {
+            if (!id || (scope !== "group" && scope !== "c2c")) return;
+            const k = scope + ":" + id;
+            const cur = map.get(k);
+            if (!cur) map.set(k, { scope: scope, id: id, name: name, lastSeen: Number(ts) || 0, count: 1 });
+            else if ((Number(ts) || 0) > (Number(cur.lastSeen) || 0)) { cur.lastSeen = Number(ts) || 0; if (name) cur.name = name; }
+          };
+          try {
+            const _kcDb = join(_kcRoot, ".qqbot", "memory.db");
+            if (existsSync(_kcDb)) {
+              const _sqlite = await import("node:sqlite");
+              const _db = new _sqlite.DatabaseSync(_kcDb, { readOnly: true });
+              try {
+                const _rows = _db.prepare("SELECT scope, MAX(ts) AS t FROM mem GROUP BY scope").all();
+                for (const _r of _rows) {
+                  const _s = String((_r && _r.scope) || "");
+                  const _i = _s.indexOf(":");
+                  if (_i > 0) _kcAdd(_s.slice(0, _i), _s.slice(_i + 1), undefined, Number(_r.t) || 0);
+                }
+              } finally { _db.close(); }
+            }
+          } catch { }
+          // [[qqbot-mod] robot-name-fix 2026-10-26] c2c 对端真人昵称从 chat 表补：
+          // msg-history 台账里对方昵称常是 openid、「机器人」是 bot 自己，都不可用；
+          // chat 表 in 行的 sender 是 ingest 洗过的真人名（如「爸爸」）
+          try {
+            const _kcDb2 = join(_kcRoot, ".qqbot", "memory.db");
+            if (existsSync(_kcDb2)) {
+              const _sqlite2 = await import("node:sqlite");
+              const _db2 = new _sqlite2.DatabaseSync(_kcDb2, { readOnly: true });
+              try {
+                const _rows2 = _db2.prepare(
+                  "SELECT scope, sender, COUNT(*) AS c FROM chat WHERE dir='in' AND scope LIKE 'c2c:%' GROUP BY scope, sender ORDER BY c DESC"
+                ).all();
+                const _picked = new Map();
+                for (const _r of _rows2) {
+                  const _s = String((_r && _r.scope) || "");
+                  const _nm2 = String((_r && _r.sender) || "");
+                  if (!_s || !_nm2) continue;
+                  if (_nm2 === "对方" || _nm2 === "机器人" || _nm2.length >= 16) continue;
+                  if (!_picked.has(_s)) _picked.set(_s, _nm2);
+                }
+                for (const [_s, _nm2] of _picked) {
+                  const _k = "c2c:" + _s.slice(4);
+                  const _cur = map.get(_k);
+                  if (_cur) { if (!_cur.name) _cur.name = _nm2; }
+                  else map.set(_k, { scope: "c2c", id: _s.slice(4), name: _nm2, lastSeen: 0, count: 1 });
+                }
+              } finally { _db2.close(); }
+            }
+          } catch { }
+          try {
+            const _kcLog = join(_kcRoot, ".qqbot", "local-answer-log.jsonl");
+            if (existsSync(_kcLog)) {
+              const _lines = readFileSync(_kcLog, "utf8").split(String.fromCharCode(10));
+              for (let _li = Math.max(0, _lines.length - 400); _li < _lines.length; _li++) {
+                const _t = String(_lines[_li] || "").trim();
+                if (!_t) continue;
+                try {
+                  const _o = JSON.parse(_t);
+                  const _s2 = String((_o && _o.scope) || "");
+                  const _j = _s2.indexOf(":");
+                  if (_j > 0) _kcAdd(_s2.slice(0, _j), _s2.slice(_j + 1), undefined, Number(_o.ts) || 0);
+                } catch { }
+              }
+          // [[qqbot-mod] panel-v3] 并入 .qqbot/msg-history：机器人不在线/会话没注册时写下的台账也算"聊过"，
+          // 这样登录后私聊与特别关心的历史在浮窗聊天页能选到（原本只知道 known-chats.jsonl）。
+          try {
+            const _kcMH = join(_kcRoot, ".qqbot", "msg-history");
+            if (existsSync(_kcMH)) {
+              for (const _d of readdirSync(_kcMH)) {
+                const _mm = /^(group|c2c)_(.+)$/.exec(String(_d));
+                if (!_mm) continue;
+                const _p = join(_kcMH, _d);
+                const _files = readdirSync(_p).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(String(f))).sort();
+                const _last = _files[_files.length - 1];
+                if (!_last) continue;
+                const _fp = join(_p, _last);
+                let _ts = 0;
+                try { _ts = Number(statSync(_fp).mtimeMs) || 0; } catch { }
+                let _nm = "";
+                try {
+                  const _ls = readFileSync(_fp, "utf8").split(String.fromCharCode(10)).filter(Boolean).slice(-60);
+                  for (let _i = _ls.length - 1; _i >= 0; _i--) {
+                    try {
+                      const _o = JSON.parse(_ls[_i]);
+                      const _n = String((_o && _o.n) || "");
+                      // [qqbot-mod] robot-name-fix：机器人自己的行（me=true 或 n=「机器人」）不能当对端名
+                      if (_o && _o.me === true) continue;
+                      if (_n && _n !== "self" && _n !== "机器人" && !/^[0-9A-Fa-f]{32}$/.test(_n)) { _nm = _n; break; }
+                    } catch { }
+                  }
+                } catch { }
+                // [qqbot-mod] group-title-fix 2026-10-27：msg-history 里扫到的 n 是**群成员昵称**，
+                //   不能当群名（否则群聊标题变成某个群友的名字）；只有私聊(c2c)才用它当对端名
+                _kcAdd(_mm[1], _mm[2], (_mm[1] === 'c2c' ? _nm : '') || undefined, _ts);
+              }
+            }
+          } catch { }
+
+            }
+          } catch { }
+        }
+      } catch { }
+      try {
+        // [qqbot-mod] 群名优先用群注册表（已知账台账里的 name 常常是最后说话的人名）
+        const _gnPath = [join(getStickerStore().dataDir, '..', '.qqbot', 'groups.json'), join(getStickerStore().dataDir, '..', '..', '.qqbot', 'groups.json')].find((f) => { try { return existsSync(f) } catch (e) { return false } }) || join(getStickerStore().dataDir, '..', '.qqbot', 'groups.json');
+        // [qqbot-mod] groups-bom-tolerant 2026-10-27：groups.json 若被外部工具以 UTF-8 BOM 重写，
+        //   JSON.parse 会整段抛错 → 群名表失效 → 群聊标题回退成最后说话的成员名（浮窗聊天页 Bug）
+        const _gn = JSON.parse(String(readFileSync(_gnPath, 'utf8')).replace(/^\uFEFF/, '') || '{}');
+        for (const _c of map.values()) {
+          if (_c.scope === 'group') {
+            const _g = _gn[_c.id];
+            if (_g && _g.name) _c.name = _g.name;
+            else if (!_c.name) _c.name = '群 ' + String(_c.id).slice(-6);
+          }
+        }
+      } catch (eGN) {}
+      const chats = [...map.values()].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 200);
       writeJson(res, 200, { chats });
     } catch (e) {
       writeJson(res, 500, { error: String(e?.message ?? e) });
@@ -920,6 +1050,836 @@ export function apply(ctx) {
       nextFireAt: store.nextFireAt(j, now),
     }));
   }
+
+  // ═══ [[qqbot-mod] accounts] 账号管理：B 站 + 抖音 一个入口 ═══
+  const __qqNsOf = (req) => { try { return new URL(req.url ?? '/', 'http://x').searchParams.get('ns') || NS } catch { return NS } }
+  // 动态 import 加 mtime 击穿：模块改了不用重启宿主，下次请求就是新版（ESM 同 URL 会永久缓存）
+  const __qqExtImport = async (root, rel) => {
+    const p = join(root, rel)
+    let v = 0
+    try { v = statSync(p).mtimeMs } catch {}
+    return import('file:///' + p.split(String.fromCharCode(92)).join('/') + '?v=' + v)
+  }
+  const __qqPlatforms = async (root) => __qqExtImport(root, join('.qqbot-extensions', 'lib', 'platforms', 'index.mjs'))
+  route(ctx, 'GET', '/api/qqbot-settings/platforms', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x')
+      const force = u.searchParams.get('force') === '1'
+      const bot = nsBot(__qqNsOf(req))
+      const root = resolveMemoryRoot(bot)
+      const m = await __qqPlatforms(root)
+      // [qqbot-mod] overview-cache 2026-10-27：进程内 30s TTL + 单飞；force=1（浮窗点🔄）绕过缓存
+      const o = await m.overview(root, { force })
+      const cfg = (() => { try { return JSON.parse(readFileSync(join(root, '.qqbot-extensions', 'voice-config.json'), 'utf8')) } catch { return {} } })()
+      return writeJson(res, 200, { ...o, voice: { provider: cfg.provider || '', model: cfg.model || '', voice: cfg.voice || '' } })
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: '账号总览失败：' + String((e && e.message) || e) })
+    }
+  })
+  route(ctx, 'GET', '/api/qqbot-settings/platforms-detail', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x')
+      const id = String(u.searchParams.get('id') || '')
+      const bot = nsBot(__qqNsOf(req))
+      const root = resolveMemoryRoot(bot)
+      const m = await __qqPlatforms(root)
+      const d = await m.detail(root, id)
+      return writeJson(res, 200, d)
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: '账号详情失败：' + String((e && e.message) || e) })
+    }
+  })
+  route(ctx, 'POST', '/api/qqbot-settings/platforms-cookie', async (req, res) => {
+    try {
+      const body = await readJsonBody(req)
+      const id = String((body && body.id) || '')
+      const cookie = String((body && body.cookie) || '')
+      const bot = nsBot(__qqNsOf(req))
+      const root = resolveMemoryRoot(bot)
+      const dy = await __qqExtImport(root, join('.qqbot-extensions', 'lib', 'platforms', 'douyin.mjs'))
+      if (id !== 'douyin') return writeJson(res, 200, { ok: false, error: '目前只有抖音需要手工粘 Cookie' })
+      const r = dy.saveCookie(root, cookie, String((body && body.note) || ''))
+      // [qqbot-mod] douyin-ops 2026-10-27：存 cookie 也记一笔（含条数，之前只显示 0 条造成"没保存上"的错觉）
+      if (r && r.ok) try { dy.opsLog(root, 'cookie-save', { count: r.count || (Array.isArray(r.pairs) ? r.pairs.length : 0), note: String((body && body.note) || '') }) } catch {}
+      return writeJson(res, 200, r)
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: '保存 Cookie 失败：' + String((e && e.message) || e) })
+    }
+  })
+  route(ctx, 'GET', '/api/qqbot-settings/qr-svg', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x')
+      const text = String(u.searchParams.get('text') || '').slice(0, 512)
+      if (!text) return writeJson(res, 200, { ok: false, error: '缺 text' })
+      const p = join(root0ForNs(nsOf(req)), '.qqbot-extensions', 'lib', 'platforms', 'douyin.mjs')
+      let q = null
+      try { const mod = await import('file:///' + p.split(String.fromCharCode(92)).join('/') + '?v=' + (statSync(p).mtimeMs || 0)); q = await mod.qrSvg(text) } catch {}
+      if (!q || !q.ok) {
+        // 兜底：不依赖 douyin.mjs，直接用 vendored qrcode 生成（2026-10-27 B 站码加载不出来的保险丝）
+        try {
+          const spec = 'file:///F:/qqbot/dshqqbot/.qqbot-extensions/vendor/qrcode/node_modules/qrcode/lib/index.js'
+          const Q = (await import(spec)).default || (await import(spec))
+          const svg2 = await Q.toString(String(text), { type: 'svg', margin: 1, errorCorrectionLevel: 'M', width: 220 })
+          q = { ok: true, svg: svg2 }
+        } catch (eF) { q = { ok: false, error: (q && q.error) || String((eF && eF.message) || eF) } }
+      }
+      if (!q || !q.ok) return writeJson(res, 200, { ok: false, error: (q && q.error) || '生成失败' })
+      res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-store' })
+      return res.end(q.svg)
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: '二维码生成失败：' + String((e && e.message) || e) })
+    }
+  })
+
+  // ═══ [[qqbot-mod] douyin-comments] 抖音评论速览（只读） ═══
+  route(ctx, 'GET', '/api/qqbot-settings/douyin-comments', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x')
+      const link = String(u.searchParams.get('link') || '')
+      const cursor = Number(u.searchParams.get('cursor') || 0) || 0
+      const count = Math.min(50, Number(u.searchParams.get('count') || 20) || 20)
+      const bot = nsBot(__qqNsOf(req))
+      const root = resolveMemoryRoot(bot)
+      const dy = await __qqExtImport(root, join('.qqbot-extensions', 'lib', 'platforms', 'douyin.mjs'))
+      const id = await dy.parseVideoLink(link)
+      if (!id || !id.ok) return writeJson(res, 200, { ok: false, error: (id && id.error) || '没认出视频 ID' })
+      const r = await dy.commentList(root, id.awemeId, { cursor, count })
+      // [qqbot-mod] douyin-ops：拉过谁家评论也记一笔，方便回溯
+      if (r && r.ok) try { dy.opsLog(root, 'comments-pull', { awemeId: id.awemeId, total: r.total || 0, count: (r.comments || []).length, via: id.via || '' }) } catch {}
+      // [qqbot-mod] dy-inbox 2026-10-29：只读速览过的视频也进关注清单（收件箱才有内容可看）
+      if (r && r.ok) {
+        try {
+          const CWw = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'))
+          CWw.douyinWatchAdd(root, { awemeId: id.awemeId })
+        } catch {}
+      }
+      return writeJson(res, 200, { ...r, via: id.via || '', awemeId: id.awemeId, videoUrl: 'https://www.douyin.com/video/' + id.awemeId })
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: '拉评论失败：' + String((e && e.message) || e) })
+    }
+  })
+
+  // ═══ [[qqbot-mod] douyin-log] 抖音发布日志/历史操作（与 B 站同构，本地记录） ═══
+  route(ctx, 'GET', '/api/qqbot-settings/douyin-log', async (req, res) => {
+    try {
+      const bot = nsBot(__qqNsOf(req))
+      const root = resolveMemoryRoot(bot)
+      const dy = await __qqExtImport(root, join('.qqbot-extensions', 'lib', 'platforms', 'douyin.mjs'))
+      return writeJson(res, 200, dy.opsRead(root, { limit: 60 }))
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: '读抖音日志失败：' + String((e && e.message) || e) })
+    }
+  })
+  // ═══ [[qqbot-mod] douyin-replies] 抖音回复待审队列（自动发被挡，终点=复制手动发） ═══
+  route(ctx, 'GET', '/api/qqbot-settings/douyin-replies', async (req, res) => {
+    try {
+      const bot = nsBot(__qqNsOf(req))
+      const root = resolveMemoryRoot(bot)
+      const dy = await __qqExtImport(root, join('.qqbot-extensions', 'lib', 'platforms', 'douyin.mjs'))
+      return writeJson(res, 200, dy.replyList(root))
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: '读待审回复失败：' + String((e && e.message) || e) })
+    }
+  })
+  route(ctx, 'POST', '/api/qqbot-settings/douyin-replies', async (req, res) => {
+    try {
+      const body = await readJsonBody(req)
+      const bot = nsBot(__qqNsOf(req))
+      const root = resolveMemoryRoot(bot)
+      const dy = await __qqExtImport(root, join('.qqbot-extensions', 'lib', 'platforms', 'douyin.mjs'))
+      const act = String(body.action || '')
+      if (act === 'draft') {
+        const r = dy.replyDraft(root, { awemeId: body.awemeId, nickname: body.nickname, comment: body.comment, text: body.text, videoUrl: body.videoUrl })
+        if (r.ok) try { dy.opsLog(root, 'reply-draft', { awemeId: String(body.awemeId || ''), who: String(body.nickname || '') }) } catch {}
+        return writeJson(res, 200, r)
+      }
+      if (act === 'update') return writeJson(res, 200, dy.replyUpdate(root, { id: String(body.id || ''), text: body.text, status: body.status }))
+      return writeJson(res, 200, { ok: false, error: '未知动作：' + (act || '（空）') })
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: '待审回复操作失败：' + String((e && e.message) || e) })
+    }
+  })
+  // 打开抖音产物目录（对齐 B 站卡的「📂 产物目录」）
+  route(ctx, 'POST', '/api/qqbot-settings/douyin', async (req, res) => {
+    try {
+      const body = await readJsonBody(req)
+      const bot = nsBot(__qqNsOf(req))
+      const root = resolveMemoryRoot(bot)
+      const dir = join(root, 'data', 'douyin-ops')
+      try { mkdirSync(dir, { recursive: true }) } catch {}
+      const action = String(body.action || '')
+      if (action === 'open-ops') {
+        let last = ''
+        for (const go of [() => spawn('cmd', ['/c', 'start', '', dir], { detached: true, stdio: 'ignore', windowsHide: true }), () => spawn('explorer', [dir], { detached: true, stdio: 'ignore', windowsHide: true })]) {
+          try { const c = go(); c.on?.('error', () => {}); c.unref(); return writeJson(res, 200, { ok: true, path: dir }) } catch (e) { last = String((e && e.message) || e) }
+        }
+        return writeJson(res, 200, { ok: false, error: '打不开目录：' + last, path: dir })
+      }
+      return writeJson(res, 200, { ok: false, error: '未知动作' })
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: '抖音操作失败：' + String((e && e.message) || e) })
+    }
+  })
+
+  // ═══ [[qqbot-mod] panel-v3] ① B 站发布日志：浮窗里能审查"我发了什么" ═══
+  route(ctx, 'GET', '/api/qqbot-settings/bili-log', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const limit = Math.max(1, Math.min(80, Number(u.searchParams.get('limit') || 20) || 20));
+      const bot = nsBot(String(u.searchParams.get('ns') || ''));
+      const root = resolveMemoryRoot(bot);
+      const rows = [];
+      const pushRow = (o, src) => {
+        if (!o || typeof o !== 'object') return;
+        const at = Number(o.ts || o.at || 0) || 0;
+        const dynId = String(o.dynamicId || o.dyn_id || '');
+        rows.push({
+          src,
+          at,
+          type: String(o.type || (src === 'dynamic' ? 'dynamic' : 'log')),
+          text: String(o.text || o.title || o.summary || o.desc || '').trim(),
+          url: String(o.url || (dynId ? 'https://t.bilibili.com/' + dynId : '')),
+          dynamicId: dynId,
+          jobId: String(o.jobId || ''),
+          ok: o.ok === false ? false : true,
+          err: String(o.error || ''),
+          via: String(o.via || ''),
+        });
+      };
+      try {
+        const p1 = join(root, '.qqbot', 'bili-dynamic-log.jsonl');
+        if (existsSync(p1)) {
+          for (const line of readFileSync(p1, 'utf8').split(String.fromCharCode(10))) {
+            const t = line.trim();
+            if (!t) continue;
+            try { pushRow(JSON.parse(t), 'dynamic'); } catch { }
+          }
+        }
+      } catch { }
+      try {
+        const p2 = join(root, '.qqbot', 'bili-ops', 'records.jsonl');
+        if (existsSync(p2)) {
+          for (const line of readFileSync(p2, 'utf8').split(String.fromCharCode(10))) {
+            const t = line.trim();
+            if (!t) continue;
+            try { pushRow(JSON.parse(t), 'ops'); } catch { }
+          }
+        }
+      } catch { }
+      rows.sort((a, b) => b.at - a.at);
+      return writeJson(res, 200, { ok: true, root, total: rows.length, rows: rows.slice(0, limit) });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  // ═══ [[qqbot-mod] panel-v3] ② 语音合成方案：列清楚、选得动、真写 voice-config.json ═══
+  const TTS_ENGINES = [
+    {
+      id: 'edge', label: 'edge 在线（微软）', kind: 'cloud', port: 0,
+      voices: ['zh-CN-XiaoxiaoNeural', 'zh-CN-XiaoyiNeural', 'zh-CN-YunxiNeural'],
+      speed: '≈0.5×实时 · 零显存 · 要联网',
+      use: '本地服务没起时的兜底；音质一般但最稳',
+    },
+    {
+      id: 'gsv', label: 'GPT-SoVITS 本地', kind: 'local', port: 9880, dir: '.models/gpt-sovits',
+      voices: ['xiaolan', 'gentle'],
+      speed: '聊天实时首选（6GB 卡够）',
+      use: '群聊发语音条：5 秒参考音就能克隆',
+    },
+    {
+      id: 'breeze', label: 'Breeze TTS 2 int8-hybrid', kind: 'local', port: 7860, dir: '.models/breeze-tts2',
+      voices: ['breeze', 'breeze_design'],
+      speed: '≈0.10×实时（3.8s 音频要 38s）',
+      use: '离线成片配音：音色自然、慢，不适合抢答',
+    },
+    {
+      id: 'index', label: 'IndexTTS-2.5（情感克隆）', kind: 'local', port: 9890, dir: '.models/index-tts',
+      // [qqbot-mod] vram-soft 2026-10-28：xiaolan_cute 放首位 —— 切到 IndexTTS 时默认音色保持
+      // xiaolan_cute（参考音克隆对后端无关，适配层会 voice-reuse，不用被迫换 xiaolan_emo）
+      voices: ['xiaolan_cute', 'xiaolan_emo', 'xiaolan_emo_soft'],
+      speed: 'RTF≈22-30（比 GSV 慢约 25 倍）',
+      use: '离线视频配音 / 读评论：情感最足；开共享显存兜底后 6GB 卡也能起',
+    },
+  ];
+
+  function dirSizeSync(p) {
+    try {
+      if (!p || !existsSync(p)) return 0;
+      const st = statSync(p);
+      if (st.isFile()) return st.size;
+      let sum = 0;
+      for (const f of readdirSync(p)) sum += dirSizeSync(join(p, f));
+      return sum;
+    } catch { return 0; }
+  }
+
+  async function probePort(port) {
+    if (!port) return false;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 1200);
+    try {
+      const r = await fetch('http://127.0.0.1:' + port + '/health', { signal: ac.signal });
+      return !!r && (r.ok || r.status === 404 || r.status === 405 || r.status === 400);
+    } catch {
+      try {
+        const r2 = await fetch('http://127.0.0.1:' + port + '/', { signal: ac.signal });
+        return !!r2;
+      } catch { return false; }
+    } finally { clearTimeout(timer); }
+  }
+
+  route(ctx, 'GET', '/api/qqbot-settings/tts-engines', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(String(u.searchParams.get('ns') || ''));
+      const root = resolveMemoryRoot(bot);
+      const cfg = readExtCfg(extCfgPath(root, 'voice'));
+      const adapterUp = await probePort(9881);
+      const engines = [];
+      for (const e of TTS_ENGINES) {
+        const up = e.port ? await probePort(e.port) : true;
+        const sizeBytes = e.dir ? dirSizeSync(join(root, '..', '..', e.dir)) : 0;
+        const sizeAlt = e.dir ? dirSizeSync(join('F:/qqbot', e.dir)) : 0;
+        engines.push({
+          id: e.id, label: e.label, kind: e.kind, port: e.port, voices: e.voices,
+          speed: e.speed, use: e.use,
+          up: e.id === 'edge' ? true : (e.port === 9880 || e.port === 9890 ? (up || adapterUp) : up),
+          rawUp: up,
+          sizeGB: Math.round(((sizeBytes || sizeAlt) / (1024 * 1024 * 1024)) * 100) / 100,
+          dir: e.dir || '',
+        });
+      }
+      const cur = String(cfg.model || '');
+      const curEngine = String(cfg.provider || 'edge') === 'edge' ? 'edge' : (TTS_ENGINES.find((x) => x.id === cur) ? cur : 'gsv');
+      return writeJson(res, 200, {
+        ok: true, root, path: extCfgPath(root, 'voice'), config: cfg,
+        // [qqbot-mod] vram-soft 2026-10-28：显存预检策略开关（6GB 卡上 IndexTTS 5300MB 门槛物理达不到）
+        vramSoft: cfg.vramSoft === true || cfg.vramSoft === 'true',
+        adapter: { port: 9881, up: adapterUp, endpoint: 'http://127.0.0.1:9881/v1/audio/speech' },
+        current: { engine: curEngine, provider: String(cfg.provider || 'edge'), model: cur, voice: String(cfg.voice || ''), mode: String(cfg.mode || 'sometimes'), prob: cfg.prob },
+        engines,
+      });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  route(ctx, 'POST', '/api/qqbot-settings/tts-engines', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const bot = nsBot(String((body && body.ns) || ''));
+      const root = resolveMemoryRoot(bot);
+      const p = extCfgPath(root, 'voice');
+      if (!p) return writeJson(res, 400, { ok: false, error: '找不到数据目录' });
+      const cur = readExtCfg(p);
+      // [qqbot-mod] vram-soft 2026-10-28：只改开关（不动引擎/音色）——
+      //   下一次合成时 tts-core 会发现适配层策略不一致并自动重启它。
+      if (body && body.engine == null && body.vramSoft !== undefined) {
+        const nextOnly = Object.assign({}, cur, { vramSoft: body.vramSoft === true || body.vramSoft === 'true' });
+        try { if (existsSync(p)) copyFileSync(p, p + '.bak-' + Date.now()); } catch { }
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify(nextOnly, null, 2), 'utf8');
+        return writeJson(res, 200, { ok: true, vramSoft: nextOnly.vramSoft, path: p,
+          note: nextOnly.vramSoft ? '已开启：显存不够也强启本地引擎（共享显存兜底，慢但能出声），下一条语音生效'
+                                  : '已关闭：显存不够会先拒绝启动本地引擎' });
+      }
+      const engineId = String((body && body.engine) || '').trim();
+      const wanted = TTS_ENGINES.find((x) => x.id === engineId);
+      if (!wanted) return writeJson(res, 400, { ok: false, error: '未知方案：' + engineId });
+      const voice = String((body && body.voice) || '').trim() || wanted.voices[0] || '';
+      const patch = engineId === 'edge'
+        ? { provider: 'edge', voice, endpoint: 'http://127.0.0.1:9881/v1/audio/speech', model: '' }
+        : { provider: 'http', voice, model: engineId, endpoint: 'http://127.0.0.1:9881/v1/audio/speech' };
+      if (body && typeof body.mode === 'string' && body.mode) patch.mode = body.mode;
+      if (body && typeof body.prob === 'number') patch.prob = Math.max(0, Math.min(1, body.prob));
+      // 开关随引擎切换一起存（没传就保留现值）
+      if (body && body.vramSoft !== undefined) patch.vramSoft = body.vramSoft === true || body.vramSoft === 'true';
+      const next = Object.assign({}, cur, patch);
+      for (const k of ['systemPrompt', 'baseUrl']) if (next[k] === '') delete next[k];
+      try {
+        if (existsSync(p)) copyFileSync(p, p + '.bak-' + Date.now());
+      } catch { }
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
+      const up = wanted.port ? await probePort(wanted.port) : true;
+      return writeJson(res, 200, {
+        ok: true, engine: engineId, path: p, config: readExtCfg(p), up,
+        note: up ? '' : ('端口 ' + wanted.port + ' 没开：' + engineId + ' 现在合成会失败，先跑 skills/local-tts/scripts/start-services.ps1 -Backend adapter'),
+      });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  // ═══ [[qqbot-mod] panel-v3] ③ 打开任意产物目录（explorer → cmd start → PowerShell，三重兜底）═══
+  route(ctx, 'POST', '/api/qqbot-settings/open-dir', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const bot = nsBot(String((body && body.ns) || ''));
+      const root = resolveMemoryRoot(bot);
+      let dir = String((body && body.path) || '').trim();
+      let _lib = null;
+      try {
+        _lib = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-ops.mjs').split(String.fromCharCode(92)).join('/'));
+      } catch { }
+      if (body && body.kind === 'bili-jobs') {
+        // [qqbot-mod] 2026-10-28：客户端别再猜路径 —— 产物根目录以 bili-ops 的 paths() 为准
+        try { dir = (_lib && _lib.paths(root).jobs) || dir; } catch { }
+      }
+      if (!dir && body && body.jobId) {
+        const job = _lib && _lib.getJob ? _lib.getJob(root, String(body.jobId)) : null;
+        dir = (job && job.dir) || '';
+      }
+      if (!dir) return writeJson(res, 400, { ok: false, error: '缺 path/kind/jobId' });
+      const abs = resolve(dir);
+      const okRoot = root && (abs === resolve(root) || abs.startsWith(resolve(root) + sep));
+      const okExtra = /^F:[\\/]qqbot[\\/].models[\\/]/i.test(abs) || /^F:[\\/]qqbot[\\/]skills[\\/]/i.test(abs);
+      // [[qqbot-mod] video-flow] 成片产物默认落在 storage.root（F:/qqbot/data/bili-ops），
+      // 它不在数据根下，之前一直被"目录不在数据根里"挡回去 = 用户说的"打开产物目录始终失效"。
+      let _jobsDir = '';
+      try { _jobsDir = (_lib && _lib.paths) ? _lib.paths(root).jobs : ''; } catch { }
+      const okJobs = _jobsDir && (abs === resolve(_jobsDir) || abs.startsWith(resolve(_jobsDir) + sep));
+      if (!okRoot && !okExtra && !okJobs) return writeJson(res, 200, { ok: false, path: abs, error: '目录不在允许范围里，拒绝打开' });
+      try { if (!existsSync(abs)) mkdirSync(abs, { recursive: true }); } catch { }
+      // [qqbot-mod] 2026-10-28 主人反馈：原来 spawn 探测后直接回"已打开"，失败全被吞 ——
+      //   弹窗永远说成功、窗口从不出现。改成 spawnSync 可验证，三重兜底（cmd start → explorer → powershell）。
+      //   注：别用 rundll32 —— 第一版把 WINDIR 错当 dll 参数传进去，弹「RUNDLL 存在错误」对话框（主人截图）。
+      const tries = [
+        ['cmd', ['/c', 'start', '', abs]],
+        ['explorer', [abs]],
+        ['powershell', ['-NoProfile', '-Command', 'Start-Process -FilePath explorer.exe -ArgumentList "' + abs.replace(/"/g, '') + '"']],
+      ];
+      let last = '';
+      for (const [cmd, args] of tries) {
+        try {
+          const r = spawnSync(cmd, args, { timeout: 6000, windowsHide: true, stdio: 'ignore' });
+          const bad = r.error || (r.status && r.status !== 0 && r.status !== 1);
+          if (bad) { last = (r.error && r.error.message) || ('exit ' + r.status); continue; }
+          let _cnt = -1;
+          try { _cnt = readdirSync(abs).length } catch { }
+          return writeJson(res, 200, { ok: true, path: abs, via: cmd, count: _cnt, msg: '已打开（' + _cnt + ' 项，via ' + cmd + '）' });
+        } catch (e) {
+          last = String((e && e.message) || e);
+        }
+      }
+      return writeJson(res, 200, { ok: false, path: abs, error: '调不起资源管理器：' + last });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  // ═══ [[qqbot-mod] panel-v3] ③ 出图/视频方案：模型路径、大小、服务状态 ═══
+  route(ctx, 'GET', '/api/qqbot-settings/draw-info', async (req, res) => {
+    try {
+      const bot = nsBot(String(new URL(req.url ?? '/', 'http://x').searchParams.get('ns') || ''));
+      const root = resolveMemoryRoot(bot);
+      const draw = readExtCfg(join(root, '.qqbot-extensions', 'draw-config.json'));
+      const active = String(draw.activeProfile || 'balanced');
+      const prof = (draw.profiles && draw.profiles[active]) || {};
+      const modelPath = String(prof.modelPath || prof.model || '').trim();
+      const modelSize = modelPath ? dirSizeSync(modelPath) : 0;
+      const sdUp = await probePort(7861);
+      const jobsDir = join(root, '.qqbot', 'bili-ops', 'jobs');
+      let jobCount = 0;
+      try { jobCount = existsSync(jobsDir) ? readdirSync(jobsDir).length : 0; } catch { }
+      return writeJson(res, 200, {
+        ok: true, root,
+        draw: {
+          activeProfile: active,
+          profiles: Object.keys(draw.profiles || {}),
+          modelPath,
+          modelSizeGB: Math.round((modelSize / (1024 * 1024 * 1024)) * 100) / 100,
+          sdServer: { port: 7861, up: sdUp },
+        },
+        video: {
+          jobsDir,
+          jobCount,
+          ffmpeg: 'F:/qqbot/.venv-draw/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe',
+          skillFrameRender: 'F:/qqbot/skills/video-frame-render/scripts/render.py',
+          skillH3: 'F:/qqbot/skills/h3-video/SKILL.md',
+        },
+        tts: { adapter: 'F:/qqbot/skills/local-tts/adapter/server.py', dir: 'F:/qqbot/.models' },
+      });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  // [qqbot-mod] contact-move（主人 2026-10-27）：「💠 联系方式」的数据源。
+  //   QQ 侧读 group-tiers.json + groups.json + msg-history 的条数；B 站侧读本机两份台账；
+  //   学习心得沿用 memory.db 的 insight/growth（记忆页那块已经删掉，改在这里展示）。
+  route(ctx, 'GET', '/api/qqbot-settings/contact', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(String(u.searchParams.get('ns') || ''));
+      const root = resolveMemoryRoot(bot);
+      const ext = async (rel) => import('file:///' + join(root, '.qqbot-extensions', rel).replace(/\\/g, '/'));
+      const out = { ok: true, root, qq: { groups: [], people: [], counts: { groups: 0, people: 0 } }, bili: [], insights: [] };
+      // 群名表
+      let gNames = {};
+      // [qqbot-mod] groups-bom-tolerant：同上，容忍 BOM
+      try { gNames = JSON.parse(String(readFileSync(join(root, '.qqbot', 'groups.json'), 'utf8')).replace(/^\uFEFF/, '')) || {}; } catch { }
+      try {
+        // [qqbot-mod] 群注册表可能被清空：从 msg-history 目录兜底补齐"有哪些群"
+        const _mh = join(root, '.qqbot', 'msg-history');
+        for (const d of readdirSync(_mh)) {
+          const m = /^group_(.+)$/.exec(String(d));
+          if (!m) continue;
+          if (!gNames[m[1]]) gNames[m[1]] = { name: '', from: 'msg-history' };
+        }
+      } catch (e) {}
+      // 台账条数 + 昵称
+      const stats = {};
+      try {
+        const mh = join(root, '.qqbot', 'msg-history');
+        if (existsSync(mh)) {
+          for (const d of readdirSync(mh)) {
+            const mm = /^(group|c2c)_(.+)$/.exec(d);
+            if (!mm) continue;
+            const kind = mm[1], id = mm[2];
+            const key = kind + ':' + id;
+            let cnt = 0, name = '';
+            try {
+              const dir = join(mh, d);
+              const files = readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
+              const last = files[files.length - 1];
+              if (last) {
+                const lines = readFileSync(join(dir, last), 'utf8').split(String.fromCharCode(10)).filter(Boolean);
+                cnt = lines.length;
+                for (let i = lines.length - 1; i >= 0 && i > lines.length - 80; i--) {
+                  try {
+                    const o = JSON.parse(lines[i]);
+                    const n = String(o.n || '');
+                    if (n && n !== 'self' && !/^[0-9A-Fa-f]{32}$/.test(n)) { name = n; break; }
+                  } catch { }
+                }
+              }
+            } catch { }
+            stats[key] = { kind, id, msgs: cnt, name };
+          }
+        }
+      } catch { }
+      // 特别关心名单（群 / 人）+ 关系档案里的角色
+      let tiers = { priority: [], priorityPeople: [] };
+      try { tiers = JSON.parse(readFileSync(join(root, '.qqbot-extensions', 'data', 'group-tiers.json'), 'utf8')) || tiers; } catch { }
+      let relmap = {};
+      try {
+        const core = await ext('lib/memory-panel-core.mjs');
+        const ch = core.loadCharacter ? core.loadCharacter(root) : null;
+        if (ch && ch.relationOf) relmap = ch.relationOf;
+      } catch { }
+      const priG = new Set((tiers.priority || []).map((x) => String(x).replace(/^group:/, '')));
+      const priP = new Set((tiers.priorityPeople || []).map((x) => String(x).replace(/^c2c:/, '')));
+      // 群：台账里有的都列，特别关心的排前面；再补上"只在 tiers 里有"的
+      const seenG = new Set();
+      const groups = [];
+      Object.values(stats).forEach((s) => {
+        if (s.kind !== 'group') return;
+        seenG.add(s.id);
+        const gname = (gNames[s.id] && gNames[s.id].name) || s.name || s.id;
+        groups.push({ id: s.id, name: gname, msgs: s.msgs, priority: priG.has(s.id) });
+      });
+      priG.forEach((id) => {
+        if (seenG.has(id)) return;
+        const gname = (gNames[id] && gNames[id].name) || id;
+        groups.push({ id, name: gname, msgs: 0, priority: true });
+      });
+      groups.sort((a, b) => (Number(b.priority) - Number(a.priority)) || (b.msgs - a.msgs));
+      // 人：优先看特别关心名单 + 熟识度
+      const people = [];
+      const seenP = new Set();
+      priP.forEach((id) => {
+        const s = stats['c2c:' + id] || null;
+        seenP.add(id);
+        people.push({ id, name: (s && s.name) || id.slice(-6), role: relmap[(s && s.name) || ''] || '', priority: true, note: '' });
+      });
+      Object.values(stats).forEach((s) => {
+        if (s.kind !== 'c2c') return;
+        if (seenP.has(s.id)) return;
+        people.push({ id: s.id, name: s.name || s.id.slice(-6), role: relmap[s.name || ''] || '', priority: false, note: '' });
+      });
+      out.qq.groups = groups.slice(0, 40);
+      out.qq.people = people.slice(0, 40);
+      out.qq.counts = { groups: groups.length, people: people.length };
+      // B 站台账
+      const pushBili = (o, defType) => {
+        if (!o || typeof o !== 'object') return;
+        const at = Number(o.ts || o.at || 0) || 0;
+        const dynId = String(o.dynamicId || o.dyn_id || '');
+        out.bili.push({
+          at,
+          type: String(o.type || defType),
+          text: String(o.text || o.title || o.summary || o.desc || o.topic || '').trim(),
+          url: String(o.url || (dynId ? 'https://t.bilibili.com/' + dynId : '')),
+          ok: o.ok === false ? false : true,
+        });
+      };
+      try {
+        const p1 = join(root, '.qqbot', 'bili-dynamic-log.jsonl');
+        if (existsSync(p1)) for (const L of readFileSync(p1, 'utf8').split(String.fromCharCode(10))) { const t = L.trim(); if (t) { try { pushBili(JSON.parse(t), 'dynamic'); } catch { } } }
+      } catch { }
+      try {
+        const p2 = join(root, '.qqbot', 'bili-ops', 'records.jsonl');
+        if (existsSync(p2)) for (const L of readFileSync(p2, 'utf8').split(String.fromCharCode(10))) { const t = L.trim(); if (t) { try { pushBili(JSON.parse(t), 'log'); } catch { } } }
+      } catch { }
+      try {
+        const p3 = join(root, 'data', 'bili-ops', 'records.jsonl');
+        if (existsSync(p3)) for (const L of readFileSync(p3, 'utf8').split(String.fromCharCode(10))) { const t = L.trim(); if (t) { try { pushBili(JSON.parse(t), 'log'); } catch { } } }
+      } catch { }
+      out.bili.sort((a, b) => b.at - a.at);
+      out.bili = out.bili.slice(0, 40);
+      // 学习心得
+      try {
+        const mem = await ext('lib/memory.mjs');
+        const list = mem.loadMemories(root, '__global__') || [];
+        out.insights = list.filter((m) => ['insight', 'growth'].includes(String(m.kind || '')))
+          .map((m) => ({ id: m.id, kind: m.kind, text: String(m.text || ''), source: String(m.source || 'chat'), ts: m.ts || 0 }))
+          .sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 20);
+      } catch (eI) { out.insightErr = String(eI && eI.message || eI); }
+      writeJson(res, 200, out);
+    } catch (e) {
+      writeJson(res, 200, { ok: false, error: String(e && e.message ? e.message : e) });
+    }
+  });
+
+  // [qqbot-mod] voice-audition（主人 2026-10-27）：四个主力音色 + 真合成试听。
+  route(ctx, 'GET', '/api/qqbot-settings/tts-voices', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(String(u.searchParams.get('ns') || ''));
+      const root = resolveMemoryRoot(bot);
+      let cfg = {};
+      try { cfg = JSON.parse(readFileSync(join(root, '.qqbot-extensions', 'voice-config.json'), 'utf8')) || {}; } catch { }
+      let prof = {};
+      try { prof = JSON.parse(readFileSync(join(root, '..', 'skills', 'local-tts', 'adapter', 'profiles.json'), 'utf8')) || {}; } catch { }
+      if (!prof || !prof.curated) {
+        try { prof = JSON.parse(readFileSync('F:/qqbot/skills/local-tts/adapter/profiles.json', 'utf8')) || {}; } catch { }
+      }
+      const curated = (prof.curated || []).map((c) => ({ voice: c.voice, label: c.label, hint: c.hint || '', backend: (prof.voices && prof.voices[c.voice] && prof.voices[c.voice].backend) || '' }));
+      writeJson(res, 200, {
+        ok: true,
+        curated,
+        current: { voice: cfg.voice || '', model: cfg.model || '', provider: cfg.provider || '', endpoint: cfg.endpoint || '', speed: cfg.speed || 1 },
+        profilePath: 'skills/local-tts/adapter/profiles.json',
+      });
+    } catch (e) {
+      writeJson(res, 200, { ok: false, error: String(e && e.message ? e.message : e) });
+    }
+  });
+
+  route(ctx, 'POST', '/api/qqbot-settings/tts-preview', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const bot = nsBot(String(body.ns || ''));
+      const root = resolveMemoryRoot(bot);
+      const voice = String(body.voice || '').trim();
+      const engine = String(body.engine || '').trim();
+      if (!voice) { writeJson(res, 200, { ok: false, error: '没给音色名' }); return; }
+      let cfg = {};
+      try { cfg = JSON.parse(readFileSync(join(root, '.qqbot-extensions', 'voice-config.json'), 'utf8')) || {}; } catch { }
+      const ext = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'tts-core.mjs').replace(/\\/g, '/'));
+      const text = String(body.text || '你好呀，我是小蓝。这个声音你听得惯吗？').slice(0, 60);
+      // [qqbot-mod] preview-sample 2026-10-27：预录样本缓存（主人反馈：试听不该每次都真合成 ——
+      //   本地后端没起就要干等几十秒甚至失败）。首次合成成功后把音频存进 samples/，
+      //   之后同一个音色+引擎直接秒播；换引擎才重录。
+      const DEFAULT_PREVIEW_TEXT = '你好呀，我是小蓝。这个声音你听得惯吗？';
+      const isStdText = String(body.text || DEFAULT_PREVIEW_TEXT) === DEFAULT_PREVIEW_TEXT;
+      const engName = engine || String(cfg.model || 'gsv');
+      const pvDir = join(root, '.qqbot', 'tts', 'preview');
+      const safe = voice.replace(/[^0-9A-Za-z_-]/g, '_');
+      if (isStdText) {
+        const samp = join(pvDir, 'smp_' + safe + '__' + String(engName).replace(/[^0-9A-Za-z_-]/g, '_') + '.mp3');
+        if (existsSync(samp)) {
+          try {
+            const dst0 = join(pvDir, safe + '.mp3');
+            copyFileSync(samp, dst0);
+            writeJson(res, 200, {
+              ok: true, voice, engine: engName, ms: 0, cached: true, bytes: statSync(samp).size,
+              url: '/api/qqbot-settings/tts-preview-file?name=' + encodeURIComponent(safe + '.mp3') + '&ns=' + encodeURIComponent(String(body.ns || '')) + '&t=' + Date.now(),
+            });
+            return;
+          } catch { /* 缓存读失败就走正常合成 */ }
+        }
+      }
+      const t0 = Date.now();
+      const r = await ext.synthesize(text, {
+        dataRoot: root,
+        provider: 'http', // 试听一律走本地（只有本地才有音色可选）
+        endpoint: String(cfg.endpoint || 'http://127.0.0.1:9881/v1/audio/speech'),
+        model: engine || String(cfg.model || 'gsv'),
+        voice,
+        speed: Number(body.speed || cfg.speed || 1) || 1,
+        keepText: false,
+        timeoutMs: 120000,   // [qqbot-mod] 300s→120s：试听不该让前端干等 5 分钟
+      });
+      const ms = Date.now() - t0;
+      if (!r || !r.ok || !r.path) {
+        writeJson(res, 200, { ok: false, error: String((r && (r.error || r.reason)) || '合成失败'), ms, via: (r && r.via) || '' });
+        return;
+      }
+      // 复制到 preview 目录（固定名，方便反复覆盖，不占 tts 目录额度）
+      try { mkdirSync(pvDir, { recursive: true }); } catch { }
+      const dst = join(pvDir, safe + '.mp3');
+      try { copyFileSync(r.path, dst); } catch { }
+      // [qqbot-mod] preview-sample：首次成功 → 存预录样本（同音色+引擎下次秒播）
+      if (isStdText) {
+        try { copyFileSync(r.path, join(pvDir, 'smp_' + safe + '__' + String(engName).replace(/[^0-9A-Za-z_-]/g, '_') + '.mp3')); } catch { }
+      }
+      writeJson(res, 200, {
+        ok: true, voice, engine: engName, ms,
+        bytes: Number(r.bytes || 0), via: r.via || '',
+        url: '/api/qqbot-settings/tts-preview-file?name=' + encodeURIComponent(safe + '.mp3') + '&ns=' + encodeURIComponent(String(body.ns || '')) + '&t=' + Date.now(),
+      });
+    } catch (e) {
+      writeJson(res, 200, { ok: false, error: String(e && e.message ? e.message : e) });
+    }
+  });
+
+  route(ctx, 'GET', '/api/qqbot-settings/tts-preview-file', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(String(u.searchParams.get('ns') || ''));
+      const root = resolveMemoryRoot(bot);
+      // [qqbot-mod] preview-any 2026-10-28 主人要求「直接播放预先合成好的」：
+      //   支持按 voice 直取 —— 不指定引擎，目录里有该音色任何一份预录样本就播（优先 gsv）。
+      const voiceQ = String(u.searchParams.get('voice') || '').trim();
+      let p = '';
+      if (voiceQ) {
+        const safeQ = voiceQ.replace(/[^0-9A-Za-z_-]/g, '_');
+        if (safeQ && !safeQ.includes('..')) {
+          const pvDir = join(root, '.qqbot', 'tts', 'preview');
+          const pick = ['smp_' + safeQ + '__gsv.mp3', 'smp_' + safeQ + '__index.mp3', 'smp_' + safeQ + '__breeze.mp3'];
+          for (const cand of pick) { if (existsSync(join(pvDir, cand))) { p = join(pvDir, cand); break; } }
+          if (!p) {
+            try {
+              const any_ = readdirSync(pvDir).find((f) => f.startsWith('smp_' + safeQ + '__') && f.endsWith('.mp3'));
+              if (any_) p = join(pvDir, any_);
+            } catch { }
+          }
+        }
+      } else {
+        const name = String(u.searchParams.get('name') || '');
+        if (!/^[0-9A-Za-z_-]+\.mp3$/.test(name)) { res.writeHead(400); res.end('bad name'); return; }
+        const p2 = join(root, '.qqbot', 'tts', 'preview', name);
+        if (existsSync(p2)) p = p2;
+      }
+      if (!p) { res.writeHead(404); res.end('not found'); return; }
+      const buf = readFileSync(p);
+      res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-length': String(buf.length), 'cache-control': 'no-store' });
+      res.end(buf);
+    } catch (e) {
+      res.writeHead(500); res.end(String(e && e.message ? e.message : e));
+    }
+  });
+
+
+  // [qqbot-mod] comment-status v3：台账 rpid 逐条以"匿名能不能翻到"判定 + 扫最近视频最新评论补漏
+  route(ctx, 'GET', '/api/qqbot-settings/bili-comment-status', async (req, res) => {
+    try {
+      const uq = new URL(req.url, 'http://x').searchParams;
+      const ns = String(uq.get('ns') || '');
+      const limit = Math.max(1, Math.min(20, Number(uq.get('limit') || 8)));
+      const bot = nsBot(ns);
+      const root = resolveMemoryRoot(bot);
+      let api = null;
+      try {
+        const extRoot = join(String(bot.cwd || 'F:/qqbot'), 'dshqqbot', '.qqbot-extensions', 'lib', 'bili-api.mjs').replace(/\\/g, '/');
+        api = await import('file:///' + extRoot);
+      } catch (e) { api = null; }
+      if (!api) return writeJson(res, 200, { ok: false, error: '找不到 bili-api.mjs' });
+
+      const me = api.loadCookie(root);
+      const myMid = String((me && me.cookies && me.cookies.DedeUserID) || '');
+
+      // ① 本地台账
+      const files = [join(root, '.qqbot', 'bili-ops', 'records.jsonl'), join(root, '..', 'data', 'bili-ops', 'records.jsonl')];
+      const recs = [];
+      for (const fp of files) {
+        if (!existsSync(fp)) continue;
+        for (const ln of readFileSync(fp, 'utf8').split('\n').filter(Boolean).slice(-600)) {
+          try {
+            const o = JSON.parse(ln);
+            if (!o || !o.rpid) continue;
+            recs.push({ at: Number(o.at || o.ts || 0), type: String(o.type || ''), rpid: String(o.rpid), bvid: String(o.bvid || ''), text: String(o.text || '') });
+          } catch (e) {}
+        }
+      }
+      recs.sort((a, b) => b.at - a.at);
+
+      const vids = [];
+      const pushVid = (b) => { const v = String(b || '').trim(); if (/^BV[0-9A-Za-z]{8,14}$/.test(v) && vids.indexOf(v) < 0) vids.push(v); };
+      try { const lv = api.readLastVideo(root); if (lv && lv.bvid) pushVid(lv.bvid); } catch (e) {}
+      for (const r of recs) { if (vids.length >= 4) break; pushVid(r.bvid); }
+
+      const aidOf = new Map();
+      for (const bvid of vids) {
+        try {
+          const m = await api.fetchVideoMeta(root, bvid);
+          if (m && m.ok) aidOf.set(bvid, { aid: Number(m.aid || 0), title: String(m.title || '') });
+        } catch (e) {}
+      }
+
+      // ② 台账 rpid 逐条判定（匿名翻 3 页 = 真判据）
+      const rows = [];
+      const seen = new Set();
+      for (const r of recs) {
+        if (rows.length >= limit) break;
+        if (seen.has(r.rpid)) continue;
+        seen.add(r.rpid);
+        const meta = aidOf.get(r.bvid) || { aid: 0, title: '' };
+        const item = { bvid: r.bvid, title: meta.title, rpid: r.rpid, text: r.text, at: r.at || null, aid: meta.aid, status: 'unknown', hint: '', href: 'https://www.bilibili.com/video/' + r.bvid };
+        if (!meta.aid) { item.status = 'unknown'; item.hint = '拿不到 aid（视频可能已删）'; rows.push(item); continue; }
+        let anon = null;
+        try { anon = await api.locateComment(root, { aid: meta.aid, rpid: r.rpid, anon: true, pages: 3 }); } catch (e) {}
+        if (anon && anon.ok && anon.found) {
+          item.status = 'public'; item.state = anon.state; item.attr = anon.attr;
+          item.hint = '匿名能翻到 = 真公开'; item.via = anon.via;
+        } else {
+          let self = null;
+          try { self = await api.locateComment(root, { aid: meta.aid, rpid: r.rpid, anon: false, pages: 2 }); } catch (e) {}
+          if (self && self.ok && self.found) {
+            const folded = Math.floor(Number(self.attr || 0) / 2 ** 38) % 2 === 1;
+            item.status = folded ? 'review' : 'hidden';
+            item.state = self.state; item.attr = self.attr;
+            item.hint = folded ? '被折叠：只有自己看得见' : '登录可见、匿名不可见（审核/降权）';
+          } else if (r.type === 'comment-failed') { item.status = 'failed'; item.hint = '当时就没发出去'; }
+          else { item.status = 'gone'; item.hint = '两边都翻不到：可能已删'; }
+        }
+        rows.push(item);
+      }
+
+      // ③ 补漏：翻每个候选视频"最新 20 条"，把属于我的、台账里没有的也列出来
+      const extras = [];
+      for (const bvid of vids) {
+        const meta = aidOf.get(bvid); if (!meta || !meta.aid) continue;
+        let r = null;
+        try { r = await api.comments(root, { aid: meta.aid, limit: 20, sort: 'latest' }); } catch (e) {}
+        const list = (r && r.ok && (r.replies || [])) || [];
+        for (const c of list) {
+          const mine = (myMid && String(c.mid) === myMid) || c.isSelf === true;
+          if (!mine) continue;
+          const rpid = String(c.rpid || '');
+          if (!rpid || seen.has(rpid)) continue;
+          seen.add(rpid);
+          extras.push({
+            bvid, title: meta.title, rpid, aid: meta.aid,
+            text: String(c.text || ''), at: (Number(c.time || 0) || 0) * 1000 || null,
+            state: Number(c.state ?? 0), attr: Number(c.attr ?? 0),
+            status: 'public', hint: '线上最新评论里翻到（台账没记）', via: 'live-latest',
+            href: 'https://www.bilibili.com/video/' + bvid,
+          });
+        }
+      }
+
+      const all = [...extras, ...rows].sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, limit);
+      writeJson(res, 200, { ok: true, root, myMid, checkedAt: Date.now(), videos: vids, liveCount: extras.length, rows: all });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+
   route(ctx, ['GET', 'POST'], '/api/qqbot-settings/timers', async (req, res) => {
     // POST = 旧版客户端统一 action: body {id, schedDir?, enabled?} —— enabled 存在=开关, 缺省=删除
     if (req.method === 'POST') {
@@ -1578,7 +2538,8 @@ export function apply(ctx) {
       return writeJson(res, 404, { error: '预设不存在' });
     }
     try {
-      const child = spawn('explorer', [dir], { detached: true, stdio: 'ignore' });
+      // [qqbot-mod] 2026-10-28: cmd start 直启（rundll32 首版参数传错会弹错误框，弃用）
+      const child = spawn('cmd', ['/c', 'start', '', dir], { detached: true, stdio: 'ignore', windowsHide: true });
       child.unref();
       writeJson(res, 200, { ok: true });
     } catch (e) { writeJson(res, 500, { error: String(e?.message ?? e) }); }
@@ -2119,6 +3080,27 @@ export function apply(ctx) {
     res.end(buf);
   });
 
+  // [qqbot-mod] cw-sticker-img 2026-10-29 主人需求：评论表情包选择器要能看见原图，
+  //   不是纯文字（人看不来文字对的是哪张图）。缩略图走 sticker-resolve 库（pathOfId
+  //   自带白名单：只解析表情包库目录内的 id，不外接路径），和 /sticker-img（sticker-store）是两个库。
+  route(ctx, 'GET', '/api/qqbot-settings/cw-sticker-img', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const id = u.searchParams.get('id') || '';
+      const bot = nsBot(__qqNsOf(req));
+      const rootS = resolveMemoryRoot(bot);
+      const SRCW = await import('file:///' + join(rootS, '.qqbot-extensions', 'lib', 'sticker-resolve.mjs').split(String.fromCharCode(92)).join('/'));
+      const p = SRCW.pathOfId(rootS, id);
+      if (!p) return writeJson(res, 404, { error: 'not found' });
+      const buf = readFileSync(p);
+      const ext = extname(p).replace('.', '').toLowerCase();
+      res.writeHead(200, { 'content-type': MIME[ext] === 'application/octet-stream' ? 'image/jpeg' : (MIME[ext] ?? 'image/jpeg'), 'cache-control': 'private, max-age=3600' });
+      res.end(buf);
+    } catch (e) {
+      return writeJson(res, 500, { error: String((e && e.message) || e) });
+    }
+  });
+
   // 批量: {op:'promote'|'trash'|'restore'|'tag', ids:[], tags?:string[], desc?:string}
   route(ctx, 'POST', '/api/qqbot-settings/stickers/batch', async (req, res) => {
     const body = await readJsonBody(req);
@@ -2292,11 +3274,29 @@ export function apply(ctx) {
       } catch { /* 压缩失败不影响主链 */ }
     } catch { /* ignore */ }
   }
+  // [qqbot-mod] groups-bom-tolerant：容忍 UTF-8 BOM
   function readGroupsJson(cwd) {
-    try { return JSON.parse(readFileSync(join(cwd, '.qqbot', 'groups.json'), 'utf8') || '{}'); } catch { return {}; }
+    try { return JSON.parse(String(readFileSync(join(cwd, '.qqbot', 'groups.json'), 'utf8')).replace(/^\uFEFF/, '') || '{}'); } catch { return {}; }
   }
   function writeGroupsJson(cwd, g) {
-    try { mkdirSync(join(cwd, '.qqbot'), { recursive: true }); writeFileSync(join(cwd, '.qqbot', 'groups.json'), JSON.stringify(g, null, 1), 'utf8'); } catch { /* ignore */ }
+    // [qqbot-mod] 群注册表只增不减：上游偶发用空对象覆盖（表现为"群列表突然空了"），
+    //   所以写入前先读旧表合并，旧键与旧名字都保留，新值有 name 才覆盖。
+    try {
+      mkdirSync(join(cwd, '.qqbot'), { recursive: true });
+      const _f = join(cwd, '.qqbot', 'groups.json');
+      let _old = {};
+      try { _old = JSON.parse(String(readFileSync(_f, 'utf8')).replace(/^\uFEFF/, '') || '{}') || {}; } catch (eOld) { _old = {}; }
+      const _merged = Object.assign({}, _old);
+      for (const _k of Object.keys(g || {})) {
+        const _o = _old[_k] || {};
+        const _n = g[_k] || {};
+        const _name = String(_n.name || '').trim() || String(_o.name || '').trim();
+        _merged[_k] = Object.assign({}, _o, _n, _name ? { name: _name } : {});
+      }
+      // [qqbot-mod] groups-keep：合并后仍是空表就别写，宁可不更新也不要把好表清空
+      if (!Object.keys(_merged).length) return;
+      writeFileSync(_f, JSON.stringify(_merged, null, 1), 'utf8');
+    } catch { /* ignore */ }
   }
   // 🗂 目标分组(2026-09-12 从浏览器 localStorage 搬到 host): 主人与 AI **共用同一份分组** ——
   //    dock「📇 群组管理 → 🗂 分组」编辑它, agent 侧 broadcast_send 直接按分组名群发。
@@ -2435,8 +3435,9 @@ export function apply(ctx) {
       const u = new URL(req.url ?? '/', 'http://x');
       const bot = nsBot(NSQ(u));
       if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
-      const reg = readGroupsJson(bot.cwd);
-      const pend = readPendingJson(bot.cwd);
+      const _qaRoot = (typeof resolveMemoryRoot === 'function') ? resolveMemoryRoot(bot) : bot.cwd;
+      const reg = readGroupsJson(_qaRoot);
+      const pend = readPendingJson(_qaRoot);
       const map = new Map();
       for (const [gid, meta] of Object.entries(reg)) {
         if (!gid) continue;
@@ -2448,7 +3449,7 @@ export function apply(ctx) {
         else map.set(gid, { gid, name: '', from: 'pending', lastAt: 0 });
       }
       try {
-        const store = getStickerStore(bot.cwd ? join(bot.cwd, '表情包') : undefined);
+        const store = getStickerStore(_qaRoot ? join(_qaRoot, '表情包') : undefined);
         const raw = readFileSync(join(store.dataDir, 'known-chats.jsonl'), 'utf8');
         for (const l of raw.split('\n')) {
           const t = l.trim(); if (!t) continue;
@@ -2462,6 +3463,43 @@ export function apply(ctx) {
         }
       } catch { /* 无台账 */ }
       // 逐个校验有效性 + 用官方群名补全显示名(注册表里的群也顺手回写官方名)
+      // [qqbot-mod] groups-msghistory：注册表被清空时（groups.json 变成 {}）兜底——
+      //   只要有过群聊，.qqbot/msg-history/group_<id>/ 里一定有当天的台账，群就不会凭空消失。
+      try {
+        const _mhRoot = join(_qaRoot, '.qqbot', 'msg-history');
+        for (const _d of readdirSync(_mhRoot)) {
+          const _mm = /^group_(.+)$/.exec(_d);
+          if (!_mm) continue;
+          const _gid = _mm[1];
+          let _lastAt = 0;
+          let _nm = '';
+          try {
+            const _files = readdirSync(join(_mhRoot, _d)).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
+            const _last = _files[_files.length - 1];
+            if (_last) {
+              const _p = join(_mhRoot, _d, _last);
+              try { _lastAt = statSync(_p).mtimeMs } catch { _lastAt = 0 }
+              try {
+                const _lines = readFileSync(_p, 'utf8').split('\n').filter(Boolean).slice(-80);
+                for (let _i = _lines.length - 1; _i >= 0; _i--) {
+                  try {
+                    const _o = JSON.parse(_lines[_i]);
+                    const _n = String((_o && _o.n) || '').trim();
+                    if (_n && _n !== 'self' && !/^[0-9A-Fa-f]{32}$/.test(_n)) { _nm = _n; break }
+                  } catch { /* 坏行跳过 */ }
+                }
+              } catch { /* ignore */ }
+            }
+          } catch { /* ignore */ }
+          if (map.has(_gid)) {
+            const _m2 = map.get(_gid);
+            // [qqbot-mod] group-title-fix：不拿群成员昵称补群名（官方 getGroupInfo 回填更可靠）
+            if (!_m2.lastAt) _m2.lastAt = _lastAt;
+          } else {
+            map.set(_gid, { gid: _gid, name: '', from: 'msg-history', lastAt: _lastAt });
+          }
+        }
+      } catch (eMH) { /* 没有台账目录就算了 */ }
       const gc = await groupClientOf(NSQ(u));
       const out = [];
       const aliveReg = {};
@@ -2480,6 +3518,12 @@ export function apply(ctx) {
               out.push(g);
               aliveReg[g.gid] = { name: official || (reg[g.gid] && reg[g.gid].name) || '', lastAt: (reg[g.gid] && reg[g.gid].lastAt) || Date.now() };
             } else {
+              // [qqbot-mod] groups-trust-ledger-keep：台账里有近期记录的群就是活的，
+              //   getGroupInfo 查不到大概率是权限/接口问题，不能把群从列表里抹掉。
+              if (g.from === 'ledger' || g.from === 'msg-history' || g.from === 'registry+pending') {
+                out.push({ ...g, unverified: true });
+                continue;
+              }
               // 11255 等 = 群已注销/不存在 → 不返回给 UI(避免选中后调用报错), 仅保留审计
               DEAD_GROUP_CACHE.set(g.gid, Date.now());
               audit(bot.cwd, { ev: 'group.dead', ns: bot.id, gid: g.gid, code: info.err && info.err.code, human: info.err && info.err.human });
@@ -2490,10 +3534,28 @@ export function apply(ctx) {
           }
         }
         // 回写有效群注册表(自动剔除已注销群)
-        if (Object.keys(aliveReg).length >= 0) writeGroupsJson(bot.cwd, aliveReg);
+        // [qqbot-mod] groups-trust-writeroot：读的是 _qaRoot，写也要写同一个根
+        if (Object.keys(aliveReg).length >= 0) writeGroupsJson(_qaRoot || bot.cwd, aliveReg);
       } else {
         out.push(...map.values());
       }
+      // [qqbot-mod] groups-unverified-keep：探活阶段可能把群判死/跳过（群里机器人被踢过、
+      //   或者当前拿不到群客户端），但台账（msg-history）里确凿存在过这个群 —— 补回列表，标 unverified，
+      //   否则主人看到的就是「群凭空消失」。
+      try {
+        const _have = new Set(out.map((x) => x && x.gid));
+        for (const _g of map.values()) {
+          if (!_g || !_g.gid || _have.has(_g.gid)) continue;
+          if (_g.from !== 'msg-history' && _g.from !== 'registry' && _g.from !== 'ledger' && _g.from !== 'registry+pending') continue;
+          out.push({
+            gid: _g.gid,
+            name: _g.name || ('群 ' + String(_g.gid).slice(-6)),
+            from: _g.from,
+            lastAt: _g.lastAt || 0,
+            unverified: true,
+          });
+        }
+      } catch { /* ignore */ }
       writeJson(res, 200, { groups: out });
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
@@ -2522,15 +3584,32 @@ export function apply(ctx) {
   // 模型: bge-small-zh-v1.5 (ONNX q8 ≈ 23MB, 中文专训); 放用户级 {DSH_HOME|~/.dsh}/models/bge-small-zh
   // (跨工作区共享一份), 可用 localModel.modelDir 覆盖。下载走 node:https + 镜像兜底。
   const LOCAL_MODEL_FILES = ['onnx/model_quantized.onnx', 'tokenizer.json', 'tokenizer_config.json', 'config.json'];
-  const LOCAL_MODEL_BASES = [
-    'https://hf-mirror.com/Xenova/bge-small-zh-v1.5/resolve/main',
-    'https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main',
-  ];
+  // [qqbot-mod] lm-bases-permodel 2026-10-27：下载源按所选模型走。
+  //   原先 LOCAL_MODEL_BASES 写死 bge-small-zh-v1.5 —— 单会话页选 bge-base/large-zh 点
+  //   「⬇️ 下载模型」会把 **small 的权重**下进 base/large 目录（tokenizer/维度全不对），
+  //   嵌入器加载直接报废 —— 这就是判定模型"选了大的就有点问题"的真因。
+  function localModelBasesOf(dir) {
+    const m = /^(bge-(small|base|large)-zh)(?:-v1\.5)?$/.exec(basename(String(dir || '')));
+    const repo = m ? m[1] + '-v1.5' : 'bge-small-zh-v1.5';
+    return [
+      `https://hf-mirror.com/Xenova/${repo}/resolve/main`,
+      `https://huggingface.co/Xenova/${repo}/resolve/main`,
+    ];
+  }
   function localModelDirOf(bot) {
-    const cfgDir = String((bot && bot.cfg && bot.cfg.localModel && bot.cfg.localModel.modelDir) || '').trim();
-    if (cfgDir) return cfgDir;
-    const dshHome = (process.env.DSH_HOME && process.env.DSH_HOME.trim()) || join(homedir(), '.dsh');
-    return join(dshHome, 'models', 'bge-small-zh');
+    const cfgDir = String((bot && bot.cfg && bot.cfg.localModel && bot.cfg.localModel.modelDir) || "").trim();
+    const dshHome = (process.env.DSH_HOME && process.env.DSH_HOME.trim()) || join(homedir(), ".dsh");
+    const modelsRoot = join(dshHome, "models");
+    if (cfgDir) {
+      // ★ 本地修复(2026-10-22)：别名解析：原来这里原样返回 cfgDir。
+      //   面板填预设别名（bge-base-zh / bge-small-zh / bge-large-zh）时，
+      //   下游 join(cfgDir, "onnx/model_quantized.onnx") 会相对【进程 cwd】去找，
+      //   于是四个资产全判缺失、available:false，面板就把"选择模型"禁用了。
+      const c0 = cfgDir.charCodeAt(0);
+      const absLike = (cfgDir.length > 1 && cfgDir[1] === ":") || c0 === 47 || c0 === 92;
+      return absLike ? cfgDir : join(modelsRoot, cfgDir);
+    }
+    return join(modelsRoot, "bge-small-zh");
   }
   /** 下载单文件(跟随重定向); 失败抛错 */
   async function downloadFile(url, dest, hops = 0) {
@@ -2630,6 +3709,7 @@ export function apply(ctx) {
       const body = await readJsonBody(req);
       const bot = nsBot(String((body && body.ns) || ''));
       const dir = localModelDirOf(bot);
+      const bases = localModelBasesOf(dir);   // [qqbot-mod] lm-bases-permodel：按所选模型取源
       mkdirSync(join(dir, 'onnx'), { recursive: true });
       const done = [];
       for (const rel of LOCAL_MODEL_FILES) {
@@ -2637,7 +3717,7 @@ export function apply(ctx) {
         if (existsSync(dest)) { done.push(rel + ': 已存在'); continue; }
         let lastErr = '';
         let ok = false;
-        for (const base of LOCAL_MODEL_BASES) {
+        for (const base of bases) {
           try { await downloadFile(base + '/' + rel, dest); ok = true; lastErr = ''; break; }
           catch (e) { lastErr = String((e && e.message) || e); }
         }
@@ -2738,7 +3818,857 @@ export function apply(ctx) {
 
   // 好感度台账(2026-09-13 主人定, 观察期): 只读, 供面板显示"谁跟她最熟"
   //   数据源: {dataRoot}/.qqbot/affinity.json (每条群消息累计 互动/被点名/接话; 熟度现算, 公式透明)
-  route(ctx, 'GET', '/api/qqbot-settings/affinity', async (req, res) => {
+    // ★ 本机新增(2026-10-22): 记忆库 / 分流观察页
+  //   三层记忆与 router-log 默认没有界面，写了也看不见。这里只加一条【只读】路由：
+  //     /api/qqbot-settings/memory              → JSON
+  //     /api/qqbot-settings/memory?format=html  → 一页可读表格（5 秒自动刷新）
+  //   不写任何文件、不注册到面板，碰不到现有 UI。
+  function resolveMemoryRoot(bot) {
+    const cands = [];
+    const push = (p) => { const s = String(p || '').trim(); if (s && !cands.includes(s)) cands.push(s); };
+    try { push(bot && bot.cfg && bot.cfg.dataRoot); } catch { /* ignore */ }
+    try { push(process.env.QQBOT_MEMORY_DATA_ROOT); } catch { /* ignore */ }
+    try {
+      if (bot && bot.cwd) { push(join(bot.cwd, 'dshqqbot')); push(bot.cwd); }
+    } catch { /* ignore */ }
+    for (const p of cands) { try { if (existsSync(join(p, '.qqbot'))) return p; } catch { /* ignore */ } }
+    return cands[0] || '';
+  }
+
+  function escMem(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function renderMemoryPage(p) {
+    const fmt = (ts) => { try { return new Date(ts).toLocaleString('zh-CN'); } catch { return ''; } };
+    const scopeBlocks = p.scopes.map((s) => {
+      const kinds = Object.entries(s.byKind || {}).map(([k, v]) => k + ':' + v).join(' · ') || '—';
+      const rows = s.recent.map((r) => '<tr><td class="k k-' + escMem(r.kind) + '">' + escMem(r.kind) + '</td><td>' + escMem(r.text) + '</td><td class="t">' + escMem(fmt(r.ts)) + '</td></tr>').join('');
+      return '<h2>' + escMem(s.scope) + ' <span class="cnt">' + s.total + ' 条</span> <span class="kind">' + escMem(kinds) + '</span></h2>'
+        + '<table><thead><tr><th>类型</th><th>内容</th><th>时间</th></tr></thead><tbody>' + (rows || '<tr><td colspan="3" class="empty">（还没有记忆）</td></tr>') + '</tbody></table>';
+    }).join('');
+    const personaRows = ((p.persona || {}).rows || []).map((r) => '<tr><td class="k">' + escMem(r.scope) + '</td><td>' + escMem(r.key) + '</td><td>' + escMem(r.value) + '</td></tr>').join('');
+    const personaBlock = '<h2>人格库 <span class="cnt">' + ((p.persona || {}).total || 0) + ' 条</span></h2>'
+      + '<table><thead><tr><th>作用域</th><th>键</th><th>值</th></tr></thead><tbody>' + (personaRows || '<tr><td colspan="3" class="empty">（还没有写人设条目）</td></tr>') + '</tbody></table>';
+    const tierRows = Object.entries(p.router.tiers || {}).map(([k, v]) => '<tr><td>' + escMem(k) + '</td><td>' + v + '</td></tr>').join('');
+    const lastRows = (p.router.last || []).map((r) => '<tr><td>' + escMem(fmt(r.ts)) + '</td><td>' + escMem(r.tier) + '</td><td>' + escMem(r.score) + '</td><td>' + (r.mentioned ? '是' : '') + '</td><td>' + escMem(r.len) + '</td></tr>').join('');
+    return '<!doctype html><meta charset="utf-8"><title>小蓝 · 记忆与分流</title>'
+      + '<style>body{font:13px/1.6 -apple-system,"Segoe UI",sans-serif;background:#f6f7fb;color:#222;margin:0;padding:18px 22px}h1{font-size:17px;margin:0 0 4px}h2{font-size:14px;margin:22px 0 6px}.cnt{color:#2f9e44;font-weight:400}.kind{color:#888;font-weight:400;font-size:12px}table{border-collapse:collapse;width:100%;background:#fff;border:1px solid #e3e6ef;border-radius:6px;overflow:hidden}th,td{padding:6px 9px;text-align:left;border-bottom:1px solid #eef0f6;vertical-align:top}th{background:#eef0f8;font-weight:600;font-size:12px}.k{color:#7c6bd6;white-space:nowrap;font-size:12px}.t{color:#999;white-space:nowrap;font-size:12px}.empty{color:#aaa;text-align:center;padding:14px}.bar{color:#666;font-size:12px;margin-top:6px}.root{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#888;word-break:break-all}</style>'
+      + '<h1>🧠 小蓝 · 记忆与分流（只读）</h1>'
+      + '<div class="bar">数据根：<span class="root">' + escMem(p.root) + '</span> · 记忆目录：<span class="root">' + escMem(p.memDir) + '</span></div>'
+      + '<div class="bar">后端：' + escMem(p.backend || '?') + ' · 人格库 ' + ((p.persona || {}).total || 0) + ' 条</div>'
+      + '<div class="bar">分流样本 ' + p.router.lines + ' 条</div>'
+      + (scopeBlocks || '<p class="empty">还没有任何记忆文件 —— 在群里说几句话再看。</p>')
+      + personaBlock
+      + '<h2>分流分档分布</h2><table><thead><tr><th>档位</th><th>条数</th></tr></thead><tbody>' + (tierRows || '<tr><td colspan="2" class="empty">（还没有记录）</td></tr>') + '</tbody></table>'
+      + '<h2>最近分流判定</h2><table><thead><tr><th>时间</th><th>档</th><th>分值</th><th>@</th><th>字数</th></tr></thead><tbody>' + (lastRows || '<tr><td colspan="5" class="empty">（还没有记录）</td></tr>') + '</tbody></table>'
+      + '<div class="bar">页面每 5 秒自动刷新</div>'
+      + '<script>setTimeout(function(){location.reload()},5000)</script>';
+  }
+
+  // ★ 本机新增(2026-10-23): 扩展配置读写（本地代答 / 语音）
+  //   两份额外配置（本地小模型、语音）原来只能改文件。这里给前端一对读写接口，
+  //   面板就能做成"开关 + 下拉"，不用记事本。
+  const EXT_CFG_FILES = { local: 'local-llm-config.json', voice: 'voice-config.json' };
+
+  const EXT_VOICES = [
+    ['zh-CN-XiaoxiaoNeural', '晓晓 · 女 · 温柔 · edge 在线 · 0MB'],
+    ['zh-CN-XiaoyiNeural', '小艺 · 女 · 活泼 · edge 在线 · 0MB'],
+    ['zh-CN-XiaochenNeural', '晓辰 · 女 · 慵懒 · edge 在线 · 0MB'],
+    ['zh-CN-YunjianNeural', '云健 · 男 · 沉稳/硬气 · edge 在线 · 0MB'],
+  ];
+
+  // [qqbot-mod] chat-local-only：没有活跃会话时，至少把"本地代答说过的话"拿出来
+function chatLocalOnlyItems(bot, scope, peerId, limit) {
+  const out = []
+  try {
+    const root = resolveMemoryRoot(bot)
+    if (!root) return out
+    const file = join(root, ".qqbot", "local-answer-log.jsonl")
+    if (!existsSync(file)) return out
+    const eol = String.fromCharCode(10)
+    const rows = readFileSync(file, "utf8").split(eol)
+    const from = Math.max(0, rows.length - 400)
+    const seen = {}
+    for (let i = from; i < rows.length; i++) {
+      const line = String(rows[i] || "").trim()
+      if (!line) continue
+      let o = null
+      try { o = JSON.parse(line) } catch { continue }
+      if (!o || !o.reply) continue
+      const sc = String(o.scope || "")
+      if (sc && sc.indexOf(String(peerId)) < 0) continue
+      const t = Number(o.ts) || 0
+      const k = String(t) + "|" + String(o.reply).slice(0, 24)
+      if (seen[k]) continue
+      seen[k] = 1
+      out.push({ seq: 0, time: t, dir: "out", sender: "", text: String(o.reply), images: [], tag: "", by: String(o.by || "local"), ms: Number(o.ms) || 0, model: String(o.model || "") })
+    }
+  } catch { /* 读不到就当没有 */ }
+  out.sort(function (a, b) { return (Number(a.time) || 0) - (Number(b.time) || 0) })
+  const cap = Math.max(1, Math.min(200, Number(limit) || 80))
+  while (out.length > cap) out.shift()
+  return out
+}
+function extCfgPath(root, which) {
+    const f = EXT_CFG_FILES[String(which || '')];
+    if (!f || !root) return '';
+    return join(root, '.qqbot-extensions', f);
+  }
+
+  function readExtCfg(p) {
+    try {
+      if (!p || !existsSync(p)) return {};
+      const o = JSON.parse(readFileSync(p, 'utf8'));
+      return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+    } catch { return {}; }
+  }
+
+  // 探一下 Ollama（1.5 秒超时，探不到不算错，只是前端显示"离线"）
+  async function probeOllama(cfg) {
+    const base = String((cfg && cfg.baseUrl) || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+    const ac = new AbortController();
+    const timer = setTimeout(() => { try { ac.abort(); } catch { /* ignore */ } }, 1500);
+    try {
+      const r = await fetch(base + '/api/tags', { signal: ac.signal });
+      const j = await r.json();
+      const models = ((j && j.models) || []).map((m) => String((m && m.name) || '')).filter(Boolean);
+      return { up: true, baseUrl: base, models };
+    } catch (e) {
+      return { up: false, baseUrl: base, models: [], error: String((e && e.message) || e) };
+    } finally { clearTimeout(timer); }
+  }
+
+  // 探本地 TTS 适配层（skills/local-tts/adapter，默认 9881；1.5 秒超时，探不到不算错）
+  // [qqbot-mod] tts-tiers 2026-10-27：改探 /health —— 里面带 tiers（各引擎降级状态）
+  //   和 voices[].usable（该音色的原生引擎现在能不能出声），面板据此标 ⛔。
+  async function probeLocalTts(cfg) {
+    let base = 'http://127.0.0.1:9881';
+    const ep = String((cfg && cfg.endpoint) || '');
+    const m = /^(https?:\/\/[^\/]+)/.exec(ep);
+    if (m) base = m[1];
+    const ac = new AbortController();
+    const timer = setTimeout(() => { try { ac.abort(); } catch { /* ignore */ } }, 1500);
+    try {
+      const r = await fetch(base + '/health', { signal: ac.signal });
+      const j = await r.json();
+      const voices = Object.keys((j && j.voices) || {}).map(String).filter(Boolean);
+      const tiers = (j && j.tiers) || {};
+      const usable = {};
+      for (const [k, v] of Object.entries((j && j.voices) || {})) usable[String(k)] = v && v.usable !== false;
+      return { up: voices.length > 0, baseUrl: base, voices, tiers, usable,
+               engines: Object.keys(tiers).map(String) };
+    } catch (e) {
+      return { up: false, baseUrl: base, voices: [], tiers: {}, usable: {}, engines: [],
+               error: String((e && e.message) || e) };
+    } finally { clearTimeout(timer); }
+  }
+
+  route(ctx, 'GET', '/api/qqbot-settings/ext-config', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const which = String(u.searchParams.get('which') || 'local');
+      if (!EXT_CFG_FILES[which]) return writeJson(res, 400, { ok: false, error: 'which 只能是 local 或 voice' });
+      const bot = nsBot(NSQ(u));
+      const root = resolveMemoryRoot(bot);
+      const p = extCfgPath(root, which);
+      const config = readExtCfg(p);
+      const payload = { ok: true, which, root, path: p, exists: !!(p && existsSync(p)), config };
+      if (which === 'local') payload.ollama = await probeOllama(config);
+      if (which === 'voice') {
+        payload.voices = EXT_VOICES.map(([id, label]) => ({ id, label }));
+        payload.localTts = await probeLocalTts(config);
+        // [qqbot-mod] voice-labels 2026-10-27：本地音色下拉带人话标注（ profiles.json 的 curated+voices），
+        //   用户反馈"14 个音色每个都没写清楚，也不知道本地引擎在不在线"。
+        let prof = {};
+        try { prof = JSON.parse(String(readFileSync(join(root, '..', 'skills', 'local-tts', 'adapter', 'profiles.json'), 'utf8')).replace(/^\uFEFF/, '')) || {}; } catch {
+          try { prof = JSON.parse(String(readFileSync('F:/qqbot/skills/local-tts/adapter/profiles.json', 'utf8')).replace(/^\uFEFF/, '')) || {}; } catch { }
+        }
+        const vm = {};
+        for (const c of (prof.curated || [])) vm[c.voice] = { label: c.label || '', hint: c.hint || '' };
+        for (const [k, v] of Object.entries(prof.voices || {})) vm[k] = Object.assign({ label: '', hint: '' }, vm[k] || {}, { backend: (v && v.backend) || '' });
+        payload.voiceMap = vm;
+        const tiers = (payload.localTts && payload.localTts.tiers) || {};
+        const usable = (payload.localTts && payload.localTts.usable) || {};
+        payload.localTts.labeled = (payload.localTts.voices || []).map((id) => {
+          const m = vm[id] || {};
+          const parts = [];
+          if (m.label) parts.push(m.label);
+          if (m.backend) parts.push(m.backend + ' 引擎');
+          // [qqbot-mod] tts-tiers 2026-10-27：完全用不了的音色直接标注并注明划到了哪档
+          const be = String(m.backend || '');
+          const tier = tiers[be] || {};
+          const bad = tier.demoted || usable[id] === false;
+          if (bad) {
+            const nxt = (payload.localTts.engines || []).filter((e) => e !== be && !(tiers[e] || {}).demoted);
+            parts.push('⛔ 不可用·已划到下一梯队' + (nxt.length ? '（' + nxt.join('/') + '）' : ''));
+          }
+          return {
+            id,
+            label: parts.length ? id + ' · ' + parts.join(' · ') : id,
+            hint: bad && tier.last_error ? String(tier.last_error).slice(0, 120) : (m.hint || ''),
+          };
+        });
+      }
+      return writeJson(res, 200, payload);
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  route(ctx, 'POST', '/api/qqbot-settings/ext-config', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const which = String((body && body.which) || 'local');
+      if (!EXT_CFG_FILES[which]) return writeJson(res, 400, { ok: false, error: 'which 只能是 local 或 voice' });
+      const patch = body && typeof body.patch === 'object' && body.patch ? body.patch : null;
+      if (!patch) return writeJson(res, 400, { ok: false, error: '缺 patch' });
+      const bot = nsBot(String((body && body.ns) || ''));
+      const root = resolveMemoryRoot(bot);
+      const p = extCfgPath(root, which);
+      if (!p) return writeJson(res, 400, { ok: false, error: '找不到数据目录' });
+      const cur = readExtCfg(p);
+      const next = Object.assign({}, cur, patch);
+      // 这几个键永远不让空串覆盖成 ""：留空=用内置默认
+      for (const k of ['systemPrompt', 'model', 'voice', 'baseUrl']) {
+        if (next[k] === '') delete next[k];
+      }
+      try {
+        if (existsSync(p)) writeFileSync(p + '.bak-' + Date.now(), readFileSync(p, 'utf8'), 'utf8');
+      } catch { /* 备份失败不影响主流程 */ }
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
+      const out = { ok: true, which, path: p, config: readExtCfg(p) };
+      if (which === 'local') out.ollama = await probeOllama(out.config);
+      return writeJson(res, 200, out);
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  // ★ 本机新增(2026-10-23): 本地代答判定日志（面板「最近判定」用它）
+  //   每条消息一行：by=local|gag|cloud，why=被哪道门挡了，model / ms。
+  route(ctx, 'GET', '/api/qqbot-settings/ext-answer-log', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const limit = Math.max(1, Math.min(50, Number(u.searchParams.get('limit') || 8) || 8));
+      const bot = nsBot(NSQ(u));
+      const root = resolveMemoryRoot(bot);
+      const p = root ? join(root, '.qqbot', 'local-answer-log.jsonl') : '';
+      let rows = [];
+      if (p && existsSync(p)) {
+        const lines = readFileSync(p, 'utf8').split('\n').filter(Boolean).slice(-limit);
+        rows = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      }
+      const localCfg = readExtCfg(extCfgPath(root, 'local'));
+      return writeJson(res, 200, {
+        ok: true, root, path: p, count: rows.length, rows,
+        whoAnswers: String(localCfg.whoAnswers || 'simple'),
+        model: String(localCfg.model || ''),
+      });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  // [qqbot-mod] tool-errors-view：工具失败不上群，只在这里看（数据由 dist/transport/tool-presenter.js 写入）
+  route(ctx, 'GET', '/api/qqbot-settings/tool-errors', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const limit = Math.max(1, Math.min(50, Number(u.searchParams.get('limit') || 10) || 10));
+      const bot = nsBot(NSQ(u));
+      const root = resolveMemoryRoot(bot);
+      const p = root ? join(root, '.qqbot', 'tool-errors.jsonl') : '';
+      let rows = [];
+      if (p && existsSync(p)) {
+        const lines = readFileSync(p, 'utf8').split(String.fromCharCode(10)).filter(Boolean).slice(-limit);
+        rows = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      }
+      rows.reverse();
+      return writeJson(res, 200, { ok: true, root: root || '', path: p, count: rows.length, rows });
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: String((e && e.message) || e), rows: [] });
+    }
+  });
+  // [qqbot-mod] B 站管理（浮窗用）：只读任务/记录 + 审核动作；写操作仍由 bili_ops 的主人校验兜底
+  async function biliLibOf(root) {
+    const p = join(root, '.qqbot-extensions', 'lib', 'bili-ops.mjs');
+    return import('file:///' + p.split(String.fromCharCode(92)).join('/'));
+  }
+  route(ctx, 'GET', '/api/qqbot-settings/bili', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const root = resolveMemoryRoot(nsBot(NSQ(u)));
+      if (!root) return writeJson(res, 200, { ok: false, error: '没有数据根', jobs: [], records: [] });
+      const lib = await biliLibOf(root);
+      let account = null;
+      try {
+        const api = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        const a = await api.nav(root);
+        if (a && a.ok) account = a.data;
+      } catch { /* 未登录/接口失败不影响任务列表 */ }
+      let opsCfg = {};
+      let plan = {};
+      try {
+        opsCfg = lib.loadOpsConfig(root);
+        plan = lib.resolvePlan(opsCfg);
+      } catch { /* 配置坏了不影响列表 */ }
+      const jobs = lib.listJobs(root, { limit: 30 }).map((j) => ({
+        id: j.id, title: j.title, status: j.status, at: j.at, durationSec: j.durationSec,
+        published: j.published || null, dir: j.dir, warnings: j.warnings || 0, error: j.error || '',
+        cover: j.cover || (j.dir ? join(j.dir, 'cover.jpg') : ''),
+        video: j.video || (j.dir ? join(j.dir, 'video.mp4') : ''),
+      }));
+      const records = lib.readRecords(root, { limit: 20 });
+      const drafts = lib.listCommentDrafts(root, { limit: 10 });
+      const options = {
+        mode: opsCfg.mode || 'local-first',
+        imageProvider: (opsCfg.image && opsCfg.image.provider) || 'auto',
+        videoStyle: (opsCfg.video && opsCfg.video.style) || 'auto',
+        videoRoute: (opsCfg.video && opsCfg.video.route) || 'frames',
+        textStyle: (opsCfg.video && opsCfg.video.text && opsCfg.video.text.style) || 'typewriter',
+        sfx: !(opsCfg.sfx && opsCfg.sfx.enabled === false),
+        resolved: plan,
+      };
+      return writeJson(res, 200, { ok: true, root, account, jobs, records, drafts, options });
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: String((e && e.message) || e), jobs: [], records: [], drafts: [] });
+    }
+  });
+  route(ctx, 'POST', '/api/qqbot-settings/bili', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const root = resolveMemoryRoot(nsBot(NSQ(u)));
+      if (!root) return writeJson(res, 200, { ok: false, error: '没有数据根' });
+      const body = await readJsonBody(req).catch(() => ({}));
+      const action = String(body.action || '');
+      const jobId = String(body.jobId || '');
+      const draftId = String(body.draftId || '');
+      const lib = await biliLibOf(root);
+      const cfg = lib.loadOpsConfig(root);
+      // 打开目录：[qqbot-mod] 2026-10-28 改为可验证三连（cmd start → explorer → powershell）。
+      //   原来 spawn 完直接回"已打开"，失败全被吞；rundll32 首版参数传错会弹错误框，弃用。
+      const openInExplorer = (dir) => {
+        try {
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+          const tries = [
+            ['cmd', ['/c', 'start', '', dir]],
+            ['explorer', [dir]],
+            ['powershell', ['-NoProfile', '-Command', 'Start-Process -FilePath explorer.exe -ArgumentList "' + String(dir).replace(/"/g, '') + '"']],
+          ];
+          let last = '';
+          for (const [cmd, args] of tries) {
+            try {
+              const r = spawnSync(cmd, args, { timeout: 6000, windowsHide: true, stdio: 'ignore' });
+              const bad = r.error || (r.status && r.status !== 0 && r.status !== 1);
+              if (bad) { last = (r.error && r.error.message) || ('exit ' + r.status); continue; }
+              return { ok: true, msg: '已打开 ' + dir + '（via ' + cmd + '）', path: dir };
+            } catch (e) {
+              last = String((e && e.message) || e);
+            }
+          }
+          return { ok: false, error: '打开失败：' + last, path: dir };
+        } catch (e) {
+          return { ok: false, error: '打开失败：' + String((e && e.message) || e), path: dir };
+        }
+      };
+      let r;
+      // 出图来源 / 视频形态切换：只落配置，不动已生成的任务
+      if (action === 'options') {
+        const pick = (v, list, dflt) => (list.includes(String(v || '').toLowerCase()) ? String(v).toLowerCase() : dflt);
+        const next = JSON.parse(JSON.stringify(cfg || {}));
+        if (body.mode !== undefined) next.mode = pick(body.mode, ['local-first', 'cloud-first'], 'local-first');
+        if (body.imageProvider !== undefined) next.image = { ...(next.image || {}), provider: pick(body.imageProvider, ['auto', 'local', 'cloud'], 'auto') };
+        if (body.videoStyle !== undefined) next.video = { ...(next.video || {}), style: pick(body.videoStyle, ['auto', 'text', 'image'], 'auto') };
+        // 出片路子（2026-10-25）：frames=前端截图拼帧 / text=文字动画 / art=程序化画画
+        if (body.videoRoute !== undefined) next.video = { ...(next.video || {}), route: pick(body.videoRoute, ['frames', 'text', 'art'], 'frames') };
+        if (body.textStyle !== undefined) next.video = { ...(next.video || {}), text: { ...((next.video || {}).text || {}), style: pick(body.textStyle, ['typewriter', 'code', 'fade', 'slide'], 'typewriter') } };
+        if (body.sfx !== undefined) next.sfx = { ...(next.sfx || {}), enabled: body.sfx !== false };
+        const saved = lib.saveOpsConfig(root, next);
+        if (!saved) r = { ok: false, error: '写配置失败' };
+        else r = {
+          ok: true,
+          msg: '已保存：出图=' + (next.image ? next.image.provider : 'auto') + ' · 视频=' + (next.video ? next.video.style : 'auto') + ' · ' + next.mode,
+          options: {
+            mode: next.mode,
+            imageProvider: next.image && next.image.provider,
+            videoStyle: next.video && next.video.style,
+            videoRoute: next.video && next.video.route,
+            textStyle: next.video && next.video.text && next.video.text.style,
+            sfx: !(next.sfx && next.sfx.enabled === false),
+            resolved: lib.resolvePlan(next),
+          },
+        };
+      } else if (draftId && action === 'comment-revise') {
+        // 评论审核：修改建议（本地模型改写）/ 同意发送 / 拒绝
+        r = await lib.reviseCommentDraft(root, { id: draftId, suggestion: body.suggestion }, cfg);
+      } else if (draftId && action === 'comment-approve') {
+        if (body.text) {
+          const up = lib.updateCommentDraft(root, { id: draftId, text: body.text });
+          if (!up.ok) return writeJson(res, 200, up);
+        }
+        r = await lib.approveComment(root, { draftId }, cfg);
+      } else if (draftId && action === 'comment-reject') {
+        r = lib.rejectCommentDraft(root, { id: draftId });
+      } else if (action === 'comment-reply-draft') {
+        // [qqbot-mod] reply-thread 2026-10-27：对某一条评论起草楼中楼回复（进既有的待审管线，同意后才真发）
+        const bvidR = String(body.bvid || '').trim();
+        const rpidR = String(body.rpid || '').trim();
+        const commentR = String(body.comment || '').slice(0, 500);
+        if (!bvidR || !rpidR) return writeJson(res, 200, { ok: false, error: '缺少 BV 号或评论 rpid' });
+        r = await lib.draftComment(root, { bvid: bvidR, intent: commentR || '（原评论内容缺失，请自己补写一句）', message: String(body.text || '').trim(), root: rpidR, user: String(body.user || ''), source: 'reply:' + String(body.user || rpidR) }, cfg);
+      } else if (action === 'msgs') {
+        // [qqbot-mod] bili-msgs 2026-10-27：私信收件箱（会话列表）
+        const apiM = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await apiM.sessions(root, { limit: 20 });
+      } else if (action === 'msgs-read') {
+        const apiM = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await apiM.msgs(root, { talkerId: String(body.talkerId || '') });
+      } else if (action === 'msg-send') {
+        const apiM = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await apiM.msgSend(root, { receiverId: String(body.talkerId || body.receiverId || ''), text: String(body.text || '') });
+        if (r && r.ok) lib.appendRecord(root, { type: 'msg', text: '→ ' + String(body.talkerId || '') + '：' + String(body.text || '').slice(0, 80) });
+      } else if (action === 'dynamics') {
+        const api = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        const dy = await api.dynamics(root, { limit: 6 });
+        if (!dy || !dy.ok) return writeJson(res, 200, { ok: false, error: (dy && dy.error) || '读动态失败' });
+        r = { ok: true, items: dy.items || [] };
+      } else if (action === 'plan') {
+        // [[qqbot-mod] video-flow] 一句话 → 成片：先写脚本/分镜，再出图配音。
+        // 旧实现直接 newJob+renderJob，从没写过 panels，所以永远失败在"任务没有分镜"。
+        const topic = String(body.topic || body.text || '').trim();
+        if (!topic) return writeJson(res, 200, { ok: false, error: '先写一句要求' });
+        const jobId = lib.newJobId();
+        const orientation = String(body.orientation || '').toLowerCase() === 'vertical' ? 'vertical' : 'horizontal';
+        const panels = Number(body.panels) || 0;
+        const scriptJson = String(body.scriptJson || '').trim();
+        let secret = {};
+        try { secret = lib.readSecret(root) || {}; } catch { }
+        lib
+          .planAndRender(root, cfg, { jobId, topic, panels, orientation, scriptJson, secret,
+            dubbing: ['gsv', 'breeze', 'index'].includes(String(body.dubbing || '').toLowerCase()) ? String(body.dubbing).toLowerCase() : '' })
+          .then((x) => {
+            lib.appendRecord(root, {
+              type: 'plan',
+              jobId,
+              title: (x && x.job && x.job.title) || topic.slice(0, 40),
+              panels: (x && x.job && x.job.panels && x.job.panels.length) || 0,
+              llm: (x && x.script && x.script.llm) || '',
+              ok: !!(x && x.ok),
+              warnings: (x && x.detail && x.detail.warnings && x.detail.warnings.length) || 0,
+              error: (x && x.error) || '',
+            });
+          })
+          .catch((e) => lib.updateJob(root, jobId, { status: 'failed', stage: 'failed', error: String((e && e.message) || e) }));
+        r = {
+          ok: true,
+          jobId,
+          msg: '已开始：先写分镜脚本，然后出图、配音、拼片（3~8 分钟，可随时刷新看进度）',
+        };
+      } else if (action === 'comment-from-video') {
+        const bvid = String(body.bvid || '').trim();
+        if (!bvid) return writeJson(res, 200, { ok: false, error: '缺少 BV 号' });
+        const api = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        const v = await api.video(root, { bvid });
+        if (!v || !v.ok) return writeJson(res, 200, { ok: false, error: (v && v.error) || '查视频失败' });
+        const cs = await api.comments(root, { aid: v.video.aid, limit: 20 });
+        if (!cs || !cs.ok) return writeJson(res, 200, { ok: false, error: (cs && cs.error) || '读评论失败' });
+        const top = (cs.replies || [])
+          .filter((x) => x && x.text)
+          .sort((a, b) => (Number(b.likes) || 0) - (Number(a.likes) || 0))
+          .slice(0, Math.max(1, Number(cfg?.review?.maxPerBatch) || 2));
+        const made = [];
+        for (const c of top) {
+          const d = await lib.draftComment(root, { bvid, intent: c.text }, cfg);
+          if (d && d.ok) made.push(d.draft);
+        }
+        // [qqbot-mod] my-threads 2026-10-29：主人需求 —— 「我给某个视频发了评论，别人回复我看不到」。
+        //   把「我发过的评论 + 收到的全部楼中楼回复」一并回传（comment-watch.biliMyThreads）。
+        let myThreads = null;
+        try {
+          const CWt = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+          myThreads = await CWt.biliMyThreads(root, { bvid, aid: v.video.aid });
+        } catch (eT) { myThreads = { ok: false, error: String((eT && eT.message) || eT) }; }
+        r = { ok: made.length > 0, drafts: made, error: made.length ? '' : '没有生成出草稿', video: v.video.title,
+          // [qqbot-mod] reply-thread：把评论本尊也回传（rpid/昵称/内容/赞数），浮窗可以对单条评论起草楼中楼回复
+          commentRows: (cs.replies || []).filter((x) => x && x.text).sort((a, b) => (Number(b.likes) || 0) - (Number(a.likes) || 0))
+            .map((x) => ({ rpid: String(x.rpid || ''), user: x.user || '', text: x.text, likes: Number(x.likes) || 0 })),
+          myThreads,
+          bvid };
+      } else if (action === 'login-qr-start') {
+        // [qqbot-mod] bili-qr-login 2026-10-27：浮窗内直接扫码登录（cookie 会失效是 B 站风控常态，
+        //   不能每次都让用户跑去找私聊入口；ASCII 二维码用宿主自带 qrcode-terminal 生成，前端 <pre> 直显可扫）
+        try {
+          const apiL = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+          const g = await apiL.qrGenerate();
+          if (!g || !g.ok) return writeJson(res, 200, { ok: false, error: (g && g.error) || '生成二维码失败' });
+          let ascii = ''
+          try {
+            const qt = await import('qrcode-terminal');
+            await new Promise((done) => (qt.default || qt).generate(g.url, { small: true }, (out) => { ascii = String(out || ''); done(); }));
+          } catch (eQ) { ascii = ''; }
+          // [qqbot-mod] qr-svg-fix 2026-10-27：ASCII 码在 webview 里常常扫不动/生成失败（裸包解析不稳），
+          //   优先用 vendored qrcode 生成矢量 SVG（本地生成，不联网），更稳更清晰
+          let svg = ''
+          try {
+            const dy = await __qqExtImport(root, join('.qqbot-extensions', 'lib', 'platforms', 'douyin.mjs'))
+            const q = await dy.qrSvg(g.url, { width: 220 })
+            if (q && q.ok) svg = String(q.svg || '')
+          } catch (eSvg) { svg = '' }
+          return writeJson(res, 200, { ok: true, key: g.key, ascii, svg, url: g.url });
+        } catch (eL) { return writeJson(res, 200, { ok: false, error: '扫码初始化失败：' + String((eL && eL.message) || eL) }); }
+      } else if (action === 'login-qr-poll') {
+        try {
+          const key = String(body.key || '');
+          if (!key) return writeJson(res, 200, { ok: false, error: '缺少 key' });
+          const apiL = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+          const p = await apiL.qrPoll(key);
+          if (!p || !p.ok) return writeJson(res, 200, { ok: false, state: '', error: (p && p.error) || '轮询失败' });
+          if (p.state === 'ok') {
+            try { await apiL.saveCookie(root, p.cookies); } catch (eS) { return writeJson(res, 200, { ok: false, error: '保存 cookie 失败：' + String((eS && eS.message) || eS) }); }
+            const n = await apiL.nav(root).catch(() => null);
+            return writeJson(res, 200, { ok: true, state: 'ok', account: (n && n.ok) ? n.data : null, msg: '登录成功' });
+          }
+          return writeJson(res, 200, { ok: true, state: p.state });
+        } catch (eP) { return writeJson(res, 200, { ok: false, error: '轮询异常：' + String((eP && eP.message) || eP) }); }
+      } else if (action === 'open-root') {
+        r = openInExplorer(lib.paths(root).jobs); // [[qqbot-mod] video-flow] 跟着 storage.root 走，别再用写死的旧路径
+      } else if (action === 'delete') {
+        const job = lib.getJob(root, jobId);
+        if (!job || !job.dir || !existsSync(job.dir)) return writeJson(res, 200, { ok: false, error: '产物目录不存在' });
+        lib.appendRecord(root, { type: 'delete', jobId, at: Date.now() });
+        rmSync(job.dir, { recursive: true, force: true });
+        r = { ok: true, msg: '已删除 ' + jobId };
+      } else if (action === 'comment-watch') {
+        // [qqbot-mod] 2026-10-28 评论巡检：auto=true 直接回复 B 站评论（拟人间隔，可能要 1~3 分钟）
+        // [qqbot-mod] pull-sort 2026-10-28：排序（最新/热度）+ 时间窗（只捞新评论，利于抢前排）+ 楼中楼开关
+        const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CW.biliCheck(root, { auto: body.auto === true, maxReply: Number(body.maxReply) || 3, limit: Number(body.limit) || 10,
+          sort: body.sort === 'hot' ? 'hot' : 'latest', maxAgeHours: Number(body.maxAgeHours) || 0,
+          withSub: body.withSub !== false, via: body.via === 'local' ? 'local' : 'cloud' });
+      } else if (action === 'comment-list') {
+        // [qqbot-mod] 2026-10-28 主人要求：B站巡检要能「出评论」——只读列表（带回复状态），不调 LLM 秒回
+        const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CW.biliList(root, { limit: Number(body.limit) || 10,
+          sort: body.sort === 'hot' ? 'hot' : 'latest', maxAgeHours: Number(body.maxAgeHours) || 0 });
+      } else if (action === 'comment-reply') {
+        // 单条操作：mode='send' 直接回复该条评论；mode='draft' 重新生成草稿（可反复刷新）
+        const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CW.biliReply(root, body);
+      } else if (action === 'my-threads') {
+        // [qqbot-mod] my-threads 2026-10-29：独立查询 —— 粘任意 BV，看我发过的评论和收到的回复
+        const CWt = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWt.biliMyThreads(root, { bvid: String(body.bvid || '').trim(), aid: Number(body.aid) || 0, limit: Number(body.limit) || 20 });
+      } else if (action === 'reply-feed') {
+        // [qqbot-mod] 2026-10-29 主人需求：B 站消息中心式「回复我的」收件箱 ——
+        //   别人回复我评论/评论我视频，一个列表全看到，每条带定位（oid/root/parent）可一键回
+        const apiF = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await apiF.replyFeed(root, { limit: Number(body.limit) || 15 });
+        // [qqbot-mod] feed-status 2026-10-29：把已回复台账对齐到收件箱 ——
+        //   以前回复完条目还是「无状态」，主人看不出回过 → 重复回复。现在每条带
+        //   feedStatus（已回复/折叠/有草稿）+ prevReply（上次回的话），台账是真事实源。
+        if (r && r.ok && Array.isArray(r.rows)) {
+          try {
+            const CWs = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+            const store = CWs.repliedStore(root);
+            for (const row of r.rows) {
+              const prev = store['bili:' + row.oid + ':' + row.parentRpid] || store['bili:' + row.oid + ':' + row.targetRpid];
+              if (prev) {
+                row.feedStatus = prev.kind === 'reply' ? '已回复' : prev.kind === 'shadowed' ? '已回复(被折叠)' : '有草稿';
+                row.prevReply = String(prev.text || '').slice(0, 120);
+                row.repliedAt = Number(prev.at) || 0;
+              }
+            }
+          } catch { /* 台账对不上就按原样展示，不挡收件箱 */ }
+        }
+      } else if (action === 'douyin-inbox') {
+        // [qqbot-mod] dy-inbox 2026-10-29：抖音收件箱 —— 贴过链接的视频逐个拉评论，
+        //   带草稿/已发状态；回复终点=小蓝写文案→复制→人去视频页手发（写接口必风控）
+        const CWdy = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWdy.douyinInbox(root, { limit: Number(body.limit) || 12 });
+      } else if (action === 'douyin-gen') {
+        // [qqbot-mod] dy-inbox：单条「小蓝写」——性格引擎出文案并存抖音待审队列
+        const CWdy2 = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWdy2.douyinGenOne(root, { awemeId: String(body.awemeId || ''), user: String(body.user || ''), comment: String(body.comment || ''), title: String(body.title || ''), via: body.via === 'local' ? 'local' : 'cloud' });
+      } else if (action === 'sticker-list') {
+        // [qqbot-mod] 2026-10-29 主人需求：评论时能选本地表情包 —— 先列库（只给 id/描述，不洩路径）
+        const SR = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'sticker-resolve.mjs').split(String.fromCharCode(92)).join('/'));
+        const rec = SR.loadIndex(root);
+        const items = (rec.items || []).slice(0, 60).map((it) => ({
+          id: String(it.id || ''), layer: String(it.layer || 'candidate'), ext: String(it.ext || 'png'),
+          tags: Array.isArray(it.tags) ? it.tags.slice(0, 4).join(' ') : String(it.tags || '').slice(0, 30),
+          desc: String(it.desc || it.descZh || '').slice(0, 30),
+        }));
+        r = { ok: true, count: items.length, items, dirExists: SR.stickerDir(root) };
+      } else if (action === 'sticker-path') {
+        // 表情包 id → 库内绝对路径（白名单：只允许库目录内文件，防任意路径上传）
+        const SR = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'sticker-resolve.mjs').split(String.fromCharCode(92)).join('/'));
+        const p = SR.pathOfId(root, String(body.itemId || ''));
+        r = p ? { ok: true, path: p } : { ok: false, error: '表情包库里没有这个 id' };
+      } else if (action === 'comment-replied') {
+        const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = { ok: true, items: CW.repliedList(root) };
+      } else if (action === 'douyin-feed') {
+        // [qqbot-mod] dy-interact 2026-10-29：抖音「互动消息」（消息中心式）——
+        //   /aweme/v1/web/notice/ 拉谁评论/回复了我，对齐草稿状态；needCookie=8 时如实提示重粘 cookie
+        const CWdy3 = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWdy3.douyinInteract(root, { count: Number(body.count) || 15, group: String(body.group || '2') });
+      } else if (action === 'douyin-comment-watch') {
+        // 抖音评论只读：出草稿（回复走手工，避免风控）
+        const CW = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CW.douyinCheck(root, { url: String(body.url || ''), limit: Number(body.limit) || 15 });
+      } else if (action === 'douyin-patrol') {
+        // [qqbot-mod] dy-patrol 2026-10-30：手动「巡检互动消息」——拉互动通知流，
+        //   对没出过草稿的评论自动生成回复草稿（终点仍是人手工发）。默认不自动跑（主人定的）。
+        const CWp = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'comment-watch.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await CWp.douyinPatrol(root, { maxNew: Number(body.maxNew) || 3 });
+      } else if (action === 'bili-dyn-post') {
+        // [qqbot-mod] 2026-10-30 主人需求：浮窗发动态入口 —— 底层 bili-api.postDynamic
+        //   （新版 JSON 接口 2026-10-25 实测可用），成功/失败都落 records.jsonl，和聊天指令同款
+        const apiD = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        const text = String(body.text || '').trim();
+        if (!text) r = { ok: false, error: '动态内容为空' };
+        else {
+          r = await apiD.postDynamic(root, { content: text });
+          if (r.ok) lib.appendRecord(root, { type: 'dynamic', dynamicId: r.dynamicId || '', via: r.via || '', text: text.slice(0, 200), url: 'https://t.bilibili.com/' + (r.dynamicId || ''), at: Date.now() });
+          else lib.appendRecord(root, { type: 'dynamic-failed', text: text.slice(0, 200), error: String(r.error || ''), at: Date.now() });
+        }
+      } else if (action === 'bili-dyn-remove') {
+        const apiD2 = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'bili-api.mjs').split(String.fromCharCode(92)).join('/'));
+        r = await apiD2.removeDynamic(root, { dynamicId: String(body.dynamicId || '') });
+        if (r && r.ok) lib.appendRecord(root, { type: 'dynamic-delete', dynamicId: String(body.dynamicId || ''), at: Date.now() });
+      } else if (action === 'draft-save') {
+        // [qqbot-mod] script-drafts 2026-10-28：文稿草稿箱 —— 灵感随手存、反复改思路、一键转视频任务
+        r = lib.saveScriptDraft(root, { id: body.draftId, title: body.title, text: body.text, tags: body.tags });
+      } else if (action === 'draft-list') {
+        r = { ok: true, drafts: lib.listScriptDrafts(root, { limit: Number(body.limit) || 30, q: String(body.q || '') }) };
+      } else if (action === 'draft-get') {
+        const d = lib.getScriptDraft(root, body.draftId);
+        r = (d && d.status !== 'deleted') ? { ok: true, draft: d } : { ok: false, error: '找不到草稿' };
+      } else if (action === 'draft-del') {
+        r = lib.deleteScriptDraft(root, body.draftId);
+      } else if (action === 'draft-submit') {
+        // 草稿 → 视频任务：整篇是脚本 JSON 就直传分镜；否则当选题由 renderJob 自动补脚本。
+        // 渲染异步跑（同 retry 通道），响应立刻返回，前端轮任务列表。
+        const d = lib.getScriptDraft(root, body.draftId);
+        if (!d || d.status === 'deleted') return writeJson(res, 200, { ok: false, error: '找不到草稿' });
+        if (d.usedJobId) return writeJson(res, 200, { ok: true, jobId: d.usedJobId, msg: '这条草稿已经转过任务 ' + d.usedJobId });
+        let script = null;
+        try {
+          const raw = JSON.parse(d.text);
+          const ps = Array.isArray(raw && raw.panels) ? raw.panels : [];
+          if (raw && ps.length >= 2 && ps.every((p) => p && String(p.narration || p.text || '').trim())) script = raw;
+        } catch { /* 不是 JSON，当选题 */ }
+        const job = lib.newJob(root, {
+          topic: script ? String(script.title || d.title) : (d.title + '。' + d.text.replace(/\s+/g, ' ').slice(0, 180)),
+          style: 'default',
+        });
+        if (script) {
+          job.title = String(script.title || d.title).slice(0, 80);
+          job.desc = String(script.desc || '').slice(0, 900);
+          job.tags = (Array.isArray(script.tags) ? script.tags : []).map((x) => String(x).slice(0, 20)).slice(0, 8);
+          job.llm = 'draft';
+          job.panels = script.panels.map((p) => ({
+            narration: String(p.narration || p.text || '').trim().slice(0, 200),
+            imagePrompt: String(p.imagePrompt || p.image || p.prompt || p.narration || '').trim().slice(0, 500),
+          }));
+        } else {
+          job.llm = 'draft-topic';   // 半截任务：renderJob 会自动 writeScript 补分镜
+        }
+        job.orientation = body.orientation === 'horizontal' ? 'horizontal' : 'vertical';
+        if (['gsv', 'breeze', 'index'].includes(String(body.dubbing || '').toLowerCase())) job.dubbing = String(body.dubbing).toLowerCase();
+        else if (!script) job.dubbing = 'breeze';   // 从草稿选题转的任务默认 breeze（离线、效果稳）
+        lib.saveJob(job);
+        lib.updateJob(root, job.id, { status: 'rendering', stage: 'render' });
+        const job2 = lib.getJob(root, job.id);
+        lib.renderJob(job2, cfg, { dataRoot: root })
+          .then((x) => {
+            if (!x || x.ok === false) lib.updateJob(root, job.id, { status: 'failed', stage: 'failed', error: String((x && (x.error || x.reason)) || '渲染失败') });
+          })
+          .catch((e) => lib.updateJob(root, job.id, { status: 'failed', stage: 'failed', error: String((e && e.message) || e) }));
+        lib.saveScriptDraft(root, { id: d.id, usedJobId: job.id });
+        r = { ok: true, jobId: job.id, title: job.title, msg: '草稿已转任务 ' + job.id + '（渲染中，几分钟；breeze/index 配音首轮会先预热）' };
+      } else if (action === 'open-folder') {
+        const job = lib.getJob(root, jobId);
+        if (!job || !job.dir) return writeJson(res, 200, { ok: false, error: '找不到任务目录：' + jobId });
+        r = openInExplorer(job.dir);
+      } else if (!jobId) {
+        return writeJson(res, 200, { ok: false, error: '缺少 jobId 或 draftId' });
+      } else if (action === 'retry') {
+        // [qqbot-mod] 2026-10-28：失败任务就地重试——保留原任务 id，重新走渲染管线
+        //   （有分镜直接渲染；只有选题的半截任务 renderJob 内部会自动补脚本）。
+        const job = lib.getJob(root, jobId);
+        if (!job) return writeJson(res, 200, { ok: false, error: '任务不存在' });
+        if (job.status === 'rendering') return writeJson(res, 200, { ok: false, error: '正在渲染中，别急' });
+        if (job.status === 'awaiting_review') return writeJson(res, 200, { ok: false, error: '已在待审核，直接投稿即可' });
+        if (job.published && job.published.bvid) return writeJson(res, 200, { ok: false, error: '这条已经发布过了（' + job.published.bvid + '）' });
+        // [qqbot-mod] dubbing-hint 2026-10-29：旧任务没记 dubbing（当年全落 gsv）——重试前
+        //   从选题/简介里补识别一次，主人指定过 Index/Breeze 的任务重试就用对引擎。
+        if (!job.dubbing) {
+          const dub = lib.detectDubbing(job.topic, job.title, job.desc);
+          if (dub) lib.updateJob(root, jobId, { dubbing: dub });
+        }
+        lib.updateJob(root, jobId, { status: 'rendering', stage: 'render', error: '', updatedAt: Date.now() });
+        const job2 = lib.getJob(root, jobId);
+        lib
+          .renderJob(job2, cfg, { dataRoot: root })
+          .then((x) => {
+            if (!x || x.ok === false) {
+              lib.updateJob(root, jobId, { status: 'failed', stage: 'failed', error: String((x && (x.error || x.reason)) || '渲染失败') });
+            }
+          })
+          .catch((e) => lib.updateJob(root, jobId, { status: 'failed', stage: 'failed', error: String((e && e.message) || e) }));
+        r = { ok: true, msg: '已重新开始渲染（3~8 分钟，刷新看进度）' };
+      } else if (action === 'approve') r = await lib.approveJob(root, jobId, cfg);
+      else if (action === 'publish') r = await lib.publishJob(root, jobId, { mode: 'web' }, cfg);
+      else if (action === 'reject') {
+        lib.updateJob(root, jobId, { status: 'rejected' });
+        lib.appendRecord(root, { type: 'reject', jobId, at: Date.now() });
+        r = { ok: true };
+      } else r = { ok: false, error: '未知动作：' + action };
+      return writeJson(res, 200, r);
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+  route(ctx, 'GET', '/api/qqbot-settings/bili-file', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const root = resolveMemoryRoot(nsBot(NSQ(u)));
+      if (!root) return writeJson(res, 404, { ok: false, error: '没有数据根' });
+      const jobId = String(u.searchParams.get('jobId') || '');
+      const name = String(u.searchParams.get('name') || 'cover.jpg');
+      if (!/^[A-Za-z0-9._-]+$/.test(jobId) || !/^(cover\.jpg|video\.mp4)$/.test(name)) {
+        return writeJson(res, 400, { ok: false, error: '非法文件' });
+      }
+      const lib = await biliLibOf(root);
+      const job = lib.getJob(root, jobId);
+      if (!job || !job.dir) return writeJson(res, 404, { ok: false, error: '任务不存在' });
+      const file = join(job.dir, name);
+      if (!file.startsWith(job.dir) || !existsSync(file)) return writeJson(res, 404, { ok: false, error: '文件不存在' });
+      const buf = readFileSync(file);
+      res.writeHead(200, {
+        'content-type': name.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg',
+        'content-length': buf.length,
+        'cache-control': 'no-store',
+      });
+      res.end(buf);
+    } catch (e) {
+      return writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+  route(ctx, 'POST', '/api/qqbot-settings/memory-import', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const root = resolveMemoryRoot(nsBot(NSQ(u)));
+      if (!root) return writeJson(res, 200, { ok: false, error: '没有数据根' });
+      const body = await readJsonBody(req).catch(() => ({}));
+      const file = String(body.file || '').trim();
+      if (!file) return writeJson(res, 200, { ok: false, error: '缺少 file（本机 txt/json 路径）' });
+      const lib = await import('file:///' + join(root, '.qqbot-extensions', 'lib', 'qq-history-import.mjs').split(String.fromCharCode(92)).join('/'));
+      const selfNames = Array.isArray(body.selfNames) ? body.selfNames : String(body.selfNames || '').split(/[,，\s]+/).filter(Boolean);
+      const r = await lib.importHistory({
+        dataRoot: root,
+        file,
+        peer: String(body.peer || '').trim(),
+        peerOpenid: String(body.peerOpenid || '').trim(),
+        selfUin: String(body.selfUin || '').trim(),
+        selfNames,
+        archive: body.archive !== false,
+        limit: Number(body.limit) || 400,
+        mask: body.mask !== false,
+      });
+      return writeJson(res, 200, { ok: !!r.ok, ...r });
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+  route(ctx, 'GET', '/api/qqbot-settings/memory', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(NSQ(u));
+      const root = resolveMemoryRoot(bot);
+      const memDir = root ? join(root, '.qqbot', 'memory') : '';
+const dbFile = root ? join(root, '.qqbot', 'memory.db') : '';
+      const scopes = [];
+      const persona = { total: 0, rows: [] };
+      let backend = 'jsonl';
+      // ① 优先读 SQLite（记忆库已换成真数据库；jsonl 只是迁移源/旧后端）
+      if (dbFile && existsSync(dbFile)) {
+        try {
+          const { DatabaseSync } = await import('node:sqlite');
+          const db = new DatabaseSync(dbFile, { readOnly: true });
+          const byScope = new Map();
+          for (const r of db.prepare('SELECT scope, kind, COUNT(*) AS c FROM mem GROUP BY scope, kind').all()) {
+            const k = String(r.scope || '?');
+            if (!byScope.has(k)) byScope.set(k, { scope: k, total: 0, byKind: {}, recent: [] });
+            const s = byScope.get(k);
+            s.total += Number(r.c) || 0;
+            s.byKind[String(r.kind || '?')] = Number(r.c) || 0;
+          }
+          const recent = db.prepare('SELECT scope, kind, text, ts FROM mem ORDER BY ts DESC LIMIT 500').all();
+          for (const r of recent) {
+            const s = byScope.get(String(r.scope || '?'));
+            if (s && s.recent.length < 8) s.recent.push({ kind: r.kind || '', text: String(r.text || '').slice(0, 160), ts: r.ts || 0 });
+          }
+          for (const s of byScope.values()) scopes.push(s);
+          try {
+            const pr = db.prepare('SELECT scope, ckey, cvalue, weight, ts FROM persona ORDER BY ts DESC LIMIT 80').all();
+            persona.total = pr.length;
+            persona.rows = pr.map((r) => ({ scope: r.scope, key: r.ckey, value: String(r.cvalue || '').slice(0, 150), w: r.weight, ts: r.ts }));
+          } catch { /* 没有 persona 表也不影响 */ }
+          db.close();
+          backend = 'sqlite';
+        } catch (e) {
+          backend = 'jsonl(回退:' + String((e && e.message) || e).slice(0, 40) + ')';
+        }
+      }
+      // ② 没有 db / db 读不了，才回退旧的 jsonl
+      if (backend !== 'sqlite' && memDir && existsSync(memDir)) {
+        for (const f of readdirSync(memDir)) {
+          if (!f.endsWith('.jsonl') || f.startsWith('_')) continue;
+          const items = [];
+          try {
+            for (const line of readFileSync(join(memDir, f), 'utf8').split('\n')) {
+              if (!line.trim()) continue;
+              try { items.push(JSON.parse(line)); } catch { /* 坏行跳过 */ }
+            }
+          } catch { /* 读不到就跳过这个 scope */ }
+          const byKind = {};
+          for (const it of items) byKind[it.kind || '?'] = (byKind[it.kind || '?'] || 0) + 1;
+          scopes.push({
+            scope: f.replace(/\.jsonl$/, ''),
+            total: items.length,
+            byKind,
+            recent: items.slice(-8).reverse().map((it) => ({ kind: it.kind || '', text: String(it.text || '').slice(0, 160), ts: it.ts || 0 })),
+          });
+        }
+      }
+      const router = { lines: 0, tiers: {}, last: [] };
+      const rl = root ? join(root, '.qqbot', 'router-log.jsonl') : '';
+      if (rl && existsSync(rl)) {
+        const arr = readFileSync(rl, 'utf8').split('\n').filter(Boolean).slice(-500);
+        router.lines = arr.length;
+        for (const l of arr) {
+          try { const o = JSON.parse(l); router.tiers[o.tier] = (router.tiers[o.tier] || 0) + 1; } catch { /* ignore */ }
+        }
+        for (const l of arr.slice(-10).reverse()) {
+          try { const o = JSON.parse(l); router.last.push({ tier: o.tier, score: o.score, mentioned: !!o.mentioned, len: (o.s || {}).len, ts: o.ts }); } catch { /* ignore */ }
+        }
+      }
+      const payload = { ok: true, root, memDir, backend, persona, scopes: scopes.sort((a, b) => b.total - a.total), router };
+      if (String(u.searchParams.get('format') || '') === 'html') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(renderMemoryPage(payload));
+        return;
+      }
+      return writeJson(res, 200, payload);
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+route(ctx, 'GET', '/api/qqbot-settings/affinity', async (req, res) => {
     try {
       const u = new URL(req.url ?? '/', 'http://x');
       const bot = nsBot(NSQ(u));
@@ -2972,6 +4902,64 @@ export function apply(ctx) {
       }
       writeJson(res, r.ok ? 200 : 200, r.ok ? { ok: true, msg: action === 'mute' ? '已禁言 ' + Math.round(secs / 60) + ' 分钟' : '已解除禁言' } : { ok: false, err: r.err });
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // [qqbot-mod] video-radar 2026-10-27：视频雷达（拉视频→生评论；B站直发/笔记）
+  //   POST /api/qqbot-settings/video-pull {platform:'bili'|'douyin', url?, random?}
+  //     → {ok, platform, video:{id,title,author,url,stats}, comments[], draft}
+  //   POST /api/qqbot-settings/video-act  {action:'bili-comment'|'note', ...}
+  //   GET  /api/qqbot-settings/video-act?action=note-list
+  const __extLib = async (root, name) => import('file:///' + join(root, '.qqbot-extensions', 'lib', name).split(String.fromCharCode(92)).join('/'));
+  route(ctx, 'POST', '/api/qqbot-settings/video-pull', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const bot = nsBot(String((body && body.ns) || ''));
+      const root = resolveMemoryRoot(bot);
+      const vc = await __extLib(root, 'video-curator.mjs');
+      const r = await vc.pull(root, { platform: body.platform, url: body.url, random: !!body.random });
+      if (!r.ok) return writeJson(res, 200, r);
+      const d = await vc.draftComment(root, r.video);
+      r.draft = d.text;
+      r.draftMs = d.ms;
+      r.draftFallback = !!d.fallback;
+      writeJson(res, 200, r);
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+  route(ctx, 'POST', '/api/qqbot-settings/video-act', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const bot = nsBot(String((body && body.ns) || ''));
+      const root = resolveMemoryRoot(bot);
+      const vc = await __extLib(root, 'video-curator.mjs');
+      const action = String(body.action || '');
+      if (action === 'note') {
+        const r = vc.noteAdd(root, body.note || {});
+        return writeJson(res, 200, r.ok ? r : { ok: false, error: r.error });
+      }
+      if (action === 'bili-comment') {
+        // S4 档：人已在浮窗点过确认，这里只是执行手。root 级评论（无 root/parent）
+        const bops = await __extLib(root, 'bili-ops.mjs');
+        const bapi = await __extLib(root, 'bili-api.mjs');
+        const v = await bapi.video(root, { bvid: String(body.id || '') });
+        if (!v.ok) return writeJson(res, 200, { ok: false, error: '拉视频信息失败：' + (v.error || '?') });
+        const r = await bops.replyComment(root, { aid: v.video.aid, message: String(body.message || '') });
+        try { vc.noteAdd(root, { platform: 'bili', id: body.id, title: v.video.title, url: v.video.url, comment: String(body.message || '').slice(0, 200), note: r.ok ? '已直发（rpid ' + (r.rpid || '') + '）' : '直发失败：' + (r.error || '?') }); } catch { /* 记账失败不影响 */ }
+        return writeJson(res, 200, r);
+      }
+      writeJson(res, 400, { ok: false, error: '未知 action: ' + action });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+  route(ctx, 'GET', '/api/qqbot-settings/video-act', async (req, res) => {
+    try {
+      const u = new URL(req.url, 'http://x');
+      if (u.searchParams.get('action') === 'note-list') {
+        const bot = nsBot(String(u.searchParams.get('ns') || ''));
+        const root = resolveMemoryRoot(bot);
+        const vc = await __extLib(root, 'video-curator.mjs');
+        return writeJson(res, 200, { ok: true, notes: vc.noteList(root, { limit: 30 }) });
+      }
+      writeJson(res, 400, { ok: false, error: '未知 action' });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
   });
 
   // 面板代发消息: 以机器人身份向群发文本 {ns?, gid, text, insertContext?}
@@ -4238,6 +6226,94 @@ export function apply(ctx) {
     return null;
   }
   // GET /chat/history?ns&scope&peerId&beforeSeq&limit —— 聊天视图数据源
+  // [qqbot-mod] chat-log-source（2026-10-25 主人: 浮窗群聊拿不到最新几条）
+  //   msg-content.jsonl 只记"被引用过的消息"，不是完整台账；
+  //   完整台账在 .qqbot/msg-history/<scope>_<peerId>/YYYY-MM-DD.jsonl（含机器人自己发的）。
+  const CHATLOG_JUNK = /^\[(记忆|设定|印象|旧识|别重复)[^\]]*\]\s*/g
+  function chatLogDir(bot, scope, peerId) {
+    try {
+      const root = resolveMemoryRoot(bot)
+      if (!root) return ''
+      const sid = String(peerId || '').replace(/[^0-9A-Za-z_-]/g, '')
+      if (!sid) return ''
+      return join(root, '.qqbot', 'msg-history', String(scope) + '_' + sid)
+    } catch { return '' }
+  }
+  function chatLogItems(bot, scope, peerId, limit) {
+    const out = []
+    try {
+      const dir = chatLogDir(bot, scope, peerId)
+      if (!dir || !existsSync(dir)) return out
+      const want = Math.max(1, Math.min(400, Number(limit) || 80))
+      const names = readdirSync(dir).filter(function (n) { return /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(n) }).sort()
+      const lines = []
+      for (let i = names.length - 1; i >= 0 && lines.length < want * 3; i--) {
+        try {
+          const rows = readFileSync(join(dir, names[i]), 'utf8').split(String.fromCharCode(10))
+          for (let j = rows.length - 1; j >= 0 && lines.length < want * 3; j--) {
+            const ln = String(rows[j] || '').trim()
+            if (ln) lines.push(ln)
+          }
+        } catch { /* 单个日期文件读不到就跳过 */ }
+      }
+      const seen = Object.create(null)
+      for (const ln of lines) {
+        let o = null
+        try { o = JSON.parse(ln) } catch { continue }
+        if (!o) continue
+        const t = Number(o.t) || 0
+        if (!t) continue
+        let text = String(o.x == null ? '' : o.x)
+        if (o.k === 'image') text = text || '[图片]'
+        else if (o.k === 'video') text = text || '[视频]'
+        else if (o.k === 'voice') text = text || '[语音]'
+        else if (o.k === 'file') text = text || '[文件]'
+        text = text.replace(CHATLOG_JUNK, '').trim()
+        if (!text) continue
+        const dir2 = (o.me || String(o.n || '') === '机器人') ? 'out' : 'in'
+        const key = Math.floor(t / 1000) + '|' + dir2 + '|' + text.slice(0, 24)
+        if (seen[key]) continue
+        seen[key] = 1
+        out.push({
+          seq: 0,
+          time: t,
+          dir: dir2,
+          // [qqbot-mod] tier-v2：带上发送者 id，聊天行才能一键加「特别关心」；昵称兜底但不把 openid 当名字用
+          sid: String(o.s || ''),
+          sender: (function (_n, _s, _out) {
+              if (_out) return '小蓝'
+              if (!_n || _n === _s || _n === '机器人' || /^[0-9A-Fa-f]{32}$/.test(_n)) return '群友'
+              return _n
+            })(String(o.n || ''), String(o.s || ''), dir2 === 'out'),
+          text: text,
+          images: [],
+          tag: '',
+          by: 'log',
+          ms: 0,
+          model: '',
+        })
+        if (out.length >= want) break
+      }
+    } catch { /* 台账读不到就当没有 */ }
+    out.sort(function (a, b) { return (Number(a.time) || 0) - (Number(b.time) || 0) })
+    return out
+  }
+  function mergeChatLog(items, extra, limit) {
+    const byKey = Object.create(null)
+    const all = []
+    const add = function (it) {
+      if (!it) return
+      const k = Math.floor((Number(it.time) || 0) / 1000) + '|' + String(it.dir || '') + '|' + String(it.text || '').slice(0, 24)
+      if (byKey[k]) return
+      byKey[k] = 1
+      all.push(it)
+    }
+    for (const it of (extra || [])) add(it)
+    for (const it of (items || [])) add(it)
+    all.sort(function (a, b) { return (Number(a.time) || 0) - (Number(b.time) || 0) })
+    const cap = Math.max(1, Math.min(400, Number(limit) || 80))
+    return all.length > cap ? all.slice(all.length - cap) : all
+  }
   route(ctx, 'GET', '/api/qqbot-settings/chat/history', async (req, res) => {
     try {
       const u = new URL(req.url ?? '/', 'http://x');
@@ -4261,6 +6337,7 @@ export function apply(ctx) {
       const aRaw = (_aStr === null || _aStr === '') ? NaN : Number(_aStr);
       const afterSeq = Number.isFinite(aRaw) && aRaw >= 0 ? Math.floor(aRaw) : undefined;
       let bot = nsBot(ns);
+      const _chatLogOf = function () { try { return chatLogItems(bot, scope, peerId, 200) } catch { return [] } }
       if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
       const reg = await import('./dist/features/session-registry.js');
       let rec = typeof reg.findRecordByPeerWeb === 'function'
@@ -4281,12 +6358,25 @@ export function apply(ctx) {
         } catch { /* 兜底失败按原样走 */ }
       }
       if (!rec || !rec.agent) {
-        return writeJson(res, 200, { ok: true, code: 'no-session', items: [], hasMore: false, msg: '该目标暂无活跃会话' });
+        // [qqbot-mod] chat-local-only：会话记录没了，但"她说过的话"还在日志里
+      {
+        const _lg1 = _chatLogOf()
+        if (_lg1.length) return writeJson(res, 200, { ok: true, code: 'log-only', items: mergeChatLog([], _lg1, limit), hasMore: false, tailSeq: 0, msg: '会话记录已换/未就绪，已用本地消息台账补齐' })
+        const only = chatLocalOnlyItems(bot, scope, peerId, limit)
+        if (only.length) return writeJson(res, 200, { ok: true, code: 'local-only', items: mergeChatLog(only, _lg1 || [], limit), hasMore: false, msg: '只找到本地代答记录（会话记录已换/未就绪）' })
+      }
+      return writeJson(res, 200, { ok: true, code: 'no-session', items: [], hasMore: false, msg: '该目标暂无活跃会话' });
       }
       const agent = rec.agent;
       const sess = agent && (agent.session || (agent.ctx && agent.ctx.session));
       if (!sess || typeof sess.seq !== 'number') {
-        return writeJson(res, 200, { ok: true, code: 'no-session', items: [], hasMore: false, msg: '会话未就绪' });
+        {
+        const _lg2 = _chatLogOf()
+        if (_lg2.length) return writeJson(res, 200, { ok: true, code: 'log-only', items: mergeChatLog([], _lg2, limit), hasMore: false, tailSeq: 0, msg: '会话未就绪，已用本地消息台账补齐' })
+        const only2 = chatLocalOnlyItems(bot, scope, peerId, limit)
+        if (only2.length) return writeJson(res, 200, { ok: true, code: 'local-only', items: mergeChatLog(only2, _lg2 || [], limit), hasMore: false, msg: '只找到本地代答记录（会话未就绪）' })
+      }
+      return writeJson(res, 200, { ok: true, code: 'no-session', items: [], hasMore: false, msg: '会话未就绪' });
       }
       const snap = typeof sess.snapshotEvents === 'function' ? sess.snapshotEvents.bind(sess) : undefined;
       // 名字映射: c2c 用台账兜底 sender; group 读群成员表把 <@openid> 换成昵称
@@ -4302,7 +6392,7 @@ export function apply(ctx) {
       }
       const fallbackSender = scope === 'c2c' ? ((ledger.get('c2c:' + peerId) || {}).name || '') : '';
       // 尾部倒扫: 默认从最新一条事件 seq 往前; beforeSeq=加载更早(beforeSeq 之前的)
-      const items = [];
+      let items = [];
       const STEP = 200;   // 2026-10-04: 500 → 200（主人实测大跨度区间取不到数据，小步更容易落进有效区）
       const diagScan = [];   // 🔍 临时诊断：每轮扫了哪个 seq 区间、拿到几条
         let reachedEnd = false;
@@ -4418,7 +6508,145 @@ export function apply(ctx) {
           win: winProbe,
         }
       } catch (e) { diag = { err: String((e && e.message) || e) } }
+      // [qqbot-mod] chat-merge：把"本地代答说过的话"和"同一 peer 的其它会话"并进聊天页
+      try {
+        var _cmEol = String.fromCharCode(10)
+        var _cmRoot = ""
+        try { _cmRoot = resolveMemoryRoot(bot) } catch (_e0) { _cmRoot = "" }
+        var _cmSeen = {}
+        for (var _cmI = 0; _cmI < items.length; _cmI++) {
+          var _cmIt = items[_cmI] || {}
+          _cmSeen[String(Number(_cmIt.time) || 0) + "|" + String(_cmIt.text || "").slice(0, 24)] = 1
+        }
+        var _cmWant = (scope === "c2c" ? "c2c:" : "group:") + peerId
+        // 1) 本地代答/死梗/跳过：她真的说过的话（云端的不加，session 快照里已有）
+        if (_cmRoot) {
+          try {
+            var _cmLog = join(_cmRoot, ".qqbot", "local-answer-log.jsonl")
+            if (existsSync(_cmLog)) {
+              var _cmRows = readFileSync(_cmLog, "utf8").split(_cmEol)
+              var _cmFrom = Math.max(0, _cmRows.length - 400)
+              for (var _cmR = _cmFrom; _cmR < _cmRows.length; _cmR++) {
+                var _cmLine = String(_cmRows[_cmR] || "").trim()
+                if (!_cmLine) continue
+                var _cmO = null
+                try { _cmO = JSON.parse(_cmLine) } catch (_e1) { continue }
+                if (!_cmO || !_cmO.reply) continue
+                var _cmSc = String(_cmO.scope || "")
+                if (_cmSc && _cmSc !== _cmWant && _cmSc.indexOf(peerId) < 0) continue
+                var _cmT = Number(_cmO.ts) || 0
+                var _cmK = String(_cmT) + "|" + String(_cmO.reply).slice(0, 24)
+                if (_cmSeen[_cmK]) continue
+                _cmSeen[_cmK] = 1
+                items.push({ seq: 0, time: _cmT, dir: "out", sender: "", text: String(_cmO.reply), images: [], tag: "", by: String(_cmO.by || "local"), ms: Number(_cmO.ms) || 0, model: String(_cmO.model || "") })
+              }
+            }
+          } catch (_e2) { /* 日志读不到不影响主流程 */ }
+        }
+        // 2) 同一个 peer 的其它会话（换过会话时，旧会话里的话也要能看见）
+        try {
+          var _cmCands = (typeof reg.listPeerRecordsWeb === "function") ? (reg.listPeerRecordsWeb(scope, peerId) || []) : []
+          for (var _cmC = 0; _cmC < _cmCands.length; _cmC++) {
+            var _cmRec = _cmCands[_cmC]
+            if (!_cmRec || _cmRec === rec) continue
+            if (rec && String(_cmRec.sessionId || "") === String(rec.sessionId || "")) continue
+            var _cmEvs = null // [_cmAg] chat-merge2
+            try {
+              var _cmAg = _cmRec.agent
+              var _cmS2 = _cmAg && (_cmAg.session || (_cmAg.ctx && _cmAg.ctx.session))
+              if (_cmS2 && Array.isArray(_cmS2.events)) _cmEvs = _cmS2.events
+            } catch (_e3) { _cmEvs = null }
+            if (!_cmEvs) continue
+            _cmEvs = _cmEvs.slice(Math.max(0, _cmEvs.length - 40))
+            for (var _cmX = _cmEvs.length - 1; _cmX >= 0; _cmX--) {
+              var _cmGot = null
+              try { _cmGot = chatDecodeEvent(_cmEvs[_cmX], scope, nameByMid, fallbackSender) } catch (_e4) { _cmGot = null }
+              if (!_cmGot) continue
+              var _cmArr = Array.isArray(_cmGot) ? _cmGot : [_cmGot]
+              for (var _cmY = 0; _cmY < _cmArr.length; _cmY++) {
+                var _cmOne = _cmArr[_cmY]
+                if (!_cmOne) continue
+                var _cmT2 = Number(_cmOne.time) || 0
+                var _cmK2 = String(_cmT2) + "|" + String(_cmOne.text || "").slice(0, 24)
+                if (_cmSeen[_cmK2]) continue
+                _cmSeen[_cmK2] = 1
+                items.push(_cmOne)
+              }
+            }
+          }
+        } catch (_e5) { /* 其它会话读不到就算了 */ }
+        items.sort(function (a, b) { return (Number(a.time) || 0) - (Number(b.time) || 0) })
+        while (items.length > limit) items.shift()
+        diag.merged = items.length
+        try { diag.byCount = items.filter(function (x) { return !!x.by }).length } catch (_e6) { /* ignore */ }
+      } catch (_e7) {
+        try { diag.mergeErr = String((_e7 && _e7.message) || _e7) } catch (_e8) { /* ignore */ }
+      }
+      // [qqbot-mod] chat-inbound-log：并入插件自己的入站台账（跨会话、跨重启都在），补「聊天页看不到消息」的缺口
+      try {
+        const _mb = (function () { try { return join(resolveMemoryRoot(bot), '.qqbot', 'msg-content.jsonl'); } catch (_e) { return ''; } })();
+        if (_mb && existsSync(_mb)) {
+          const _want = String(scope) + ':' + String(peerId);
+          const _stripInj = (s) => {
+            let t = String(s || '');
+            for (const tag of ['记忆', '设定']) {
+              const open = '[' + tag + ']';
+              const close = '[/' + tag + ']';
+              let guard = 0;
+              while (t.indexOf(open) >= 0 && guard < 6) {
+                const a = t.indexOf(open);
+                const b = t.indexOf(close, a);
+                if (b < 0) { t = t.slice(0, a); break; }
+                t = t.slice(0, a) + t.slice(b + close.length);
+                guard += 1;
+              }
+            }
+            const cut = t.indexOf('[别重复]');
+            if (cut >= 0) {
+              const nl = t.indexOf(String.fromCharCode(10), cut);
+              t = t.slice(0, cut) + (nl >= 0 ? t.slice(nl) : '');
+            }
+            t = t.replace(/\n?\[(印象|旧识)\][^\n]*/g, '');
+            return t.trim();
+          };
+          const _rows = readFileSync(_mb, 'utf8').split(String.fromCharCode(10)).filter(Boolean).slice(-4000);
+          const _in = [];
+          for (const line of _rows) {
+            let o = null;
+            try { o = JSON.parse(line); } catch { continue; }
+            if (!o || String(o.p || '') !== _want) continue;
+            const text = _stripInj(o.t);
+            const imgs = Array.isArray(o.imgs) ? o.imgs.filter(Boolean) : [];
+            if (!text && !imgs.length) continue;
+            _in.push({
+              seq: 0,
+              time: Number(o.at) || 0,
+              dir: 'in',
+              sender: String(o.n || o.s || '群友'),
+              text,
+              images: imgs.map((x) => ({ url: String(x), kind: 'image' })),
+              tag: '',
+            });
+          }
+          if (_in.length) {
+            const _seen = new Set();
+            const _merged = [];
+            for (const it of [...items, ..._in]) {
+              const key = String(it.time) + '|' + String(it.dir) + '|' + String(it.text || '').slice(0, 40);
+              if (_seen.has(key)) continue;
+              _seen.add(key);
+              _merged.push(it);
+            }
+            _merged.sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0));
+            items = _merged.slice(-limit);
+            if (diag && typeof diag === 'object') diag.inboundLog = _in.length;
+          }
+        }
+      } catch { /* 台账读失败不影响主路径 */ }
+      // [qqbot-mod] chat-log-source：补上 msg-history 里的最新消息（按 秒+方向+前24字 去重）
+      try { items = mergeChatLog(items, _chatLogOf(), limit) } catch (eM) {}
       writeJson(res, 200, { ok: true, items, hasMore: !reachedEnd, tailSeq: sess.seq, debug: diag });
+
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
@@ -4622,6 +6850,52 @@ export function apply(ctx) {
       res.end(buf);
     } catch (e) {
       writeJson(res, 404, { error: String((e && e.message) || e) });
+    }
+  });
+
+  // ★ 本机新增(2026-10-25): 小游戏会话管理（浮窗「🎮 游戏」卡）。
+  //   GET 列活跃对局（读 tools/data/game-sessions.json，同 game-lib 的懒过期语义）；
+  //   POST action=kill 按 key 强制收摊 / action=clear 全收。
+  async function gameLibOf(root) {
+    const p = join(root, '.qqbot-extensions', 'tools', 'lib', 'game-lib.mjs');
+    return import('file:///' + p.split(String.fromCharCode(92)).join('/'));
+  }
+  route(ctx, 'GET', '/api/qqbot-settings/games', async (req, res) => {
+    try {
+      const root = resolveMemoryRoot(nsBot(NSQ(new URL(req.url ?? '/', 'http://x'))));
+      if (!root) return writeJson(res, 200, { ok: false, error: '没有数据根', sessions: [] });
+      const lib = await gameLibOf(root);
+      const sessions = lib.listSessions(root).map((s) => ({
+        key: s.key, id: s.id, kind: s.kind, kindTitle: lib.gameTitle(s.kind),
+        startedAt: s.startedAt, lastAt: s.lastAt, idleMin: s.idleMin,
+      }));
+      return writeJson(res, 200, { ok: true, root, sessions, kinds: lib.gameKinds().map((k) => ({ id: k, title: lib.gameTitle(k) })), idleMinutes: lib.IDLE_MINUTES });
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: String((e && e.message) || e), sessions: [] });
+    }
+  });
+  route(ctx, 'POST', '/api/qqbot-settings/games', async (req, res) => {
+    try {
+      const root = resolveMemoryRoot(nsBot(NSQ(new URL(req.url ?? '/', 'http://x'))));
+      if (!root) return writeJson(res, 200, { ok: false, error: '没有数据根' });
+      const body = await readJsonBody(req).catch(() => ({}));
+      const lib = await gameLibOf(root);
+      const action = String(body.action || '');
+      if (action === 'kill') {
+        const key = String(body.key || '');
+        if (!key) return writeJson(res, 200, { ok: false, error: '缺 key' });
+        const gone = lib.killSession(root, key);
+        return writeJson(res, 200, { ok: gone, error: gone ? '' : '对局不存在（可能已超时自动收摊）' });
+      }
+      if (action === 'clear') {
+        const all = lib.listSessions(root);
+        let n = 0;
+        for (const s of all) { if (lib.killSession(root, s.key)) n += 1; }
+        return writeJson(res, 200, { ok: true, msg: `收了 ${n} 局` });
+      }
+      return writeJson(res, 200, { ok: false, error: '未知动作：' + action });
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: String((e && e.message) || e) });
     }
   });
 
@@ -5025,6 +7299,11 @@ const WHY_MAP = { busy: '目标会话回合活跃,已等待至回合结束仍超
       if (cfg.dataRoot) return { dataRoot: String(cfg.dataRoot), source: 'default.bot' };
       if (cfg.cwd) return { dataRoot: join(String(cfg.cwd), 'dshqqbot'), source: 'default.bot' };
     }
+    // [qqbot-mod] panel-v5 无 cwd 且 patch 里没配置时，仍优先 nsBot 的合并配置
+    try {
+      const b = nsBot('im-qqbot');
+      if (b && b.cfg && b.cfg.dataRoot) return { dataRoot: String(b.cfg.dataRoot), source: 'bot.merged' };
+    } catch { /* ignore */ }
     return { dataRoot: resolveContextlessDataRoot(), source: 'default' };
   }
 

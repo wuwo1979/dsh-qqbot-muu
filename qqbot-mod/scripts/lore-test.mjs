@@ -32,10 +32,12 @@ ok('gag23 文本含 6', c.block.includes('6'));
 const d = loreFor(ROOT, '妈妈你在吗');
 ok('妈妈 → 命中 qixing', d.hits.some((h) => h.id === 'qixing'), d.hits.map((h) => h.id).join(','));
 
-console.log('[3] 不相关的话不该触发');
+console.log('[3] 不相关的话不该触发（always:true 的能力提示除外）');
+// [qqbot-mod] lore-always 2026-10-30：sticker-auto 之后世界书有了 always:true 条目
+//   （能力提示，每条消息都带，不占检索命中）。本组的"不相关不触发"只对普通条目生效。
 const e = loreFor(ROOT, 'zzz qqq');
-ok('无关键词 → 空块', e.block === '', JSON.stringify(e.block));
-ok('无关键词 → 0 命中', e.hits.length === 0);
+ok('无关键词 → 普通条目 0 命中', e.hits.every((h) => h.always === true), e.hits.map((h) => h.id + (h.always ? '(always)' : '')).join(','));
+ok('无关键词 → 块里只有 always 提示（或空）', e.block === '' || e.hits.every((h) => h.always === true), JSON.stringify(e.block.slice(0, 80)));
 
 console.log('[4] 预算硬约束');
 const f = loreFor(ROOT, '老家 吃 累了 冷笑话 手机 表情包 妈妈 2+3 睡了 唱歌 哈哈 潜水 饲养员');

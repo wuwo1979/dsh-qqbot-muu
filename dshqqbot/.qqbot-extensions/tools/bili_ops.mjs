@@ -27,15 +27,28 @@ export const inputSchema = {
   action: {
     type: 'string',
     required: true,
-    enum: ['plan', 'list', 'show', 'approve', 'reject', 'publish', 'rename', 'comment', 'apologize', 'engage', 'records', 'status'],
-    description: 'plan=生成视频草稿；approve=审核通过并自动上传；comment 生成/发送评论；apologize=对指定评论追加道歉并挂动态；engage=拉数据并生成建议回复',
+    enum: ['plan', 'draft', 'list', 'show', 'approve', 'reject', 'publish', 'rename', 'comment', 'apologize', 'engage', 'records', 'status'],
+    description: 'plan=生成视频草稿；draft=文稿草稿箱（灵感随手记/改思路/一键转视频任务）；approve=审核通过并自动上传；comment 生成/发送评论；apologize=对指定评论追加道歉并挂动态；engage=拉数据并生成建议回复',
   },
+  op: { type: 'string', enum: ['save', 'list', 'get', 'del', 'submit'], description: 'draft 子操作：save=存/改（有 draftId=改）、list=列表、get=取全文、del=删、submit=转成视频任务进渲染管线' },
+  draftId: { type: 'string', description: '文稿草稿 id（draft get/del/submit；comment 里是评论草稿 id）' },
+  draftTitle: { type: 'string', description: '文稿草稿标题（draft save，可省略自动取首句）' },
+  draftText: { type: 'string', description: '文稿草稿内容（draft save）：灵感几句话或整篇分镜文案都行' },
+  dubbing: { type: 'string', enum: ['gsv', 'breeze', 'index'], description: '本任务的配音引擎（plan/comments_video 可选）：gsv=快（默认）、breeze=自然较慢、index=情感最足最慢；离线出片推荐 breeze/index' },
+  pullSort: { type: 'string', enum: ['latest', 'hot'], description: '拉评论排序：latest=按时间（默认，利于抢前排）、hot=按热度' },
+  maxAgeHours: { type: 'number', description: '拉评论时间窗（小时）：只看最近 N 小时的评论，0=不限；定向捞新评论抢占前排' },
   topic: { type: 'string', description: '视频选题（plan）' },
   scriptJson: {
     type: 'string',
     description:
       '可选：完整脚本 JSON 字符串 {"title","desc","tags":[],"panels":[{"narration","imagePrompt"}]}。'
-      + '主模型自己写脚本时传它，可跳过 DeepSeek/本地模型（质量更好、不重复花 token）。',
+      + '⚠️ 一般别传——直传会跳过管线的质量闸（黑话拒稿/自动重写）。只在主人明确给了整份脚本时才传。',
+  },
+  scriptHint: {
+    type: 'string',
+    description:
+      '可选：主人的选题要求/质量红线/结构提示（如「必须讲到的数据」「开头用小事故」）。'
+      + '会原样交给写稿模型当硬约束（不传 scriptJson 时生效，推荐用法：只传 topic + scriptHint，让管线写稿）。',
   },
   style: { type: 'string', enum: ['default', 'funny', 'warm', 'sharp'], description: '风格' },
   panels: { type: 'number', description: '分镜数量 2~12，默认取配置' },
@@ -205,7 +218,7 @@ export async function run(args = {}, env = {}) {
       if (rawScript) {
         const raw = rawScript;
         const ps = Array.isArray(raw.panels) ? raw.panels : [];
-        if (ps.length < 2 || ps.length > 12) return { ok: false, error: 'panels 需要 2~12 屏' };
+        if (ps.length < 2 || ps.length > 16) return { ok: false, error: 'panels 需要 2~16 屏' };
         s = {
           ok: true,
           llm: 'agent',
@@ -218,8 +231,11 @@ export async function run(args = {}, env = {}) {
           })),
         };
       } else {
+        // [qqbot-mod] script-hint 2026-10-31：主人的质量红线/结构要求走 briefing 通道进 system
+        //   （topic 有 200 字截断，红线塞 topic 会被砍半截——教训见 bili-ops.mjs 扩写盲写修复）。
+        const hint = String(args.scriptHint || '').trim().slice(0, 1200);
         s = await sw.writeScript(
-          { topic, style: args.style || 'default', panels, seconds: args.seconds },
+          { topic, style: args.style || 'default', panels, seconds: args.seconds, briefing: hint || undefined },
           cfg.llm,
           { dataRoot, apiKey: secret.apiKey }
         );
@@ -231,6 +247,14 @@ export async function run(args = {}, env = {}) {
       job.desc = s.desc;
       job.tags = s.tags;
       job.llm = s.llm;
+      // [qqbot-mod] 2026-10-28：任务级配音引擎 —— 离线出片选 breeze/index（慢但效果好，
+      //   不抢答）；聊天短片默认 gsv。renderJob 里会覆盖全局 voice-config。
+      // [qqbot-mod] 2026-10-29：主人常把「用 IndexTTS/Breeze」写在选题正文里而模型忘传参，
+      //   所以显式参数之外再扫 topic/scriptJson 提及做兑底（detectDubbing）。
+      const dub = ['gsv', 'breeze', 'index'].includes(String(args.dubbing || '').toLowerCase())
+        ? String(args.dubbing).toLowerCase()
+        : Ops.detectDubbing(topic, args.scriptJson);
+      if (dub) job.dubbing = dub;
       // 竖屏 / 横屏：默认横屏；主人说"发 B 站/竖屏"时走 1080×1920
       job.orientation = String(args.orientation || '').toLowerCase() === 'vertical' ? 'vertical' : 'horizontal';
       job.panels = s.panels.map((p) => ({ narration: p.narration, imagePrompt: p.imagePrompt }));
@@ -299,7 +323,8 @@ export async function run(args = {}, env = {}) {
       const v = await B.video(dataRoot, { bvid });
       if (!v.ok) return { ok: false, error: '读视频信息失败：' + (v.error || '') };
       const want = Math.max(2, Math.min(6, Number(args.limit) || 5));
-      const cr = await B.comments(dataRoot, { aid: v.video.aid, limit: want });
+      // [qqbot-mod] pull-sort 2026-10-28：评论朗读也能选排序 —— 读最新评论比读陈年热评更有时效感
+      const cr = await B.comments(dataRoot, { aid: v.video.aid, limit: want, sort: args.pullSort === 'hot' ? 'hot' : 'latest' });
       const list = cr.ok ? (cr.replies || []) : [];
       if (!list.length) {
         return { ok: false, error: '这条视频没有可读的评论' + (cr.ok ? '' : '（' + cr.error + '）') };
@@ -326,6 +351,10 @@ export async function run(args = {}, env = {}) {
 
       const job = Ops.newJob(dataRoot, { topic: '评论区：' + v.video.title, style: args.style || 'default' });
       job.title = (String(args.title || '').trim() || `读了《${String(v.video.title).slice(0, 24)}》的评论区`).slice(0, 80);
+      const dubC = ['gsv', 'breeze', 'index'].includes(String(args.dubbing || '').toLowerCase())
+        ? String(args.dubbing).toLowerCase()
+        : Ops.detectDubbing(args.intro, args.outro, args.title);
+      if (dubC) job.dubbing = dubC;
       job.desc = String(args.desc || '').trim() ||
         `读评论区：《${v.video.title}》热评 ${panels.length - 2} 条。原视频：${v.video.bvid}`;
       job.tags = String(args.tags || '').trim()
@@ -388,6 +417,63 @@ export async function run(args = {}, env = {}) {
           `等你审核，回「通过 ${job.id}」我就自动投稿。` +
           (warnings.length ? `\n注意：${warnings.join('；')}` : ''),
       };
+    }
+
+    // ── 文稿草稿箱（2026-10-28 主人需求：灵感随手存、反复改思路、改好一键转视频）──
+    case 'draft': {
+      if (!isOwner(env, cfg)) return deny();
+      const op = String(args.op || 'list').trim();
+      if (op === 'save') {
+        const r = Ops.saveScriptDraft(dataRoot, {
+          id: args.draftId, title: args.draftTitle, text: args.draftText, tags: args.tags,
+        });
+        if (!r.ok) return r;
+        return { ok: true, draft: r.draft, msg: `草稿已存：${r.draft.title}（随时回来看、改思路；回「草稿转视频 ${r.draft.id}」就能进渲染管线）` };
+      }
+      if (op === 'list') {
+        const ds = Ops.listScriptDrafts(dataRoot, { limit: Number(args.limit) || 15, q: args.q });
+        return {
+          ok: true, count: ds.length, drafts: ds,
+          msg: ds.length
+            ? ds.map((d) => `${d.id} · ${d.title} · ${String(d.text).replace(/\s+/g, ' ').slice(0, 40)}…${d.usedJobId ? '（已转 ' + d.usedJobId + '）' : ''}`).join('\n')
+            : '草稿箱还是空的 —— 有灵感随时说「记个草稿：…」',
+        };
+      }
+      if (op === 'get') {
+        const d = Ops.getScriptDraft(dataRoot, args.draftId);
+        if (!d || d.status === 'deleted') return { ok: false, error: '找不到草稿 ' + (args.draftId || '') };
+        return { ok: true, draft: d, msg: `【${d.title}】\n${d.text}` };
+      }
+      if (op === 'del') {
+        const r = Ops.deleteScriptDraft(dataRoot, args.draftId);
+        return r.ok ? { ...r, msg: r.msg } : r;
+      }
+      if (op === 'submit') {
+        const d = Ops.getScriptDraft(dataRoot, args.draftId);
+        if (!d || d.status === 'deleted') return { ok: false, error: '找不到草稿 ' + (args.draftId || '') };
+        if (d.usedJobId) return { ok: true, jobId: d.usedJobId, msg: `这条草稿已经转过任务了（${d.usedJobId}），别重复烧显卡` };
+        // 文稿若本身是一份脚本 JSON（{title,desc,panels:[{narration,imagePrompt}]}）就直传，
+        // 否则整段当选题让 script-writer 扩写成片
+        let script = null;
+        try {
+          const raw = JSON.parse(d.text);
+          const ps = Array.isArray(raw?.panels) ? raw.panels : [];
+          if (raw && ps.length >= 2 && ps.every((p) => p && String(p.narration || p.text || '').trim())) script = raw;
+        } catch { /* 不是 JSON，当选题 */ }
+        const sub = {
+          ...args,
+          action: 'plan',
+          topic: script ? String(script.title || d.title) : `${d.title}。${d.text.replace(/\s+/g, ' ').slice(0, 180)}`,
+          ...(script ? { scriptJson: script } : {}),
+          ...(args.dubbing ? {} : { dubbing: 'breeze' }),   // 从草稿转的任务默认 breeze（离线、效果稳），主人指定了就听主人的
+        };
+        const r = await run(sub, env);
+        if (r && r.ok && r.jobId) {
+          Ops.saveScriptDraft(dataRoot, { id: d.id, usedJobId: r.jobId });
+        }
+        return r;
+      }
+      return { ok: false, error: '未知 draft 子操作：' + op + '（save/list/get/del/submit）' };
     }
 
     // ── 查看 ────────────────────────────────────────────────────
@@ -573,7 +659,7 @@ export async function run(args = {}, env = {}) {
       return {
         ok: false,
         error: '未知 action：' + action,
-        actions: ['plan', 'list', 'show', 'approve', 'reject', 'publish', 'rename', 'comment', 'engage', 'records', 'status'],
+        actions: ['plan', 'draft', 'list', 'show', 'approve', 'reject', 'publish', 'rename', 'comment', 'engage', 'records', 'status'],
       };
   }
 }
