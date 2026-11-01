@@ -147,7 +147,8 @@ setInterval(() => { /* 清理孤儿任务由 25s 超时兜底 */ }, 30000).unref
 
 const AGENT_PATH_RE = /^\/api\/qqbot-settings\/(pet-anim|pet-media|pet-status|pet-share)$/; // 双白名单之一（云端侧）
 const MEDIA_FORMS = 'xiaolan|classic|de|muu'; // 四形态静态素材目录（部署时随包分发）
-const MEDIA_RE = /^[^/\\]+\.webm$/; // 文件名可含中文；禁路径分隔符即禁穿越
+const MEDIA_RE = /^[^/\\]+\.(webm|mp4)$/; // 文件名可含中文；禁路径分隔符即禁穿越
+const MEDIA_TYPE = { webm: 'video/webm', mp4: 'video/mp4' };
 
 // ── 桌宠页面（从 pet-panel v5 页面适配：素材走 /media 静态，404 回退中继）──
 import { PAGE_HTML, loginHtml } from './gate-page.mjs';
@@ -182,7 +183,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── 静态素材（免登录？不 —— 也要登录，防素材被扫）──
-  const mMedia = new RegExp(`^\\/media\\/(${MEDIA_FORMS})\\/([^/\\\\]+\\.webm)$`).exec(decodeURIComponent(u.pathname));
+  const mMedia = new RegExp(`^\\/media\\/(${MEDIA_FORMS})\\/([^/\\\\]+\\.(?:webm|mp4))$`).exec(decodeURIComponent(u.pathname));
   if (mMedia) {
     const sid = authCookie(req);
     if (!sid || !seats.has(sid)) return reply(res, 401, { ok: false, message: '请先登录' });
@@ -190,7 +191,8 @@ const server = http.createServer(async (req, res) => {
     const p = join(ROOT, 'media', mMedia[1], mMedia[2]);
     if (!existsSync(p)) return reply(res, 404, { ok: false, message: 'fallthrough' }); // 前端回退到中继
     const buf = readFileSync(p);
-    return reply(res, 200, buf, 'video/webm', { 'cache-control': 'private, max-age=3600' });
+    const ext = mMedia[2].split('.').pop();
+    return reply(res, 200, buf, MEDIA_TYPE[ext] || 'video/webm', { 'cache-control': 'private, max-age=3600' });
   }
 
   // ── 登录 ──
