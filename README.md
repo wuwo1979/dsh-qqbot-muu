@@ -215,27 +215,33 @@ overlay 体系保留作为备份与迁移工具。
 
 </details>
 
-## 🔒 访问控制（默认拒绝陌生人）
+## 🔒 访问控制（默认只认特别关心）
 
-**装完默认谁都不回话**：`c2cMode` / `groupMode` 默认 `allowlist` 且白名单为空 → 任何私聊 / @ 都不进 AI，零 token 消耗（早期版本默认全开，v0.1.5 起改为安全默认）。
+**装完默认只回应你的特别关心**：`c2cMode` / `groupMode` 默认 `care` ——
+私聊只回应「特别关心的人」（`group-tiers.json` 的 `priorityPeople`），
+群聊只响应「特别关心群」（`priority`）。名单和人格体系**同源**：
+浮窗/命令里把谁设成特别关心，谁就能聊，改完即时生效（5s 内），不用碰配置。
+（早期版本默认全开，v0.1.5 起改为安全默认。）
 
-三档可选（配置 `access` 段）：
+四档可选（配置 `access` 段）：
 
 | 模式 | 行为 | 适合 |
 |---|---|---|
-| `allowlist`（默认） | 只回白名单内的会话 | 有外部用户时 |
-| `open` | 任何人可用 | 只有自己在用的私人实例 |
+| `care`（默认） | 只认特别关心的人/群 + 白名单 | 有固定圈子的私人实例 |
+| `allowlist` | 只回白名单内的会话 | 名单自己维护时 |
+| `open` | 任何人可用 | 完全公开的 bot |
 | `disabled` | 完全关闭该通道 | 只要桌宠不要聊天 |
 
 ```yaml
 access:
-  c2cMode: allowlist
-  c2cAllow: ['你的用户openid']   # "*" = 全部放行
-  groupMode: allowlist
-  groupAllow: ['群openid']
+  c2cMode: care
+  c2cAllow: ['额外放行的用户openid']   # 叠加在特别关心之上；"*" = 全部放行
+  groupMode: care
+  groupAllow: ['额外放行的群openid']
 ```
 
 > 不知道 openid？试者在群里 @ 她一句，然后 `harness.log` 搜 `not in allowlist`，括号里就是；
+> care/allowlist 名单为空时启动日志会打醒目提示（不会静默）。
 > 拒绝时日志会打醒目提示（不会静默）。
 
 ## 🔒 隐私

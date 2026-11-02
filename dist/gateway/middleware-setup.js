@@ -14,8 +14,10 @@ function readAutoRecallFromDiskMw(cfg) {
 }
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { errorHandler, messageFilter, accessPolicy, mentionGate, contentSanitizer, slashCommand, concurrencyGuard, typingIndicator, quoteRef, envelopeFormatter, } from '@tencent-connect/qqbot-nodejs';
 import { dataRootOf, stickerDirOf } from './data-root.js';
+import { accessScopeOf, careEmptyHint } from './access-care.js';
 import { buildCommandList } from '../commands/index.js';
 import { attachmentProcessor } from '../middleware/attachment.js';
 import { mediaHistoryBuffer } from '../middleware/media-history.js';
@@ -133,28 +135,21 @@ pluginCtx) {
     });
     // 2. 消息过滤：bot 回声 + 消息去重
     bot.use(messageFilter({ skipSelfEcho: false }));
-    // 3. 访问控制（白名单/开放/禁用）
-    //    2026-11-02 安全修复：删除「空白名单回落 ['*']」——那会让 allowlist 模式形同虚设
-    //    （装完任何 QQ 用户/群都能私聊或 @ 机器人）。现在空白名单 = 拒绝所有人，并打醒目日志指路。
-    for (const [label, mode, allow] of [
-        ['C2C(私聊)', config.access.c2cMode, config.access.c2cAllow],
-        ['群聊', config.access.groupMode, config.access.groupAllow],
+    // 3. 访问控制（care=特别关心 / 白名单 / 开放 / 禁用）
+    //    2026-11-02 安全修复：默认 care —— 私聊只放行「特别关心的人」(priorityPeople)，
+    //    群聊只放行「特别关心群」(priority)，复用 group-tiers.json（人格体系同源，零额外配置）。
+    //    旧版两个洞一并堵上：① 默认 open；② 空白名单回落 ['*']（allowlist 形同虚设）。
+    const dataRoot = dataRootOf(config);
+    for (const [label, kind, mode, allow] of [
+        ['C2C(私聊)', 'c2c', config.access.c2cMode, config.access.c2cAllow],
+        ['群聊', 'group', config.access.groupMode, config.access.groupAllow],
     ]) {
-        if (mode === 'allowlist' && allow.length === 0) {
-            logger.warn(`[访问控制] ${label} 为 allowlist 模式但白名单为空 → 所有${label}消息将被拒绝。` +
-                `放行方法：在配置 access 段把对应 Allow 数组填上 openid（可在 harness.log 搜 "not in allowlist" 拿到）；` +
-                `或把 c2cMode/groupMode 显式设为 "open"（无门槛，任何人可用）；"*" 通配符=全部放行。`);
-        }
+        const hint = careEmptyHint(kind, mode, allow, dataRoot);
+        if (hint) logger.warn(`[访问控制] ${label} ${hint}`);
     }
     bot.use(accessPolicy({
-        c2c: {
-            mode: config.access.c2cMode,
-            allow: config.access.c2cAllow,
-        },
-        group: {
-            mode: config.access.groupMode,
-            allow: config.access.groupAllow,
-        },
+        c2c: accessScopeOf('c2c', config.access.c2cMode, config.access.c2cAllow, dataRoot),
+        group: accessScopeOf('group', config.access.groupMode, config.access.groupAllow, dataRoot),
         onBlock: (_mCtx, reason) => {
             if (config.debug) {
                 logger.debug(`Access blocked: ${reason}`);
