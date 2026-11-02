@@ -126,6 +126,7 @@ B 站扫码登录（Cookie 只落本机）、分享卡片、发/删动态、AI �
 
 - **Node.js ≥ 22.5**（用到内置 `node:sqlite`）
 - **DSH 桌面端**（[下载地址](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)）
+- **QQ 机器人凭据**：在 [QQ 开放平台](https://q.qq.com) 创建机器人拿到 `QQBOT_APPID` / `QQBOT_SECRET`（设置成环境变量或写进 bot 数据根的配置）
 - 可选增强（缺了会自动降级，不会带病跑）：Python + Pillow（视频文字动效）、ffmpeg（音效与拼片）、Ollama（本地代答/打标/向量）
 
 ### 1. 安装插件（三选一）
@@ -213,6 +214,29 @@ node qqbot-mod/patches/live-overlay/install.mjs --apply
 overlay 体系保留作为备份与迁移工具。
 
 </details>
+
+## 🔒 访问控制（默认拒绝陌生人）
+
+**装完默认谁都不回话**：`c2cMode` / `groupMode` 默认 `allowlist` 且白名单为空 → 任何私聊 / @ 都不进 AI，零 token 消耗（早期版本默认全开，v0.1.5 起改为安全默认）。
+
+三档可选（配置 `access` 段）：
+
+| 模式 | 行为 | 适合 |
+|---|---|---|
+| `allowlist`（默认） | 只回白名单内的会话 | 有外部用户时 |
+| `open` | 任何人可用 | 只有自己在用的私人实例 |
+| `disabled` | 完全关闭该通道 | 只要桌宠不要聊天 |
+
+```yaml
+access:
+  c2cMode: allowlist
+  c2cAllow: ['你的用户openid']   # "*" = 全部放行
+  groupMode: allowlist
+  groupAllow: ['群openid']
+```
+
+> 不知道 openid？试者在群里 @ 她一句，然后 `harness.log` 搜 `not in allowlist`，括号里就是；
+> 拒绝时日志会打醒目提示（不会静默）。
 
 ## 🔒 隐私
 

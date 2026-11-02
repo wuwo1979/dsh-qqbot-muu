@@ -134,14 +134,26 @@ pluginCtx) {
     // 2. 消息过滤：bot 回声 + 消息去重
     bot.use(messageFilter({ skipSelfEcho: false }));
     // 3. 访问控制（白名单/开放/禁用）
+    //    2026-11-02 安全修复：删除「空白名单回落 ['*']」——那会让 allowlist 模式形同虚设
+    //    （装完任何 QQ 用户/群都能私聊或 @ 机器人）。现在空白名单 = 拒绝所有人，并打醒目日志指路。
+    for (const [label, mode, allow] of [
+        ['C2C(私聊)', config.access.c2cMode, config.access.c2cAllow],
+        ['群聊', config.access.groupMode, config.access.groupAllow],
+    ]) {
+        if (mode === 'allowlist' && allow.length === 0) {
+            logger.warn(`[访问控制] ${label} 为 allowlist 模式但白名单为空 → 所有${label}消息将被拒绝。` +
+                `放行方法：在配置 access 段把对应 Allow 数组填上 openid（可在 harness.log 搜 "not in allowlist" 拿到）；` +
+                `或把 c2cMode/groupMode 显式设为 "open"（无门槛，任何人可用）；"*" 通配符=全部放行。`);
+        }
+    }
     bot.use(accessPolicy({
         c2c: {
             mode: config.access.c2cMode,
-            allow: config.access.c2cAllow.length > 0 ? config.access.c2cAllow : ['*'],
+            allow: config.access.c2cAllow,
         },
         group: {
             mode: config.access.groupMode,
-            allow: config.access.groupAllow.length > 0 ? config.access.groupAllow : ['*'],
+            allow: config.access.groupAllow,
         },
         onBlock: (_mCtx, reason) => {
             if (config.debug) {

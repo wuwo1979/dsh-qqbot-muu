@@ -25,9 +25,11 @@
         processingTimeoutMs: 120000
         historyLimit: 10
         access:
-          c2cMode: open
+          # 安全默认：allowlist + 空白名单 = 拒绝所有陌生人（2026-11-02 市场合规）。
+          # 想全开：改 open；想精准放行：往 Allow 数组填 openid（harness.log 搜 "not in allowlist" 可取）
+          c2cMode: allowlist
           c2cAllow: []
-          groupMode: open
+          groupMode: allowlist
           groupAllow: []
         debug: false
 
