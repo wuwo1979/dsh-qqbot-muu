@@ -1,7 +1,7 @@
 url: https://github.com/wuwo1979/dsh-qqbot-muu
 name: wuwo1979/dsh-qqbot-muu
 category: identity
-tarball: https://github.com/wuwo1979/dsh-qqbot-muu/releases/download/v0.1.6/dsh-qqbot-muu-0.1.6.tgz
+tarball: https://registry.npmjs.org/dsh-qqbot-muu/-/dsh-qqbot-muu-0.1.6.tgz
 icon: https://raw.githubusercontent.com/wuwo1979/dsh-qqbot-muu/main/assets/icon.png
 description:
   en: 'Standalone QQ-bot extension pack for DeepSeek Harness — fully independent, no other plugin required. Two-layer SQLite memory with hippocampal recall, a persona that keeps learning from daily chats, group tiers, local-model quick replies with a single-brain arbiter, TTS outbox, sticker library, an approval-gated video studio, and a four-form desktop pet (three custom characters plus the stock fish) playable over a public invite link with access-code login, single seat and brute-force protection. Chat bridging is deny-by-default: c2c/group access defaults to a care mode that only responds to the special-cared people and groups of the owner (shared with the persona system, zero extra config); allowlist, open and disabled modes remain available. v0.1.6 makes a fresh install work out of the box: first-run defaults (persistent inbound dedupe, configurable outbound-hook budget, optional default permission preset, extension seeding) are written only where nothing was configured and never overwrite user changes; interview and quiz practice run inside chat with local scoring and configurable transcript retention.'
