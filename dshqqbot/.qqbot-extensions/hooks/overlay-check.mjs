@@ -11,11 +11,44 @@
 //
 // 自检方式：不依赖哈希基线（升级后行号/内容会漂），而是按「功能标记」检查——
 // 每个定制在代码里都有唯一注释标记或特征串，标记在 = 补丁在。
-import { readFileSync, existsSync, mkdirSync, writeFileSync, openSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import {
+  readFileSync, existsSync, mkdirSync, writeFileSync, openSync,
+} from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { toLocalFull } from '../lib/timefmt.mjs'
 
 /** 追加模式句柄（后台重放日志用） */
 function fsOpenAppend(p) { try { return openSync(p, 'a') } catch { return 'ignore' } }
+
+/** 自检快照目录：优先 env.dataRoot（与其它扩展存档同口径），否则用本文件旁边的 data/ */
+const SNAPSHOT_DIR = (() => {
+  try { return fileURLToPath(new URL('./data/', import.meta.url)) } catch { return '' }
+})()
+
+/**
+ * 写自检快照 —— ★ 2026-11-08：**任何分支都要写**。
+ * 之前只在“找到宿主目录且跑完探针”时才写，早退（找不到宿主）和异常路径都不落盘，
+ * 导致 overlay-check.json 的 mtime / at 长期停在旧时间，看起来像“检测没跑”。
+ * at 是本次检测时刻；atText / atIso 是它的本地与 ISO 文本。
+ */
+function writeSnapshot(env, out) {
+  try {
+    const at = Number(out?.at) || Date.now()
+    const data = {
+      ...out,
+      at,
+      atText: toLocalFull(at),
+      atIso: new Date(at).toISOString(),
+    }
+    const d = env?.dataRoot
+      ? join(env.dataRoot, '.qqbot-extensions', 'hooks', 'data')
+      : SNAPSHOT_DIR
+    if (!d) return
+    mkdirSync(d, { recursive: true })
+    writeFileSync(join(d, 'overlay-check.json'), JSON.stringify(data, null, 1), 'utf8')
+  } catch { /* 快照写不了不影响自检 */ }
+}
 
 export async function run(env) {
   const logger = env.logger || console
@@ -42,7 +75,12 @@ export async function run(env) {
         if (!best || newer) best = { dir, v, mt, name }
       }
     } catch { }
-    if (!best) { logger.warn?.('[overlay-check] 找不到 live 宿主目录，跳过自检'); return 'no-host' }
+    if (!best) {
+      out.error = 'no-host'
+      logger.warn?.('[overlay-check] 找不到 live 宿主目录，跳过自检')
+      writeSnapshot(env, out)
+      return 'no-host'
+    }
     hostDir = best.dir
 
     // 每个定制一个探针：{ 文件, 标记, 说明, 补丁脚本 }
@@ -76,11 +114,7 @@ export async function run(env) {
     }
 
     // 写自检结果（供浮窗/人工查看）
-    try {
-      const d = join(env.dataRoot || '', '.qqbot-extensions', 'hooks', 'data')
-      mkdirSync(d, { recursive: true })
-      writeFileSync(join(d, 'overlay-check.json'), JSON.stringify(out, null, 1), 'utf8')
-    } catch { }
+    writeSnapshot(env, out)
 
     if (out.ok) {
       logger.info?.(`[overlay-check] 补丁自检通过：${out.checks.length}/${out.checks.length}（宿主 ${best.name}）`)
@@ -130,6 +164,9 @@ export async function run(env) {
     return out.ok ? 'ok' : `missing:${out.missing.length}`
   } catch (e) {
     try { logger.warn?.('[overlay-check] 自检异常（不影响启动）：' + String((e && e.message) || e)) } catch { }
+    out.ok = false
+    out.error = String((e && e.message) || e)
+    writeSnapshot(env, out)
     return 'error'
   }
 }

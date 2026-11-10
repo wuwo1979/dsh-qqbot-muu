@@ -53,6 +53,8 @@ const CARD_EXPIRE_MS = 10 * 60_000;
 const MAX_PAGE_MS = 30 * 60_000;
 const TOOL = '会话列表';                   // ★ 必须与文件名/注册名一致
 
+import { toLocalStamp } from '../lib/timefmt.mjs';
+
 const STEPS = ['workspace', 'session', 'mode'];
 const STEP_CN = {
   workspace: '工作区',
@@ -136,7 +138,7 @@ async function saveState(ctx, cardId, st) {
     const keys = Object.keys(all);
     if (keys.length > 20) for (const k of keys.slice(0, keys.length - 20)) delete all[k];
     mkdirSync(dirname(f), { recursive: true });
-    writeFileSync(f, JSON.stringify(all));
+    writeFileSync(f, JSON.stringify(all), 'utf8');
     return true;
   } catch { return false; }
 }
@@ -155,7 +157,7 @@ async function dropState(ctx, cardId) {
   try {
     const { readFileSync, writeFileSync } = await import('node:fs');
     const all = JSON.parse(readFileSync(stateFileOf(ctx), 'utf8')) ?? {};
-    if (all[cardId]) { delete all[cardId]; writeFileSync(stateFileOf(ctx), JSON.stringify(all)); }
+    if (all[cardId]) { delete all[cardId]; writeFileSync(stateFileOf(ctx), JSON.stringify(all), 'utf8'); }
   } catch { /* ignore */ }
 }
 
@@ -190,7 +192,7 @@ async function regCardSelf(ctx, cardId, buttonIds) {
     table.cards.push({ toolName: TOOL, cardId, buttonIds, scope, targetId, createdAt: now, expireAt: now + CARD_EXPIRE_MS });
     if (table.cards.length > 200) table.cards = table.cards.slice(-200);
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(table, null, 2));
+    writeFileSync(file, JSON.stringify(table, null, 2), 'utf8');
     return true;
   } catch { return false; }
 }
@@ -472,10 +474,15 @@ async function optionsOfRaw(ctx, step, st) {
           seen.add(b);
           return !ws || s.cwd === ws;
         });
-        // 排序：**能叫出名字的（live 有标题）排最前** → 再按创建时间新在前。
-        // 理由：已结束的会话宿主里没有标题（见 liveMap 注释），只能靠时间认。
+        // 最后活动时间（2026-11-08 修）：宿主 header 只有 createdAt（创建时间），
+        // 长期会话会一直停在创建那一刻；改用扫盘拿会话文件最新 mtime，拿不到才退回创建时间。
+        // 排序：**能叫出名字的（live 有标题）排最前** → 再按最后活动新在前。
+        const dirsAll = lib.listSessionDirs();
+        const lastMap = new Map();
+        for (const d of dirsAll) lastMap.set(bareId(d.id), d.mtime || 0);
+        const lastOf = (s) => lastMap.get(bareId(s.id)) || s.createdAt || 0;
         const score = (s) => (live.get(bareId(s.id))?.title ? 1 : 0);
-        mine.sort((a, b) => (score(b) - score(a)) || (b.createdAt - a.createdAt));
+        mine.sort((a, b) => (score(b) - score(a)) || (lastOf(b) - lastOf(a));
         const shown = mine.slice(0, 80);
         const named = mine.filter((s) => live.get(bareId(s.id))?.title).length;
         LAST_SCOPE = `${mine.length} 个会话（${named} 个在线有名）`;
@@ -483,19 +490,19 @@ async function optionsOfRaw(ctx, step, st) {
         return shown.map((s) => {
           const info = live.get(bareId(s.id));
           const t = info?.title ?? '';
-          const when = s.createdAt
-            ? new Date(s.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-            : '—';
+          const last = lastOf(s);
+          const hasLast = !!lastMap.get(bareId(s.id));
+          const when = last ? toLocalStamp(last) : '—';
           const tag = info ? '🟢' : '⚪';
           const id8 = bareId(s.id).slice(0, 8);
           const head = t ? short(t, 24) : id8;
-          return { value: s.id, label: `${tag} ${head}${t ? ` · ${id8}` : ''} · ${when}` };
+          return { value: s.id, label: `${tag} ${head}${t ? ` · ${id8}` : ''} · ${when}${hasLast ? '' : ' ·创建'}` };
         });
       }
       const dirs = lib.listSessionDirs(ws || undefined);
       void diag(`[opts] session 回退扫盘 ws=${ws} 得到 ${dirs.length} 个`);
       return dirs.map((s) => {
-        const when = s.mtime ? new Date(s.mtime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+        const when = s.mtime ? toLocalStamp(s.mtime) : '—';
         const isSub = s.id.startsWith('session-') ? '子会话 ' : '';
         return { value: s.id, label: `${s.short}  ${isSub}${when}` };
       });

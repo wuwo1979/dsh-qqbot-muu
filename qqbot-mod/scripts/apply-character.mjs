@@ -12,15 +12,17 @@
  *   node qqbot-mod/scripts/apply-character.mjs --apply    # 生成并写入线上配置
  *   node qqbot-mod/scripts/apply-character.mjs --apply --url http://127.0.0.1:43129
  *   node qqbot-mod/scripts/apply-character.mjs --check    # 只对比线上与生成结果的差异
+ *   node qqbot-mod/scripts/apply-character.mjs --snapshot # 把生成结果同步到 persona/group-prompt.md
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MOD = join(HERE, '..');
 const CHAR_PATH = join(MOD, 'persona', 'character.json');
+const SNAPSHOT_PATH = join(MOD, 'persona', 'group-prompt.md');
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
@@ -60,7 +62,7 @@ export function renderPrompt(c) {
   const fb = sp.forbidBehaviors || [];
   for (const x of fb) l.push(`不${x.replace(/^不/, '')}。`);
   if ((sp.tics || []).length) {
-    l.push(`结尾偶尔带「${sp.tics[0]}」或「${sp.tics[1] || sp.tics[0]}」，别每句都带。`);
+    l.push(`偶尔在句尾带「${sp.tics[0]}」或「${sp.tics[1] || sp.tics[0]}」，${sp.ticsNote || '随机二选一，不必每句都带'}。`);
   }
 
   l.push('');
@@ -86,10 +88,23 @@ export function renderPrompt(c) {
   l.push('同一个人只用一个称呼：主人叫 MuU、你自己习惯说小蓝，是同一个人；妈妈就是妈妈、爸爸就是爸爸，别再给他们造第二个身份。');
 
   l.push('');
+  l.push('# 把话往前带（引导，不是审问）');
+  const gu = c.guidance || {};
+  for (const x of (gu.rules || [])) l.push(`- ${x}`);
+  if ((gu.forbid || []).length) {
+    l.push('绝对不要：');
+    for (const x of gu.forbid) l.push(`- ${x}`);
+  }
+
+  l.push('');
+  l.push('# 先听懂再回');
+  for (const x of ((c.understanding || {}).rules || [])) l.push(`- ${x}`);
+
+  l.push('');
   l.push('# 什么时候闭嘴');
   l.push('技术问答、找资源、吵架互怼：不抢话，除非被点名。');
   l.push('有人难过、聊严肃事：只陪着，不发图、不玩梗。');
-  l.push('冷场、没人接话：不硬找话题。');
+  l.push('冷场、没人接话：先收住，不硬找话题；对方还在等你时，按「把话往前带」递一个具体小钩子。');
 
   l.push('');
   l.push('# 不确定就装鲸鱼');
@@ -142,7 +157,8 @@ export function renderPrompt(c) {
   l.push('');
   l.push('# 表情包（只在这几种时候发）');
   l.push('满屏哈哈/笑死、有人抛梗你接住、有人当面夸你、轻度吐槽 → 回复末尾附 1 张。');
-  l.push('先 list_stickers 搜，命中率不到九成就不发。');
+  l.push('先用 sticker_send 搜（默认只回候选 id 和短标签，不占上下文）；可按情绪/场景/动作/强度/平台组合过滤，命中率不到九成就不发。');
+  l.push('要发就把 [STICKER:id] 原样放回复末尾，系统会换成图；别写路径、文件名或长描述。');
   l.push('冷场、正事、吵架、对方难过、私聊 → 一张都不发。');
   l.push('发离谱/冒犯/色情/羞辱人的图 = 人设崩塌。');
 
@@ -190,6 +206,11 @@ async function main() {
   console.log('─'.repeat(60));
   console.log(prompt);
   console.log('─'.repeat(60));
+
+  if (has('--snapshot')) {
+    writeFileSync(SNAPSHOT_PATH, prompt + '\n', 'utf8');
+    console.log('✓ 已同步快照：' + SNAPSHOT_PATH);
+  }
 
   if (has('--check')) {
     const cur = await apiRead();

@@ -34,6 +34,7 @@ import { stickerActivityRecorder } from '../features/sticker-gate.js';
 import { chatLedgerRecorder } from '../features/chat-ledger.js';
 import { debounceLayer, injectSynthetic } from './debounce.js';
 import { faceTagResolver } from '../features/face-tags.js';
+import { createInboundDedupeMiddleware } from '../features/inbound-dedupe.js';
 export async function setupMiddlewares(bot, config, manager, logger, 
 /** ★ 插件的 cordis ctx —— 传给自定义命令当"内核句柄"（env.ctx），见 ext-capabilities.ts */
 pluginCtx) {
@@ -135,6 +136,20 @@ pluginCtx) {
     });
     // 2. 消息过滤：bot 回声 + 消息去重
     bot.use(messageFilter({ skipSelfEcho: false }));
+    // 2.5 持久化入站去重（0.1.6）：SDK 的 messageFilter 只有内存 5 秒窗口，
+    //     断线重连/重启后积压帧会重放 ⇒ 同一句话回两遍（用户说的"重复发送会话"）。
+    //     这里按 messageId 落盘去重，窗口默认 120 秒，`runtime.inboundDedupeTtlSec=0` 可关。
+    //     ⚠️ 必须在 accessPolicy 之前：被去重丢掉的重复帧不该再走一遍访问控制/历史缓冲。
+    try {
+        bot.use(createInboundDedupeMiddleware({
+            dataRoot: dataRootOf(config),
+            ttlSec: Number(config.runtime?.inboundDedupeTtlSec ?? 120),
+            logger,
+        }));
+    }
+    catch (err) {
+        logger.warn(`im-qqbot: 入站去重未启用(不影响收消息): ${err instanceof Error ? err.message : String(err)}`);
+    }
     // 3. 访问控制（care=特别关心 / 白名单 / 开放 / 禁用）
     //    2026-11-02 安全修复：默认 care —— 私聊只放行「特别关心的人」(priorityPeople)，
     //    群聊只放行「特别关心群」(priority)，复用 group-tiers.json（人格体系同源，零额外配置）。

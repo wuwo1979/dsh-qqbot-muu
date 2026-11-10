@@ -119,20 +119,37 @@ export async function onOutbound(ctx, next) {
     const parts = splitBubbles(text, num(cfg.maxBubbles, 3));
     if (parts.length < 2 || typeof ctx.rewrite !== 'function') return next();
 
+    // 2026-11-03 修（真机：私聊出现「两条尾句 + 一整条合并原文」）：
+    //   `await next()` **不等于**"把正文发出去" —— outbound-buffer 是在整条链跑完后，
+    //   才用改写结果去发正文。旧写法在链里 await 补发后两条，导致：
+    //     ① 顺序反了：尾巴先到、头（parts[0]）最后才到；
+    //     ② 补发 + 700ms 间隔把链拖过 3000ms 硬超时 ⇒ 宿主放弃改写、按**原文**整条再发一遍，
+    //        于是"睡饱了…？""说吧，什么事。"后面又跟一条完整的合并原文。
+    //   现在只把第一条留给正文，其余丢进 ctx.background 在正文发出之后补发：
+    //   链毫秒级返回，永不触碰 3s 超时；失败最多丢尾巴，绝不重复正文。
     ctx.rewrite(parts[0]);
-    await next();                                   // 先发第一条（正文）
+    await next();
 
     const gap = Math.max(200, Math.min(4000, num(cfg.gapMs, 700)));
-    for (let i = 1; i < parts.length; i += 1) {
-      await sleep(gap);
-      try {
-        if (typeof ctx.send === 'function') await ctx.send(parts[i]);
-      } catch (e) {
+    const flush = async () => {
+      for (let i = 1; i < parts.length; i += 1) {
+        await sleep(gap);
+        if (typeof ctx.send !== 'function') return;
+        await ctx.send(parts[i]);
+      }
+      ctx?.logger?.debug?.(`[split] 连发 ${parts.length} 条`);
+    };
+    if (typeof ctx.background === 'function') {
+      // 后台补发：先等正文那一跳走完（gap 已 ≥200ms），再逐条发尾巴
+      ctx.background(() => flush().catch((e) => {
         ctx?.logger?.debug?.(`[split] 补发失败(已忽略): ${e instanceof Error ? e.message : String(e)}`);
-        return;
+      }));
+    } else {
+      // 老宿主没有 background：退回链内补发（仍可能超时，但不至于丢条）
+      try { await flush(); } catch (e) {
+        ctx?.logger?.debug?.(`[split] 补发失败(已忽略): ${e instanceof Error ? e.message : String(e)}`);
       }
     }
-    ctx?.logger?.debug?.(`[split] 连发 ${parts.length} 条`);
     return;
   } catch (e) {
     ctx?.logger?.debug?.(`[split] 异常(已忽略): ${e instanceof Error ? e.message : String(e)}`);

@@ -4177,6 +4177,20 @@ function extCfgPath(root, which) {
       return writeJson(res, 200, { ok: false, error: String((e && e.message) || e), jobs: [], records: [], drafts: [] });
     }
   });
+  // [qqbot-mod] live 2026-11-07：直播（B 站社区长连 / 抖音占位）—— 浮窗运营中心调用
+  route(ctx, 'POST', '/api/qqbot-settings/live', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const root = resolveMemoryRoot(nsBot(NSQ(u)));
+      if (!root) return writeJson(res, 200, { ok: false, error: '没有数据根' });
+      const body = await readJsonBody(req).catch(() => ({}));
+      const mod = await import('file:///' + join(root, '.qqbot-extensions', 'live', 'index.mjs').split(String.fromCharCode(92)).join('/'));
+      const out = await mod.panel(root, body || {}, {});
+      return writeJson(res, 200, out || { ok: false, error: '空返回' });
+    } catch (e) {
+      return writeJson(res, 200, { ok: false, error: String((e && e.message) || e).slice(0, 120) });
+    }
+  });
   route(ctx, 'POST', '/api/qqbot-settings/bili', async (req, res) => {
     try {
       const u = new URL(req.url ?? '/', 'http://x');

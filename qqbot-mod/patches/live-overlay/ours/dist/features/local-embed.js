@@ -172,7 +172,11 @@ export function createLocalEmbedder(opts = {}) {
                 const assets = checkModelAssets(modelDir, spec.dtype);
                 if (!assets.ok)
                     throw new Error(`模型文件缺失(${assets.missing.join(', ')}) —— 请在面板「单会话设置」里下载或指定目录`);
-                const mod = (await import('@huggingface/transformers'));
+                // 2026-11-05: 裸说明符在部署目录下解析不到（pnpm 树里没这个包，npm 装进插件目录
+                //   或 F:/qqbot/node_modules 又会被 pnpm 画进宿主依赖图拖死安装）→
+                //   回退到 vendor 隔离目录的绝对路径导入（见 vendor/hf-transformers/package.json 说明）。
+                const mod = (await import('@huggingface/transformers')
+                    .catch(() => import('file:///F:/qqbot/vendor/hf-transformers/node_modules/@huggingface/transformers/dist/transformers.node.mjs')));
                 if (!mod?.pipeline)
                     throw new Error('@huggingface/transformers 不可用');
                 mod.env.allowRemoteModels = false; // 全离线, 不上传任何内容

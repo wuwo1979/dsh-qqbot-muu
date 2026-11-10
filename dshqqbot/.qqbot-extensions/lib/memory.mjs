@@ -126,6 +126,7 @@ export const getPersona = _impl.getPersona || emptyArr;
 export const getPersonaValue = _impl.getPersonaValue || (() => null);
 export const listPersona = _impl.listPersona || emptyArr;
 export const forgetPersona = _impl.forgetPersona || falseRet;
+export const deletePersona = _impl.deletePersona || (() => ({ ok: false, reason: 'persona 只在 sqlite 后端可用' }));
 
 // ── 维护用（清洗/权重/库文件路径）──────────────────────────────────────
 // cleanMemText 两边都有实现；weightOf / dbFile 只有 sqlite 版才有意义。

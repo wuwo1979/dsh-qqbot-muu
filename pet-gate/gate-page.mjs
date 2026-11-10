@@ -62,7 +62,8 @@ export const PAGE_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div class="row" id="forms"></div><div class="row" id="anims"></div><div class="row" id="pool"></div>
 <div class="row"><button id="rnd">🎲 逗逗TA</button></div>
 <div id="st">连接中…</div>
-<div class="fam" id="fam" style="display:none"></div>
+<!-- 好感度榜已摘掉：公网页面不展示他人昵称/互动分（隐私取舍，见 docs/安全审查）。需要恢复时把下面这行放回即可。
+<div class="fam" id="fam" style="display:none"></div> -->
 <footer style="opacity:.85">私享链接：访问码只给一个人，重置后旧会话立即失效。<br>她在那台电脑的桌面上同步做动作 · 按钮随时逗她</footer>
 <script>
 var F=null;var V=document.getElementById('v');

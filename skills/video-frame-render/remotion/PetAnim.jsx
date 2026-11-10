@@ -57,7 +57,9 @@ function poseState(seq, f) {
       break;
     }
   }
-  const mix = clamp01((f - boundary) / 3); // 3 帧交叉淡入
+  // 交叉淡入只在不同姿势之间才需要。同一姿势（待机循环、同一段内反复取模）如果也做
+  // 淡入，mix 在边界恒为 0 → 角色整帧完全透明 → 每秒闪一下（2026-11-08 定案根因）。
+  const mix = cur === prev ? 1 : clamp01((f - boundary) / 3); // 3 帧交叉淡入
   return { cur, prev, mix };
 }
 

@@ -1,0 +1,8 @@
+{
+  "backgrounds": [
+    { "id": "sea-mist", "name": "海雾蓝", "file": "sea-mist.svg" },
+    { "id": "sakura", "name": "樱花粉", "file": "sakura.svg" },
+    { "id": "night-sky", "name": "星夜深蓝", "file": "night-sky.svg" },
+    { "id": "mint", "name": "薄荷青", "file": "mint.svg" }
+  ]
+}

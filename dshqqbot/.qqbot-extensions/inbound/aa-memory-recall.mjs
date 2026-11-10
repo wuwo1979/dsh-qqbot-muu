@@ -17,6 +17,8 @@
  */
 
 // 存储后端在门面里选：优先 SQLite（memory-db），不可用自动回退 JSONL（memory-core）。
+import { appendFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import {
   loadConfig, recall, remember, drainInbox, digestScope, shouldDigest, formatRecallBlock, stats,
   ingestChatHistory, personProfile,
@@ -41,6 +43,8 @@ import { bedrockBlock } from '../lib/bedrock.mjs';
 import { beliefs } from '../lib/memory-hippo.mjs';
 // 表情包提醒：用会话状态记"上次发图/上次提醒"的时间（2026-10-27）
 import { getChatState, setChatState } from '../lib/chatlog-db.mjs';
+// 注入块统一预算（第 4 批「上下文统一」）：与微信侧同一套打包规则
+import { packByBudget, joinKept } from '../lib/context-budget.mjs';
 // [mmtr 2026-10-27]：会遗忘的记忆层——防自增强（刚用过的降权+只记日志）与承诺账本（[约定]块）
 import { promiseBlockFor, applyRecallGuard } from '../lib/memory-mmtr.mjs';
 
@@ -91,6 +95,16 @@ function scopeOf(ctx) {
   return '';
 }
 
+/** 注入量埋点（与微信侧 contextChars 对等）：只写字数/预算，不写消息内容与原始 scope */
+function meterInject(dataRoot, scope, chars, dropped) {
+  try {
+    const sid = createHash('sha1').update(String(scope || '')).digest('hex').slice(0, 10);
+    appendFileSync(`${dataRoot}/token-usage.jsonl`, JSON.stringify({
+      ts: Date.now(), channel: 'qq', scope: sid, chars, dropped: dropped.length,
+    }) + '\n');
+  } catch { /* 统计失败绝不影响聊天 */ }
+}
+
 /** 归一化：去 @、去空白、去标点，只留汉字/字母/数字 —— 用于自匹配判重 */
 function normText(s) {
   return String(s || '')
@@ -120,6 +134,8 @@ function stripMemoryBlock(text) {
     .replace(/\n?\[情绪回响\][\s\S]*?\[\/情绪回响\]\n?/g, '\n')
     .replace(/\n?\[手边\][^\n]*/g, '\n')
     .replace(/\n?\[约定\][\s\S]*?\[\/约定\]\n?/g, '\n')
+    // 2026-11-07：ab-understand 的意图提示也要剥掉，避免被回显后当成用户原话沉淀
+    .replace(/\n?\[听懂\][\s\S]*?\[\/听懂\]\n?/g, '\n')
     .trim();
 }
 
@@ -159,18 +175,127 @@ function worthRemembering(text, cfg) {
 // 模型照样看得见（语义不变）；只有真变了才注入一份新的（新版在后，模型取最新）。
 // 快块（[记忆]召回/[状态]/[echo]）是为当前句服务的，保持每条，但连续相同内容也跳过。
 const _slowBlockMemo = new Map(); // key: scope+'|'+tag → 上次注入文本
+let _lastRoot = 'F:/qqbot/dshqqbot'; // onInbound 每轮刷新，供 blockIfChanged 持久化记账用
 // 2026-10-29：召回源判重——key: scope → 上次实际注入的那批记忆源文本指纹。
 // 连续同话题时同一批旧记忆不再每条重发（历史里上一份仍在，模型照样看得见）。
 const _recallSrcMemo = new Map();
 // 2026-10-30 主人拍板「上下间隔不远就不至于每次都发送」：距上次召回注入 <5 分钟的消息
 // 直接跳过召回 —— 连续聊天时上一轮的 [记忆] 块还在会话历史里（全量重发模型），模型看得见。
 const _recallTimeMemo = new Map(); // scope → 上次实际注入召回块的时间戳
+
+// ── 会话账本纪元（2026-11-08，P1-4）──
+// 问题：blockIfChanged 只按 scope|tag 去重；会话轮换/压缩后旧历史被裁掉，慢块指纹却没变
+//   ⇒ 新会话里信条/印象/旧识等整套长期上下文不再注入（文档 P1-4）。
+// 解决：给账本加"纪元"维度 —— 检测到轮换/压缩时纪元 +1，所有旧账立刻失效，
+//   下一条消息强制整套注入一次；纪元本身落 chat_meta，重启后继续沿用 ⇒ 未轮换时仍续用旧账（重启不丢）。
+// 为什么不直接用 sessionId：入站 ctx 拿不到 session/event 里的 session.id（只有出站链的 session.header.id），
+//   所以改从 ctx.caps.kernel 订阅宿主事件，用"压缩/首次见到新会话"作为轮换信号。
+let _blkEpoch = null;
+let _blkEpochRoot = '';
+const _seenSessions = new Set(); // 已见过的 DSH 会话 id（最多留 40 个）
+let _seenSessionsLoaded = false;
+let _rotationHookInstalled = false;
+const ROTATION_HOOK_KEY = Symbol.for('im-qqbot.memory-block-epoch');
+
+let _bootChecked = false;
+/** 每次进程启动一个唯一戳：用来判断"这次是重启后第一次注入" */
+const BOOT_ID = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+function epochOf(root) {
+  const r = String(root || '');
+  if (_blkEpoch !== null && _blkEpochRoot === r) return _blkEpoch;
+  _blkEpochRoot = r;
+  try {
+    const n = Number(getChatState(r, 'blk-epoch')?.n);
+    _blkEpoch = Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch { _blkEpoch = 0; }
+  // 2026-11-10 主人实测「重启后印象卡失效」：慢块账本落 chat_meta，重启后照样命中"内容没变→不注入"，
+  //   可新进程的会话历史里根本没有那份块 ⇒ 卡片凭空消失。
+  //   修法：每个进程启动后把纪元 +1，重启后整套慢块重新注入一次（一次性成本，之后继续按内容去重）。
+  if (!_bootChecked) {
+    _bootChecked = true;
+    try {
+      const mark = String(getChatState(r, 'blk-boot')?.id || '');
+      if (mark !== BOOT_ID) {
+        _blkEpoch += 1;
+        _slowBlockMemo.clear();
+        _recallSrcMemo.clear();
+        _recallTimeMemo.clear();
+        try { setChatState(r, 'blk-epoch', { n: _blkEpoch, ts: Date.now() }); } catch { /* 写失败下次再写 */ }
+        try { setChatState(r, 'blk-boot', { id: BOOT_ID, ts: Date.now() }); } catch { /* 写失败下次再写 */ }
+      }
+    } catch { /* 读不到就当首次启动 */ }
+  }
+  // 已见会话集也持久化：重启后 resume 的旧会话不会被误判成"新轮换"（避免重启整套重发的旧毛病）
+  if (!_seenSessionsLoaded) {
+    try {
+      const ids = getChatState(r, 'blk-seen-sessions')?.ids;
+      if (Array.isArray(ids)) {
+        for (const x of ids.slice(-40)) {
+          const s = String(x || '').trim();
+          if (s) _seenSessions.add(s);
+        }
+      }
+    } catch { /* 读不到就当空集 */ }
+    _seenSessionsLoaded = true;
+  }
+  return _blkEpoch;
+}
+
+function bumpEpoch(reason) {
+  const root = String(_lastRoot || '');
+  epochOf(root);
+  _blkEpoch += 1;
+  // 旧账全部作废：慢块 memo + 召回源/时间闸也一起清（新会话里上一份注入 / 5 分钟闸都不再成立）
+  _slowBlockMemo.clear();
+  _recallSrcMemo.clear();
+  _recallTimeMemo.clear();
+  try { setChatState(root, 'blk-epoch', { n: _blkEpoch, ts: Date.now() }); } catch { /* 写失败下次再写 */ }
+  try { console.debug?.(`[memory] 账本纪元 → ${_blkEpoch}（${reason}）`); } catch { }
+}
+
+function installRotationHook(ctx) {
+  if (_rotationHookInstalled) return;
+  _rotationHookInstalled = true;
+  const kernel = ctx?.caps?.kernel;
+  if (!kernel || typeof kernel.on !== 'function') return; // 拿不到遥控器 → 退回旧行为
+  // 热重载会重新装载本模块：先 dispose 上一份，避免监听器累积（见 ext-capabilities.d.ts 的"铁律"）
+  try { globalThis[ROTATION_HOOK_KEY]?.dispose?.(); } catch { }
+  const handler = (session, event) => {
+    try {
+      epochOf(_lastRoot); // 顺便把已见会话集从 chat_meta 载入
+      const type = String(event?.type || '');
+      if (type === 'compaction/start') { bumpEpoch('上下文压缩'); return; }
+      const sid = String(session?.header?.id || session?.id || '').trim();
+      if (!sid || _seenSessions.has(sid)) return;
+      _seenSessions.add(sid);
+      while (_seenSessions.size > 40) _seenSessions.delete(_seenSessions.values().next().value);
+      try { setChatState(_lastRoot, 'blk-seen-sessions', { ids: [..._seenSessions], ts: Date.now() }); } catch { }
+      // 首次见到某会话 = 新建 / /bot-new 轮换（重启后 resume 的旧会话已在持久化集合里，不会误判）
+      bumpEpoch('新会话');
+    } catch { /* 事件回调绝不影响主链 */ }
+  };
+  try {
+    const dispose = kernel.on('session/event', handler);
+    globalThis[ROTATION_HOOK_KEY] = { dispose: typeof dispose === 'function' ? dispose : () => { } };
+  } catch { /* 订阅失败就退回旧行为 */ }
+}
+
 function blockIfChanged(scope, tag, text) {
-  const key = String(scope || '') + '|' + String(tag || '');
-  const prev = _slowBlockMemo.get(key) || '';
+  const root = _lastRoot;
+  const ep = epochOf(root);
+  const key = 'e' + ep + '|' + String(scope || '') + '|' + String(tag || '');
+  let prev = _slowBlockMemo.get(key);
+  // 2026-11-02 主人问「怎么每轮注入这么多」：这份"上次发过什么"的记账原来只在进程内存里，
+  //   一重启就全忘 —— 于是重启后头几条消息会把所有慢变量块**整套重发一遍**（一次上千 token）。
+  //   现在落 chat_meta（key = blk:e<纪元>:<scope>|<tag>），重启也能续上，只在真的变了才再发。
+  if (prev === undefined) {
+    try { prev = String(getChatState(root, 'blk:' + key)?.text || ''); } catch { prev = ''; }
+  }
   const cur = String(text || '');
   if (cur === prev) return '';            // 内容没变 → 不注入（历史里那份仍可见）
   _slowBlockMemo.set(key, cur);
+  try { setChatState(root, 'blk:' + key, { text: cur.slice(0, 1600), ts: Date.now() }); } catch { /* 记账失败不影响注入 */ }
   return cur;
 }
 
@@ -189,6 +314,8 @@ export async function onInbound(ctx, next) {
   if (!scope) return next();
 
   const dataRoot = dataRootOf(cfg);
+  _lastRoot = dataRoot;               // 供 blockIfChanged 把"已发过什么"落到 chat_meta
+  installRotationHook(ctx);           // P1-4：订阅会话轮换/压缩，轮换时账本纪元 +1（只装一次）
   const original = stripMemoryBlock(ctx.text);
   if (!original) return next();
 
@@ -396,7 +523,7 @@ export async function onInbound(ctx, next) {
           const h = older[0];
           const agoH = Math.floor((Date.now() - Number(h.ts)) / 3600000);
           const when = agoH >= 24 ? Math.floor(agoH / 24) + ' 天前' : (agoH >= 1 ? agoH + ' 小时前' : '刚才不久');
-          moodEchoBlock = `\n[情绪回响]TA 现在的情绪词是「${hitWord}」。你想起来：${when} 也出现过相关的记忆——「${String(h.text).replace(/\s+/g, ' ').slice(0, 90)}」。接话时可以自然地顺着那个旧事关心（像熟人那样具体，例如顺着当时的原因问「是不是又…了」），而不是干巴巴的「怎么了」。只在确实想得起时提，想不起细节就正常陪聊。[/情绪回响]`;
+          moodEchoBlock = `\n[情绪回响]TA 情绪「${hitWord}」；你记得 ${when} 也有过——「${String(h.text).replace(/\s+/g, ' ').slice(0, 45)}」。顺着旧事关心，别干巴巴问「怎么了」。[/情绪回响]`;
           ctx?.logger?.debug?.(`[mood-echo] 情绪回响已注入（词=${hitWord}，旧事=${when}）`);
         }
       }
@@ -446,7 +573,7 @@ export async function onInbound(ctx, next) {
       const gap = Date.now() - lastTs;
       const nudge = getChatState(dataRoot, 'sticker:nudge') || {};
       if (gap > 30 * 60 * 1000 && Date.now() - (Number(nudge.ts) || 0) > 30 * 60 * 1000) {
-        stickerBlock = '\n[手边]库里有很多表情包，这轮如果聊到兴头（笑、被夸、吐槽、接梗），可以顺手配一张：先 sticker_auto 或 sticker_send 搜一下，九成贴切才发；正事/难过/吵架不发。[/手边]';
+        stickerBlock = '\n[手边]表情包：sticker_auto 搜；兴头配一张，正事/难过不发。[/手边]';
         setChatState(dataRoot, 'sticker:nudge', { ts: Date.now() });
       }
     }
@@ -464,7 +591,20 @@ export async function onInbound(ctx, next) {
   //   一个 scope 只在内容变化时注入一次（历史里上一份仍在，模型照样看得见），
   //   不再每条消息重发 —— N 条消息 N 份信条的 token 线性浪费到此为止。
   const bedrock = blockIfChanged(scope, 'bedrock', bedrockBlock(dataRoot));
-  const extra = bedrock + memBlock + loreBlock + profileBlock + pastBlock + moodBlock + moodEchoBlock + promiseB + echoBlock + styleBlock + stickerBlock;
+  // ── 注入总预算（2026-11-02）：块越加越多，一条消息能带两三千字 —— 而且这些字会**永久留在对话历史里**，
+  //    每轮都在为它们付钱（复利）。所以给总长设硬上限，按优先级装，装不下的直接这轮不带（下轮内容变了还会来）。
+  const INJECT_BUDGET = Math.max(400, Number(cfg.injectBudgetChars) || 1200);
+  const parts = [
+    ['信条', bedrock], ['记忆', memBlock], ['印象', profileBlock], ['约定', promiseB],
+    ['状态', moodBlock], ['世界书', loreBlock], ['旧识', pastBlock],
+    ['反重复', echoBlock], ['说话习惯', styleBlock], ['表情包', stickerBlock], ['情绪回响', moodEchoBlock],
+  ];
+  // 打包规则与微信侧共用 lib/context-budget.mjs（同一套「超预算整块丢弃 + 记 dropped」语义）
+  const packed = packByBudget(parts, INJECT_BUDGET, 400);
+  const extra = joinKept(packed.kept);
+  const dropped = packed.dropped;
+  if (dropped.length) ctx?.logger?.debug?.(`[budget] 注入超 ${INJECT_BUDGET} 字，本轮不带：${dropped.join('、')}`);
+  if (extra) meterInject(dataRoot, scope, extra.length, dropped);
   if (extra && typeof ctx.rewrite === 'function') {
     ctx.rewrite({ text: String(ctx.text || '') + extra });
   }

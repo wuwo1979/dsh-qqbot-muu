@@ -1,0 +1,124 @@
+{
+  "generatedAt": "2026-11-08T00:03:34",
+  "built": 52,
+  "skipped": 0,
+  "outfits": [
+    {
+      "form": "xiaolan",
+      "formName": "小蓝",
+      "outfit": "default",
+      "name": "原色",
+      "poses": [
+        "idle",
+        "talk",
+        "wave",
+        "happy",
+        "point"
+      ],
+      "preview": "assets/pet-outfits/xiaolan/default/preview.png"
+    },
+    {
+      "form": "xiaolan",
+      "formName": "小蓝",
+      "outfit": "deepsea",
+      "name": "深海夜",
+      "poses": [
+        "idle",
+        "talk",
+        "wave",
+        "happy",
+        "point"
+      ],
+      "preview": "assets/pet-outfits/xiaolan/deepsea/preview.png"
+    },
+    {
+      "form": "xiaolan",
+      "formName": "小蓝",
+      "outfit": "sakura",
+      "name": "樱花粉",
+      "poses": [
+        "idle",
+        "talk",
+        "wave",
+        "happy",
+        "point"
+      ],
+      "preview": "assets/pet-outfits/xiaolan/sakura/preview.png"
+    },
+    {
+      "form": "xiaolan",
+      "formName": "小蓝",
+      "outfit": "moon",
+      "name": "月光白",
+      "poses": [
+        "idle",
+        "talk",
+        "wave",
+        "happy",
+        "point"
+      ],
+      "preview": "assets/pet-outfits/xiaolan/moon/preview.png"
+    },
+    {
+      "form": "muu",
+      "formName": "大肥鱼",
+      "outfit": "default",
+      "name": "原色",
+      "poses": [
+        "stand",
+        "talk",
+        "wave",
+        "cheer",
+        "lift",
+        "point"
+      ],
+      "preview": "assets/pet-outfits/muu/default/preview.png"
+    },
+    {
+      "form": "muu",
+      "formName": "大肥鱼",
+      "outfit": "sunset",
+      "name": "落日橘",
+      "poses": [
+        "stand",
+        "talk",
+        "wave",
+        "cheer",
+        "lift",
+        "point"
+      ],
+      "preview": "assets/pet-outfits/muu/sunset/preview.png"
+    },
+    {
+      "form": "muu",
+      "formName": "大肥鱼",
+      "outfit": "night",
+      "name": "夜行蓝",
+      "poses": [
+        "stand",
+        "talk",
+        "wave",
+        "cheer",
+        "lift",
+        "point"
+      ],
+      "preview": "assets/pet-outfits/muu/night/preview.png"
+    },
+    {
+      "form": "muu",
+      "formName": "大肥鱼",
+      "outfit": "mint",
+      "name": "薄荷青",
+      "poses": [
+        "stand",
+        "talk",
+        "wave",
+        "cheer",
+        "lift",
+        "point"
+      ],
+      "preview": "assets/pet-outfits/muu/mint/preview.png"
+    }
+  ],
+  "contactSheet": "assets/pet-outfits/contact-sheet.png"
+}

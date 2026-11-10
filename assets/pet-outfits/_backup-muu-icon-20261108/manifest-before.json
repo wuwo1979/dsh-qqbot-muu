@@ -1,0 +1,88 @@
+{
+  "schema": "pet-outfits/1",
+  "updatedAt": "2026-11-07",
+  "naming": {
+    "form": "xiaolan | muu（小写，固定两套，逻辑互斥）",
+    "outfit": "lowercase-kebab（如 deepsea / sakura）",
+    "pose": "xiaolan: idle|talk|wave|happy|point；muu: stand（大肥鱼单姿态，形象卡按需复用）",
+    "path": "assets/pet-outfits/<form>/<outfit>/pose/<pose>.png",
+    "preview": "assets/pet-outfits/<form>/<outfit>/preview.png",
+    "rule": "新增皮肤只加 outfit 目录，不改动 base 立绘；default 保留原色，其余为调色派生"
+  },
+  "license": {
+    "owner": "本项目自有形象资产（小蓝 / 大肥鱼）",
+    "source": "assets/char/pose 与 assets/char-pet/pose 的既有立绘，按本清单 palette 本地派生换色",
+    "scope": "仅限本 QQ/微信机器人项目及形象卡、表情包使用",
+    "restrict": "不得单独二次分发原始立绘；对外展示统一用合成后的形象卡",
+    "recordedAt": "2026-11-07"
+  },
+  "forms": {
+    "xiaolan": {
+      "displayName": "小蓝",
+      "title": "深海鲸鱼娘",
+      "sourceDir": "assets/char/pose",
+      "poses": ["idle", "talk", "wave", "happy", "point"],
+      "defaultOutfit": "default",
+      "outfits": [
+        {
+          "id": "default",
+          "name": "原色",
+          "palette": { "tint": "", "strength": 0, "accent": "#7fd7ff", "bg": ["#08131f", "#103650", "#050e16"] },
+          "note": "基准皮肤，不调色"
+        },
+        {
+          "id": "deepsea",
+          "name": "深海夜",
+          "palette": { "tint": "#123e63", "strength": 0.24, "accent": "#7fd7ff", "bg": ["#06101b", "#0d2c44", "#040b12"] },
+          "note": "更深的夜海蓝，适合夜间/安静场景"
+        },
+        {
+          "id": "sakura",
+          "name": "樱花粉",
+          "palette": { "tint": "#ff9ec4", "strength": 0.22, "accent": "#ffb7d5", "bg": ["#1a0f18", "#4a2036", "#120a10"] },
+          "note": "暖粉调，适合庆祝/撒娇场景"
+        },
+        {
+          "id": "moon",
+          "name": "月光白",
+          "palette": { "tint": "#ddebff", "strength": 0.18, "accent": "#eaf6ff", "bg": ["#101722", "#35506a", "#080d14"] },
+          "note": "低饱和冷白，适合晚安/陪伴场景"
+        }
+      ]
+    },
+    "muu": {
+      "displayName": "大肥鱼",
+      "title": "摸鱼担当",
+      "sourceDir": "assets",
+      "poseFiles": { "stand": "icon.png" },
+      "poses": ["stand"],
+      "defaultOutfit": "default",
+      "outfits": [
+        {
+          "id": "default",
+          "name": "原色",
+          "palette": { "tint": "", "strength": 0, "accent": "#8ec5ff", "bg": ["#071a22", "#0f3f4a", "#041016"] },
+          "note": "基准皮肤，不调色"
+        },
+        {
+          "id": "sunset",
+          "name": "落日橘",
+          "palette": { "tint": "#ff8c5a", "strength": 0.25, "accent": "#ffb27a", "bg": ["#21100a", "#5a2a16", "#140a06"] },
+          "note": "暖橘调，适合吃饭/下班/庆祝"
+        },
+        {
+          "id": "night",
+          "name": "夜行蓝",
+          "palette": { "tint": "#2b4c7e", "strength": 0.28, "accent": "#8ec5ff", "bg": ["#070e18", "#16294a", "#040810"] },
+          "note": "深蓝调，适合深夜/陪睡/安静"
+        },
+        {
+          "id": "mint",
+          "name": "薄荷青",
+          "palette": { "tint": "#7fe3cf", "strength": 0.22, "accent": "#b9fff1", "bg": ["#081a18", "#124a44", "#04100e"] },
+          "note": "清爽青调，适合学习/摸鱼/日常"
+        }
+      ]
+    }
+  }
+}

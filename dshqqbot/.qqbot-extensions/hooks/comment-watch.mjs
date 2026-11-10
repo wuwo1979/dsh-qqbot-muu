@@ -2,8 +2,8 @@
  * hooks/comment-watch.mjs — 评论巡检定时任务（2026-10-28 主人需求）
  *
  * 有人在我们视频下评论 → 回复；回复过的不二次回复。
- *   · B 站：auto=true 时直接回复（拟人间隔，自带匿名回读校验）；
- *     auto=false 只出草稿。开关在 bili-ops-config.json 的 commentReply.auto（默认 true）。
+ *   · B 站：auto=true 且 QQBOT_ALLOW_PUBLIC_REPLY=1 时直接回复；
+ *     任一不满足都只出草稿。开关在 bili-ops-config.json 的 commentReply.auto（默认 false）。
  *   · 每 30 分钟巡检一次；单次最多回 maxReply 条；已回复的 rpid 记进
  *     {storage}/comment-replied.json —— 这是防二次回复的唯一判据。
  */
@@ -37,7 +37,14 @@ export async function run(env = {}) {
       // 至少间隔 25 分钟（interval 30min，这里防手动触发后连跑）
       if (Date.now() - lastRunAt < 25 * 60_000) return;
       lastRunAt = Date.now();
-      const auto = cr.auto !== false;               // 默认自动回复
+      // P0-1：默认只出草稿。真发需要「配置显式 auto=true」+「环境变量放行」双开关，
+      // 缺任何一项都降级为草稿（dry-run 断言：绝不会在默认部署下发出公开评论）。
+      const autoRequested = cr.auto === true;
+      const envAllow = String(process.env.QQBOT_ALLOW_PUBLIC_REPLY || '').trim() === '1';
+      const auto = autoRequested && envAllow;
+      if (autoRequested && !envAllow) {
+        logger?.warn?.('[comment-watch] commentReply.auto=true 但未设 QQBOT_ALLOW_PUBLIC_REPLY=1，本轮降级为草稿');
+      }
       const r = await CW.biliCheck(dataRoot, {
         auto,
         maxReply: Number(cr.maxReply) || 3,

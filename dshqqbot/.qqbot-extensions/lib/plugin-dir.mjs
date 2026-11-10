@@ -1,5 +1,9 @@
-// plugin-dir.mjs —— 找到"真正在跑"的 @zaofan/dsh-qqbot 目录（2026-10-25 修）
+// plugin-dir.mjs —— 找到"真正在跑"的 QQ 插件目录（2026-10-25 修；2026-11-05 再修）
 //
+// 2026-11-05 坑：插件从 @zaofan/dsh-qqbot 改名 dsh-qqbot-muu 后，这里还在只找旧包名
+//   → findPluginDir() 永远返回空 → 本地 bge 向量加载失败，记忆召回一直在
+//   词频退化模式跑（每次启动都打「向量模型不可用，已退化为词频」）。
+//   现在新旧包名都找。
 // 背景：桌面端 1.10.39 起把插件装在
 //   <APPDATA>/dsh-desktop/harness/profiles/.generations/live/zaofan+dsh-qqbot+<ver>+<hash>/node_modules/@zaofan/dsh-qqbot
 // 而扩展里原来只写死 `profiles/web/node_modules/...`。插件升级后老目录消失，
@@ -13,6 +17,8 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 const PKG = join('node_modules', '@zaofan', 'dsh-qqbot');
+/** 2026-11-05：插件新包名（@zaofan/dsh-qqbot 改名而来），两处都要找 */
+const PKG_MUU = join('node_modules', 'dsh-qqbot-muu');
 
 function versionOf(name) {
   const m = /^zaofan\+dsh-qqbot\+(\d+)\.(\d+)\.(\d+)/.exec(name);
@@ -54,14 +60,14 @@ export function generationDirs() {
 /** 返回可用于 import 的插件目录（找不到时返回空字符串） */
 export function findPluginDir() {
   const env = String(process.env.QQBOT_PLUGIN_DIR || '').trim();
+  const pkgCands = [PKG, PKG_MUU];
   const cands = [
     env,
     ...generationDirs(),
-    ...harnessRoots().flatMap((r) => [
-      join(r, 'profiles', 'web', PKG),
-      join(r, PKG),
-    ]),
-    join('C:/Users/Administrator/AppData/Roaming/dsh-desktop/harness/profiles/web', PKG),
+    ...harnessRoots().flatMap((r) => pkgCands.flatMap((pkg) => [
+      join(r, 'profiles', 'web', pkg),
+      join(r, pkg),
+    ])),
   ].filter(Boolean);
   for (const p of cands) {
     try { if (existsSync(join(p, 'dist', 'features', 'local-embed.js'))) return String(p).replace(/\\/g, '/'); } catch { /* 下一个 */ }

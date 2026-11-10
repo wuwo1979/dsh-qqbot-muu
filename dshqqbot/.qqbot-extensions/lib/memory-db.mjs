@@ -1881,6 +1881,19 @@ export function setPersona(dataRoot, scope, { ckey, cvalue, weight = 1, id } = {
   }
 }
 
+/** 删一条设定（清理重复卡/错卡用）。返回 { ok, changes } */
+export function deletePersona(dataRoot, scope, ckey) {
+  const k = String(ckey || '').trim();
+  if (!k) return { ok: false, reason: 'ckey 不能为空' };
+  try {
+    const h = handle(dataRoot);
+    const r = h.db.prepare('DELETE FROM persona WHERE scope = ? AND ckey = ?').run(String(scope || 'global'), k);
+    return { ok: true, changes: Number(r && r.changes) || 0 };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /** 读某个 scope 的全部设定（按 weight 降序、同权重按新旧） */
 export function getPersona(dataRoot, scope, { limit = 200 } = {}) {
   try {

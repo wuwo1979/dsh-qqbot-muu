@@ -1,0 +1,32 @@
+{
+  "_说明": "默认配置。可在 secrets/interview/config.json 覆盖任意字段；核心流程不需要改代码。",
+  "questionsPerCategory": 1,
+  "maxFollowups": 2,
+  "_maxFollowups说明": "每题最多追问层数；0 表示不追问，直接点评。",
+  "model": "",
+  "_model说明": "留空 = 用 local-llm-config.json 的默认模型；也可填 qwen2.5:1.5b 等更轻的模型。",
+  "modelTimeoutMs": 20000,
+  "limits": {
+    "followupChars": 40,
+    "commentChars": 60,
+    "followupTokens": 70,
+    "commentTokens": 90
+  },
+  "_limits说明": "模型输出超过字数上限即判为超预算，改用 templates.json 的模板句；token 上限用于 num_predict。",
+  "summaryChars": 480,
+  "tts": {
+    "enabled": true,
+    "timeoutMs": 120000,
+    "maxChars": 160
+  },
+  "recordAnswers": true,
+  "_recordAnswers说明": "开启后把每轮用户语音录音写到 secrets/interview/sessions/<会话>/answers/；只在本机落盘，不上传。",
+  "voice": {
+    "provider": "",
+    "voice": "",
+    "model": "",
+    "endpoint": "",
+    "speed": 0
+  },
+  "_voice说明": "留空 = 复用 .qqbot-extensions/voice-config.json 的 TTS 设置；只覆盖想改的字段即可。"
+}

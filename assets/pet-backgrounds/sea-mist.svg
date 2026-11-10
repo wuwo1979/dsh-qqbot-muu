@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#f9fcff"/>
+      <stop offset="0.55" stop-color="#e9f2ff"/>
+      <stop offset="1" stop-color="#dbe7fb"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="34%" r="62%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.62" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#g)"/>
+  <rect width="512" height="512" fill="url(#halo)"/>
+  <g fill="#ffffff" opacity="0.55">
+    <circle cx="86" cy="96" r="34"/>
+    <circle cx="424" cy="150" r="22"/>
+    <circle cx="398" cy="420" r="40"/>
+    <circle cx="120" cy="408" r="18"/>
+  </g>
+  <g fill="#cfe0f6" opacity="0.5">
+    <circle cx="180" cy="72" r="10"/>
+    <circle cx="346" cy="336" r="12"/>
+    <circle cx="70" cy="250" r="7"/>
+    <circle cx="452" cy="286" r="9"/>
+  </g>
+</svg>

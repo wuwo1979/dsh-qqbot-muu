@@ -94,6 +94,27 @@ const debounceSchema = Schema.object({
     mentionDelayed: true,
     busySendMode: 'queue',
 }).description('延迟聚合(独立于冷却的另一套机制)');
+/**
+ * 运行时调优(0.1.6 新增) —— 新装默认值不必手工调。
+ *
+ * 设计纪律：
+ *   ① 这里的每个键都会被「首装补丁」(features/firstrun.ts) **只在缺省时**写入一次，
+ *      已经存在的用户配置一个字段都不动；
+ *   ② 值必须"什么都不做也安全"：去重窗口 0 = 关；权限档留空 = 沿用宿主默认；
+ *   ③ 必须同时出现在 ConfigSchemaRaw 与 EditableConfigSchema，否则 settings 校验会把没声明的键丢掉。
+ */
+const runtimeSchema = Schema.object({
+    inboundDedupeTtlSec: Schema.number().min(0).max(86400).default(120)
+        .description('入站消息去重窗口(秒) 默认120: 同一个 messageId 在窗口内只处理一次(落盘, 重启/重连都有效); 0=关闭'),
+    outboundDedupeWindowMs: Schema.number().min(0).max(60000).default(3000)
+        .description('出站重复正文抑制(毫秒) 默认3000: 同一会话同一段正文在此窗口内只发一次(防扩展超时后"改写+原文"发两遍); 0=关闭'),
+    extHookTimeoutMs: Schema.number().min(500).max(15000).default(4000)
+        .description('出站扩展链超时(毫秒) 默认4000: 扩展改正文/配图的时间预算, 超时按原文发出(不再重复发)'),
+    disableStreamingWithExt: Schema.boolean().default(true)
+        .description('装了出站扩展时关掉流式输出(默认开): 流式是"边生成边发", 扩展拿不到完整正文, 分句/卡片/转发都会失效'),
+    permissionPreset: Schema.string().default('')
+        .description('QQ 新会话默认权限档(留空=沿用宿主默认; 例如 workspace-write)。仅在该会话首次建立时应用一次，之后你在 QQ 里手动切过的不会被改回去'),
+}).description('运行时调优(新装自动补默认值; 已改过的不覆盖)');
 const behaviorSchema = Schema.object({
     freeIntervalSec: Schema.number().min(0).default(60).description('群普通消息回复间隔(秒),0=不限制'),
     mentionIntervalSec: Schema.number().min(0).default(0).description('@bot回复间隔(秒),0=立即回'),
@@ -313,6 +334,7 @@ export const EditableConfigSchema = Schema.object({
     imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
     messageReference: Schema.boolean().default(true).description('引用消息(默认开): 入站消息带短消息号 + 引用消息附原文 + 注入引用指令; 出站支持 [rf:短号] 标签引用对方消息'),
     localModel: localModelSchema,
+    runtime: runtimeSchema,
     groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认含表情包礼仪;可清空关闭)'),
     schedule: scheduleSchema,
     enableApprovals: Schema.boolean().default(false).description('QQ 远程审批: dsh 权限申请发到 QQ, 用 /approve CODE 放行(保存后对新请求生效)'),
@@ -338,6 +360,7 @@ const ConfigSchemaRaw = Schema.object({
     sessionIdleTimeout: Schema.number().default(30 * 60 * 1000).description('会话闲置超时(ms)'),
     maxQueue: Schema.number().default(20).description('并发队列最大长度'),
     processingTimeoutMs: Schema.number().default(120000).description('处理超时(ms)'),
+    runtime: runtimeSchema,
     historyLimit: Schema.number().default(10).description('群历史缓冲条数'),
     contextlessMode: Schema.boolean().default(false).description('无上下文模式: 每轮不继承历史(只带「@ 之前 N 条群消息」+ 系统规则)'),
     contextlessWindow: Schema.number().default(5).description('无上下文模式下携带的「@ 之前」群消息条数(0=完全不带)'),

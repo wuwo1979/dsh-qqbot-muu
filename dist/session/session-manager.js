@@ -29,7 +29,7 @@ import { markTurnAborted } from '../gateway/debounce.js';
 import { apply as mountChannelTools, readContextPending, clearContextPending, ensureContextToolsGlobal, restrictContextTools, ensureExtToolsGlobal } from '../channel-tools.js';
 import { createGroupAdmin } from '../api/group-admin.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { appendFileSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachSessionToWorkspaceWithRetry, unarchiveSession } from './workspace-attach.js';
@@ -374,6 +374,70 @@ export class SessionManager {
         catch (err) {
             return { ok: false, msg: `切换失败: ${err instanceof Error ? err.message : String(err)}` };
         }
+    }
+    /**
+     * 0.1.6：给刚建立/恢复的会话应用一次「默认权限档」。
+     *
+     * 为什么需要应用记录（`{dataRoot}/.qqbot/permission-preset-applied.json`）：
+     *   宿主的权限档是**会话级状态**，重启后可能回到宿主默认值。如果不留痕，
+     *   每次重启都会把我们设的值重新盖上去 —— 用户在 QQ 里手动 `/perm` 切过的档就被悄悄改回来了。
+     *   所以：同一个 sessionId 只自动设一次，之后永远听用户的。
+     */
+    applyConfiguredPermissionPreset(record) {
+        const want = String(this.config.runtime?.permissionPreset ?? '').trim();
+        if (!want)
+            return;
+        const svc = this.permissionPresetsService();
+        if (!svc || typeof svc.set !== 'function' || !Array.isArray(svc.names))
+            return;
+        if (!svc.names.includes(want)) {
+            this.logger.warn(`[permission] runtime.permissionPreset="${want}" 宿主没有这个档(可用: ${svc.names.join('/')})，已跳过`);
+            return;
+        }
+        const sid = String(record.sessionId ?? '');
+        if (!sid)
+            return;
+        let markFile = '';
+        try {
+            markFile = join(dataRootOf(this.config), '.qqbot', 'permission-preset-applied.json');
+        }
+        catch { /* 没有 dataRoot 就只用内存判断 */ }
+        let marks = {};
+        if (markFile) {
+            try {
+                marks = JSON.parse(readFileSync(markFile, 'utf8'));
+                if (!marks || typeof marks !== 'object')
+                    marks = {};
+            }
+            catch {
+                marks = {};
+            }
+        }
+        if (marks[sid])
+            return;
+        let cur = '';
+        try {
+            cur = typeof svc.current === 'function' ? String(svc.current(record.agent.session) ?? '') : '';
+        }
+        catch { /* 读不到当空 */ }
+        try {
+            if (cur !== want) {
+                svc.set(record.agent.session, want);
+                this.logger.info(`[permission] 新会话默认权限档 ${cur || '(宿主默认)'} → ${want}`);
+            }
+        }
+        catch (err) {
+            this.logger.warn(`[permission] 默认权限档设置失败(不影响会话): ${err instanceof Error ? err.message : String(err)}`);
+            return;
+        }
+        if (!markFile)
+            return;
+        try {
+            marks[sid] = { preset: want, at: new Date().toISOString() };
+            mkdirSync(join(dataRootOf(this.config), '.qqbot'), { recursive: true });
+            writeFileSync(markFile, JSON.stringify(marks, null, 2), 'utf8');
+        }
+        catch { /* 留痕失败无所谓 */ }
     }
     /** fork 当前会话 → 新 childId; inherit=true 用旧历史做 seed(切模型), false 全新空档; 失败降级 dispose */
     async forkCurrentSession(key, record, route, inherit) {
@@ -774,6 +838,17 @@ export class SessionManager {
         };
         this.lastSetupCtx = undefined;
         this.sessions.set(key, record);
+        // ★★ 0.1.6 新会话默认权限档 ★★
+        //   症状：新装用户第一次聊天，宿主默认档常常是只读/需审批 ⇒ 工具被拒 → "很笨"；
+        //   开了远程审批又没人答 → 一次工具调用挂两分钟 → "卡住"。
+        //   规则：只在 `runtime.permissionPreset` 明确配了、宿主确实有这个档、
+        //        且**这个 sessionId 从没被我们设过**时应用一次（之后用户 /perm 手动切的绝不回滚）。
+        try {
+            this.applyConfiguredPermissionPreset(record);
+        }
+        catch (err) {
+            this.logger.warn(`im-qqbot: 应用默认权限档失败(不影响会话): ${err instanceof Error ? err.message : String(err)}`);
+        }
         // 修复侧边栏归属(上游 PR #21 移植): 创建/恢复会话后挂到 cwd 对应工作区分组,
         // 防刷新后落 Ungrouped。幂等 + fail-soft(内部全吞), fire-and-forget 不阻塞主链。
         void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, sessionId, this.logger);

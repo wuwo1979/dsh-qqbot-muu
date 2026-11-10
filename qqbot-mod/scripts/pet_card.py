@@ -7,7 +7,8 @@ pet_card.py — 小蓝形象卡（一张竖版 PNG，手机/电脑都能直接�
 要轻量的那种」。不架服务、不开公网端口 —— 只生成一张 1080×1920 的图，
 她用现成的 qq_send 发到群/私聊，谁点开都能看到（QQ 会自己压图）。
 
-构成：深海蓝渐变底 + 气泡 + 立绘（assets/char/pose/*.png）+ 一句状态字 + 落款。
+构成：形态配色渐变底 + 气泡 + 立绘 + 一句状态字 + 落款。
+立绘可由调用方直接给皮肤资产路径（assets/pet-outfits/<form>/<outfit>/pose/<pose>.png）。
 """
 import argparse
 import json
@@ -17,6 +18,16 @@ import sys
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 FONTS = ["C:/Windows/Fonts/msyhbd.ttc", "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf"]
+
+
+def hex_rgb(s, fallback):
+    s = str(s or "").lstrip("#")
+    if len(s) != 6:
+        return fallback
+    try:
+        return tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        return fallback
 
 
 def load_font(paths, size):
@@ -84,27 +95,42 @@ def main():
     ap.add_argument("--pose", default="")
     ap.add_argument("--text", default="")
     ap.add_argument("--title", default="小蓝")
+    ap.add_argument("--credit", default="")
+    ap.add_argument("--form", default="xiaolan")
+    ap.add_argument("--outfit", default="default")
+    ap.add_argument("--outfit-name", default="")
     ap.add_argument("--w", type=int, default=1080)
     ap.add_argument("--h", type=int, default=1920)
     ap.add_argument("--accent", default="#7fd7ff")
+    ap.add_argument("--bg-top", default="#08131f")
+    ap.add_argument("--bg-mid", default="#103650")
+    ap.add_argument("--bg-bottom", default="#050e16")
     a = ap.parse_args()
 
     w = max(640, min(2160, a.w))
     h = max(640, min(3840, a.h))
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    base = gradient(w, h)
+    accent_rgb = hex_rgb(a.accent, (127, 215, 255))
+    base = gradient(w, h, hex_rgb(a.bg_top, (8, 19, 31)),
+                    hex_rgb(a.bg_mid, (16, 54, 80)), hex_rgb(a.bg_bottom, (5, 14, 22)))
     base = bubbles(base, w, h)
 
     # 立绘：底边贴着字幕区上沿，留出落款空间
     pose_path = a.pose
     if not pose_path:
         cand = os.path.join(root, "assets", "char", "pose", "idle.png")
+        if a.form == "muu":
+            cand = os.path.join(root, "assets", "icon.png")
         pose_path = cand if os.path.exists(cand) else ""
     char_bottom = int(h * 0.82)
     if pose_path and os.path.exists(pose_path):
         try:
             ch = Image.open(pose_path).convert("RGBA")
+            # 去掉透明边，避免原图留白把角色缩得太小（大肥鱼素材留白尤其多）
+            bbox = ch.getbbox()
+            if bbox:
+                ch = ch.crop(bbox)
             maxw = int(w * 0.84)
             maxh = int(h * 0.68)
             k = min(maxw / ch.width, maxh / ch.height)
@@ -122,11 +148,11 @@ def main():
             sys.stderr.write("pose-failed: %s\n" % e)
 
     d = ImageDraw.Draw(base)
-    accent = a.accent
 
-    # 落款
+    # 落款：形态 · 称号 · 皮肤（由调用方传入，缺省给一个安全值）
+    credit = a.credit or (("%s · 深海鲸鱼娘" % a.title) if a.form != "muu" else ("%s · 普通大肥鱼" % a.title))
     f_small = load_font(FONTS, max(22, int(w * 0.026)))
-    d.text((int(w * 0.06), int(h * 0.045)), "%s · 深海鲸鱼娘" % a.title, font=f_small, fill=(176, 205, 232, 200))
+    d.text((int(w * 0.06), int(h * 0.045)), credit, font=f_small, fill=(176, 205, 232, 200))
 
     # 状态字：半透明圆角条，最多 4 行
     text = (a.text or "").strip()
@@ -143,19 +169,20 @@ def main():
         layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         ld = ImageDraw.Draw(layer)
         ld.rounded_rectangle([x0, y0, x0 + box_w, y0 + box_h], radius=int(w * 0.032),
-                             fill=(6, 22, 34, 190), outline=(127, 215, 255, 70), width=2)
+                             fill=(6, 22, 34, 190), outline=(accent_rgb[0], accent_rgb[1], accent_rgb[2], 70), width=2)
         base = Image.alpha_composite(base, layer)
         d = ImageDraw.Draw(base)
         for i, ln in enumerate(lines):
             d.text((x0 + pad_x, y0 + pad_y + i * line_h), ln, font=f_big, fill=(233, 243, 252, 245))
         # 左侧一道强调色短线
         d.rounded_rectangle([x0 + int(w * 0.012), y0 + pad_y, x0 + int(w * 0.012) + 6, y0 + box_h - pad_y],
-                            radius=3, fill=(127, 215, 255, 200))
+                            radius=3, fill=(accent_rgb[0], accent_rgb[1], accent_rgb[2], 200))
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     base.convert("RGB").save(a.out, "PNG", optimize=True)
     with open(os.path.join(os.path.dirname(os.path.abspath(a.out)), "result.json"), "w", encoding="utf-8") as f:
-        json.dump({"ok": True, "path": a.out.replace("\\", "/"), "w": w, "h": h, "text": text}, f, ensure_ascii=False)
+        json.dump({"ok": True, "path": a.out.replace("\\", "/"), "w": w, "h": h, "text": text,
+                   "form": a.form, "outfit": a.outfit, "outfitName": a.outfit_name}, f, ensure_ascii=False)
     print("ok")
 
 

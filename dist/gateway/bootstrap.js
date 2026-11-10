@@ -1,5 +1,44 @@
-import { join } from 'node:path';
-import { readFileSync as qqReadFileSync, writeFileSync as qqWriteFileSync, mkdirSync as qqMkdirSync } from 'node:fs';
+import { join, resolve, relative, isAbsolute, basename, extname } from 'node:path';
+import { readFileSync as qqReadFileSync, writeFileSync as qqWriteFileSync, mkdirSync as qqMkdirSync, realpathSync as qqRealpathSync, existsSync as qqExistsSync, statSync as qqStatSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+/** 项目根：dist/gateway → 上两级 */
+const QQBOT_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
+/** 允许出站的本地媒体根目录（P0-4）：[MEDIA]/send_media 只能引用这些目录内的文件 */
+const MEDIA_ALLOW_DIRS = ['assets', 'media', 'tmp/render', 'voices'];
+
+/**
+ * 本地媒体路径闸门（唯一咽喉，[MEDIA]标记 / send_media 工具 / ext 能力 / botplay 都汇于 sender.sendMedia）。
+ * 规则：realpath 后必须落在允许根（含表情包库）内；显式拒绝 secrets/secret/.git 与凭证 json。
+ * 越界抛错，由上层转 ok:false，不静默放行。
+ */
+function assertMediaPath(localPath, config) {
+    const raw = String(localPath || '');
+    if (!raw) throw new Error('媒体路径为空');
+    let real;
+    try { real = qqRealpathSync(resolve(raw)); }
+    catch { throw new Error(`媒体文件不存在或不可读：${basename(raw)}`); }
+    let stickerRoot = '';
+    try { stickerRoot = resolve(stickerDirOf(config)); } catch { /* 配置不全时忽略 */ }
+    let dataRoot = '';
+    try { dataRoot = resolve(dataRootOf(config)); } catch { /* 配置不全时忽略 */ }
+    const roots = [
+        ...MEDIA_ALLOW_DIRS.map((d) => resolve(QQBOT_ROOT, d)),
+        stickerRoot,
+        // 登录二维码与扩展自身产出的媒体（面板/桌宠/视频流水线的正常出口）
+        dataRoot ? join(dataRoot, 'qun-login-qr.png') : '',
+        dataRoot ? join(dataRoot, '.qqbot-extensions') : '',
+    ].filter(Boolean);
+    const rel = roots.map((r) => relative(r, real)).find((x) => !isAbsolute(x) && !x.startsWith('..'));
+    if (rel === undefined) throw new Error(`媒体路径不在允许目录内：${basename(raw)}`);
+    const low = real.toLowerCase().replace(/\\/g, '/');
+    if (/\/secrets?\//.test(low) || /\/\.git\//.test(low) || /(bili|douyin)-cookie\.json$/.test(low)) {
+        throw new Error('媒体路径命中敏感目录/凭证文件，已拒绝');
+    }
+    try { if (!qqStatSync(real).isFile()) throw new Error('not file'); }
+    catch { throw new Error(`媒体路径不是文件：${basename(raw)}`); }
+    return real;
+}
 // [qqbot-mod] host-lock —— 同一机器人只许一个 DSH 实例连 QQ（防双答案/会话两开）
 function qqbotHostLock(dataRoot, logger) {
     const dir = join(dataRoot, '.qqbot')
@@ -93,6 +132,41 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     catch { /* ignore */ }
     // 实例标识(settingsNs), 全 bootstrap 共用: 注册表按 ns 隔离(B类修复 2026-09-11)
     const myNs = config.settingsNs?.trim() || 'im-qqbot';
+    // ★★ 0.1.6 首装补丁（只缺省才写 + 只补缺失文件，绝不覆盖用户改动）★★
+    //   为什么放在这里：settings 服务此时可用，且早于 bot 连接 —— 扩展必须在网关起链之前就位，
+    //   否则新装用户第一条消息就落在"没有扩展"的链上（分句/卡片/记忆都没有）。
+    //   两步都 fail-soft：任何异常只 warn，绝不影响登录。
+    try {
+        const { configureRuntimeTuning } = await import('../features/runtime-tuning.js');
+        configureRuntimeTuning(config.runtime ?? {});
+    }
+    catch (err) {
+        logger.warn(`im-qqbot: 运行时调优未生效(用内置默认): ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+        const { applyDefaultsPatch, seedExtensions } = await import('../features/firstrun.js');
+        const _seedDataRoot = dataRootOf(config);
+        let _svc;
+        try {
+            _svc = ctx?.get?.('settings');
+        }
+        catch { /* 拿不到就走自有存储 */ }
+        const _patch = await applyDefaultsPatch({ ns: myNs, dataRoot: _seedDataRoot, logger, settingsService: _svc });
+        // settings 服务写成功时把新值并回内存 config，保证本次启动就按新默认值跑
+        if (_patch.written && Object.keys(_patch.written).length > 0) {
+            try {
+                const { setPath } = await import('../features/firstrun.js');
+                for (const [k, v] of Object.entries(_patch.written))
+                    setPath(config, k, v);
+            }
+            catch { /* ignore */ }
+        }
+        if (_seedDataRoot)
+            seedExtensions({ pkgRoot: QQBOT_ROOT, dataRoot: _seedDataRoot, logger });
+    }
+    catch (err) {
+        logger.warn(`im-qqbot: 首装补丁失败(不影响启动): ${err instanceof Error ? err.message : String(err)}`);
+    }
     // [qqbot-mod 2026-10-31] appSecret 自愈 + secrets 镜像刷新（在 new QQBot 之前，时序保证）。
     //   事故背景：设置页保存曾把掩码 '********' 写进自有存储 → bot 全天 100016 掉线。
     //   三件事：
@@ -568,6 +642,8 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             },
         }),
         sendMedia: async (target, kind, source) => {
+            // ── P0-4 本地媒体路径闸门：任意绝对路径 → 只允许项目内媒体/表情包目录 ──
+            if (source?.localPath) source = { ...source, localPath: assertMediaPath(source.localPath, config) };
             // ── P1 表情包闸门(唯一咽喉, [MEDIA]标记 与 send_media 工具都汇于此) ──
             // 只对"库内图片的主动发送"生效; URL/非库路径/语音视频文件放行。
             let gateHit = false;

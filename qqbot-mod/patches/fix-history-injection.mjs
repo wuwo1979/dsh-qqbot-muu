@@ -47,8 +47,9 @@ const RE = [
   ['\\[关系\\]', '\\[\\/关系\\]'],
   ['\\[状态\\]', '\\[\\/状态\\]'],
   ['\\[B站\\]', '\\[\\/B站\\]'],
+  ['\\[听懂\\]', '\\[\\/听懂\\]'],
 ];
-const LEGACY_TAGS = ['记忆', '信条', '设定', '印象', '旧识', '性格观察', '成长', '关系', '状态', 'B站'];
+const LEGACY_TAGS = ['记忆', '信条', '设定', '印象', '旧识', '性格观察', '成长', '关系', '状态', 'B站', '听懂'];
 function cleanInjected(s) {
   let t = String(s == null ? '' : s);
   for (const [a, b] of RE) {
@@ -73,6 +74,7 @@ function buildLine() {
     ".replace(/\\[关系\\][\\s\\S]*?\\[\\/关系\\]/gu, ' ')" +
     ".replace(/\\[状态\\][\\s\\S]*?\\[\\/状态\\]/gu, ' ')" +
     ".replace(/\\[B站\\][\\s\\S]*?\\[\\/B站\\]/gu, ' ')" +
+    ".replace(/\\[听懂\\][\\s\\S]*?\\[\\/听懂\\]/gu, ' ')" +
     ".replace(/\\n?\\[别重复\\][^\\n]*/gu, ' ');" +
     " return t.replace(/\\s+/gu, ' ').trim().slice(0, TEXT_MAX); })(rec.x)," +
     " // " + MARK
@@ -136,7 +138,7 @@ async function cleanChatTableAsync(root, logger = console) {
   let changed = 0;
   try {
     const rows = db.prepare(
-      "SELECT rowid AS rid, text FROM chat WHERE text LIKE '%[记忆]%' OR text LIKE '%[信条]%' OR text LIKE '%[印象]%' OR text LIKE '%[旧识]%' OR text LIKE '%[关系]%' OR text LIKE '%[设定]%' OR text LIKE '%[状态]%' OR text LIKE '%[B站]%'",
+      "SELECT rowid AS rid, text FROM chat WHERE text LIKE '%[记忆]%' OR text LIKE '%[信条]%' OR text LIKE '%[印象]%' OR text LIKE '%[旧识]%' OR text LIKE '%[关系]%' OR text LIKE '%[设定]%' OR text LIKE '%[状态]%' OR text LIKE '%[B站]%' OR text LIKE '%[听懂]%'",
     ).all();
     const upd = db.prepare('UPDATE chat SET text = ? WHERE rowid = ?');
     for (const r of rows) {

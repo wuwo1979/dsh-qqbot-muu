@@ -283,8 +283,13 @@ export async function chat({ messages, cfg, model, timeoutMs, maxTokens, tempera
     const j = await res.json();
     noteUse('chat', wantModel);
     const text = String(j?.message?.content || '').trim();
-    if (!text) return { ok: false, error: 'empty', ms: Date.now() - started, model: wantModel };
-    return { ok: true, text, ms: Date.now() - started, model: wantModel };
+    // Ollama 在非流式响应里回传真实 token 数：prompt_eval_count / eval_count
+    const usage = {
+      promptTokens: Number(j?.prompt_eval_count) || 0,
+      completionTokens: Number(j?.eval_count) || 0,
+    };
+    if (!text) return { ok: false, error: 'empty', ms: Date.now() - started, model: wantModel, usage };
+    return { ok: true, text, ms: Date.now() - started, model: wantModel, usage };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const friendly = /abort/i.test(msg) ? 'timeout' : msg;

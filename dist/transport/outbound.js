@@ -5,6 +5,8 @@ import { noteThinking } from '../features/thinking-log.js';
 import { noteTurnSignals, extractInnerText, applyTurnAttitude } from '../features/four-source.js';
 import { getLastSender } from '../features/attitude.js';
 import { formatToolResult } from './tool-presenter.js';
+import { disableStreamingWithExt } from '../features/runtime-tuning.js';
+import { hasOutboundExtensions } from '../features/firstrun.js';
 /**
  * `reply_gate` 的参数里是不是"判定静默"？
  *
@@ -393,6 +395,10 @@ class OutboundRouter {
     }
     /** 是否启用流式：配置开启 + c2c + 有 msgId（群聊不支持流式） */
     shouldStream(record) {
+        // 0.1.6：装了出站扩展就别流式 —— 流式是"边生成边发"，扩展拿不到完整正文，
+        //   分句/卡片/转发/净化全会失效（而且流式失败回落时容易把同一段发两遍）。
+        if (disableStreamingWithExt() && hasOutboundExtensions(dataRootOf(this.config)))
+            return false;
         return this.config.streaming
             && record.replyTarget.scope === 'c2c'
             && !!record.replyTarget.msgId;
@@ -558,7 +564,8 @@ class OutboundRouter {
                     this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
                 }
             }
-            await sendRichOutbound(this.bot, _record.replyTarget, outText, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record));
+            // 0.1.6：同样要把 target/sender/phase 传下去（0.1.5 只传到 refLookup ⇒ 扩展的补发落在 null sender 上）
+            await sendRichOutbound(this.bot, _record.replyTarget, outText, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), { target: _record.replyTarget, sender: this.bot, logger: this.logger, turnId: _record.sessionKey, phase: 'send' });
         }
         catch (err) {
             this.logger.error(`im-qqbot: ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);

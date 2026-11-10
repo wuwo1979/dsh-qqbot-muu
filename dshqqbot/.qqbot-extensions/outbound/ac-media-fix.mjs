@@ -11,6 +11,8 @@
  *   2) [[MEDIA:…]] 双层 → 单层
  *   3) 正文里的裸表情文件名（id.ext）→ 解析成绝对路径的 [MEDIA:image|…]
  *      解析不到就删掉这段，绝不把文件名当文字发给群友。
+ *   4) [STICKER:id] / [表情:id] → 按 id 查库并替换成 [MEDIA:image|…]
+ *      这样她只要输出 12 位 id，不用把图片路径或描述放进上下文。
  *
  * 排序：文件名 ac- 开头，排在 aa-sanitize 之后、ab-brain 之前。
  */
@@ -33,6 +35,7 @@ function dataRootOf(ctx) {
 const BARE_MEDIA = /(?<!\[)\bMEDIA:(image|record|video|file)\|([^\]\s]+)/gi;
 const DOUBLE = /\[\[(MEDIA:[^\]]+)\]\]/gi;
 const BARE_FILE = /(?<![\w./\\-])([0-9a-fA-F]{8,16})\.(jpe?g|png|gif|webp)(?![\w./\\-])/g;
+const STICKER_TAG = /\[(?:STICKER|表情)\s*[:：]\s*([0-9a-zA-Z_.-]{4,40})\]/gi;
 
 function log(root, rec) {
   try {
@@ -54,6 +57,17 @@ export function fixMedia(text, root) {
 
   t = t.replace(DOUBLE, (m, inner) => { fixed += 1; return '[' + inner + ']'; });
   t = t.replace(BARE_MEDIA, (m, kind, target) => { fixed += 1; return `[MEDIA:${kind}|${target}]`; });
+
+  // [STICKER:id] → 真图；查不到就删标记，避免把内部 id 发出去
+  t = t.replace(STICKER_TAG, (m, id) => {
+    const hit = resolveToken(root, id);
+    if (hit.ok && hit.path) {
+      fixed += 1;
+      return `[MEDIA:image|${hit.path.replace(/\\/g, '/')}]`;
+    }
+    dropped += 1;
+    return '';
+  });
 
   // 裸文件名 → 查表情库（引号/括号包着也认）
   t = t.replace(BARE_FILE, (m, id, ext) => {
@@ -79,7 +93,7 @@ export async function onOutbound(ctx, next) {
   if (!ctx || ctx.phase !== 'send' || ctx.kind !== 'text') return next();
   const before = String(ctx.text || '');
   if (!before) return next();
-  if (!/MEDIA:|[0-9a-fA-F]{8,16}\.(jpe?g|png|gif|webp)/i.test(before)) return next();
+  if (!/MEDIA:|\[STICKER:|\[表情:|[0-9a-fA-F]{8,16}\.(jpe?g|png|gif|webp)/i.test(before)) return next();
 
   try {
     const root = dataRootOf(ctx);

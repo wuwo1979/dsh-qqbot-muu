@@ -10,12 +10,15 @@
  *   ③ 截断回显兜底：剥完还残留开块标记（后面没有闭块，模型回显常被截断）→ 从标记剥到结尾。
  * 文件名 aa- 开头 = 出站链里排最前，先洗干净再让别的扩展改写。
  */
+import { createHash } from 'node:crypto';
+import { getChatState, setChatState } from '../lib/chatlog-db.mjs';
+
 export const name = 'sanitize-out';
 
 // 成对块：与 inbound/aa-memory-recall.mjs stripMemoryBlock 同一清单（两处增删要同步）
 const PAIRED = [
   '记忆', '信条', '设定', '印象', '旧识', '性格观察', '成长',
-  '关系', '状态', 'B站', '学', '情绪回响', '约定',
+  '关系', '状态', 'B站', '学', '情绪回响', '约定', '听懂',
 ];
 // 单行块：没有闭标记，一行就是一块
 const LINE_TAGS = ['别重复', '手边'];
@@ -47,9 +50,13 @@ export function sanitize(text) {
 // 短窗口内（120s）与刚发出去的正文完全相同（去标点/空白归一后）→ 消灭这条，不再出站。
 // 只拦整句重复： Length≥8 才算（「嗯」「6」这种短句自然重复不拦）；主人让她「再说一遍」
 // 时隔得久，不受影响。
-const _lastSent = new Map(); // key: target → { norm, at }
+const _lastSent = new Map(); // key: target → { norm, h, at }（内存快路径）
+const DUP_META_PREFIX = 'dup:'; // chat_meta 键前缀（实际落盘为 state:dup:<target>）
 function normForDup(s) {
   return String(s || '').replace(/[\s\u3000]+/g, '').replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, '').toLowerCase();
+}
+function hashOf(norm) {
+  try { return createHash('sha1').update(String(norm || '')).digest('hex').slice(0, 16); } catch { return ''; }
 }
 function dupKeyOf(ctx) {
   try {
@@ -57,6 +64,30 @@ function dupKeyOf(ctx) {
     if (t && typeof t === 'object') return String(t.openid || t.id || t.chatId || JSON.stringify(t));
   } catch { /* ignore */ }
   return String(ctx?.target ?? 'unknown');
+}
+function rootOf(ctx) {
+  try { return String(ctx?.dataRoot || process.env.QQBOT_MEMORY_DATA_ROOT || ''); } catch { return ''; }
+}
+// 读「上次发过什么」：内存优先，未命中再读 chat_meta（重启后继续生效）
+function readLast(ctx, key) {
+  const mem = _lastSent.get(key);
+  if (mem) return mem;
+  const root = rootOf(ctx);
+  if (!root) return null;
+  try {
+    const st = getChatState(root, DUP_META_PREFIX + key);
+    const at = Number(st?.at);
+    const h = String(st?.h || '');
+    if (!h || !Number.isFinite(at) || at <= 0) return null;
+    return { norm: '', h, at };
+  } catch { return null; }
+}
+// 「发送失败」：删掉内存账并把持久化写空（chatlog-db 没有删除 API）
+function forgetLast(ctx, key) {
+  try { _lastSent.delete(key); } catch { /* ignore */ }
+  const root = rootOf(ctx);
+  if (!root) return;
+  try { setChatState(root, DUP_META_PREFIX + key, { h: '', at: 0 }); } catch { /* ignore */ }
 }
 
 export async function onOutbound(ctx, next) {
@@ -66,17 +97,22 @@ export async function onOutbound(ctx, next) {
   let after = sanitize(before);
   if (!after) after = '……';
 
+  const key = dupKeyOf(ctx);
+  const norm = normForDup(after);
+  const isDupCandidate = Boolean(norm && norm.length >= 8);
+
   // 同文重复拦截（剥完块再比，免得被剥掉的前后缀造成假差异）
   try {
-    const now = Date.now();
-    const key = dupKeyOf(ctx);
-    const norm = normForDup(after);
-    const last = _lastSent.get(key);
-    if (norm && norm.length >= 8 && last && last.norm === norm && now - last.at < 120_000) {
-      try { ctx.logger?.warn?.(`[sanitize] 同文重复发送已拦截（${Math.round((now - last.at) / 1000)}s 前发过同一句）`); } catch {}
-      try { ctx.note && ctx.note('sanitize: 拦截同文重复'); } catch {}
-      ctx.annihilate?.('重复发送拦截');
-      return; // 已被消灭，链不必再走
+    if (isDupCandidate) {
+      const now = Date.now();
+      const last = readLast(ctx, key);
+      const same = Boolean(last && (last.norm ? last.norm === norm : last.h === hashOf(norm)));
+      if (same && now - last.at < 120_000) {
+        try { ctx.logger?.warn?.(`[sanitize] 同文重复发送已拦截（${Math.round((now - last.at) / 1000)}s 前发过同一句）`); } catch {}
+        try { ctx.note && ctx.note('sanitize: 拦截同文重复'); } catch {}
+        ctx.annihilate?.('重复发送拦截');
+        return; // 已被消灭，链不必再走
+      }
     }
   } catch { /* 判重失败不拦正常发送 */ }
 
@@ -88,12 +124,31 @@ export async function onOutbound(ctx, next) {
       ctx.rewrite(after);
     } catch {}
   }
-  // 记录「已发出去的正文」供下一条判重（在 next() 之前记 —— 下游失败也宁可漏拦不误拦）
+
+  // 2026-11-08（P1-5）：记账挪到 next() 之后 —— 下游失败时不留"已发过"的假账。
+  //   边界：出站链是「发送前改写链」，真正网络发送由 transport 在链后执行，
+  //   本闸只能观测「链内抛错 / 明确返回 false」，观察不到 transport 的发送结果。
+  let ret;
   try {
-    const norm = normForDup(after);
-    if (norm && norm.length >= 8) _lastSent.set(dupKeyOf(ctx), { norm, at: Date.now() });
-  } catch { /* ignore */ }
-  return next();
+    ret = await next();
+  } catch (err) {
+    if (isDupCandidate) forgetLast(ctx, key); // 失败删除该键，允许立刻重试同句
+    throw err;
+  }
+  if (ret === false) {
+    if (isDupCandidate) forgetLast(ctx, key);
+    return ret;
+  }
+  // 记录「已发出去的正文」供下一条判重（内存 + chat_meta：target + hash + 时间，不落正文）
+  try {
+    if (isDupCandidate) {
+      const at = Date.now();
+      _lastSent.set(key, { norm, h: hashOf(norm), at });
+      const root = rootOf(ctx);
+      if (root) setChatState(root, DUP_META_PREFIX + key, { h: hashOf(norm), at });
+    }
+  } catch { /* 记账失败不影响发送 */ }
+  return ret;
 }
 
 export default onOutbound;

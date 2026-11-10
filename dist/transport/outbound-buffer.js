@@ -3,6 +3,7 @@ import { StreamingWriter } from './streaming-writer.js';
 import { containsRecall, collectRecallIndices, extractRefTag, parseOutbound, stripDirectives, resolveSource, } from './rich-media.js';
 import { stickerPerTurnCtx } from '../features/sticker-gate.js';
 import { rememberBotReply } from '../features/bot-reply-memo.js';
+import { extHookTimeoutMs, shouldSkipOutboundText } from '../features/runtime-tuning.js';
 /** 流式输出节流间隔(ms)：连续 chunk 累积后停顿该间隔才推送 */
 const STREAM_THROTTLE_MS = 200;
 /**
@@ -36,6 +37,14 @@ refLookup,
  * （给内部回环调用用，避免"自己发的又被自己拦"）。
  */
 extHook) {
+    // ★★ 0.1.6：同会话同正文抑制 ★★
+    //   症状：出站扩展超时后宿主"按原文整条再发"，而扩展已经补发过开头几条 ⇒ 用户看到"半条 + 整条"。
+    //   处理：完全相同的正文在窗口内只发一次（默认 3s，`runtime.outboundDedupeWindowMs`，0=关）。
+    //   ⚠️ 只比**文本完全相同**且长度 ≥8，短句连发（"嗯""哈哈哈"）不受影响。
+    if (shouldSkipOutboundText(target, text)) {
+        logError?.('im-qqbot: 同一会话同一段正文在窗口内重复(已抑制, 防"改写+原文"发两遍)');
+        return;
+    }
     // ★★ 出站扩展链（2026-10-16）：先让扩展改 / 杀这条出站，再走原有发送逻辑 ★★
     //   · 动态 import：没装扩展时零开销，也避免 transport ↔ features 的循环依赖；
     //   · **绝不阻断出站**：链里任何异常都吞掉、按原文发（宁可不改，也不能把消息弄丢）。
@@ -49,7 +58,8 @@ extHook) {
     if (extHook?.enabled !== false) {
         try {
             const { runOutboundChain } = await import('../features/ext-outbound.js');
-            const EXT_HOOK_TIMEOUT_MS = 3000;
+            // 0.1.6：预算从"写死 3000"改为可配（runtime.extHookTimeoutMs，默认 4000）
+            const EXT_HOOK_TIMEOUT_MS = Math.max(500, Number(extHook?.timeoutMs ?? extHookTimeoutMs() ?? 4000));
             const chain = runOutboundChain(text, {
                 ...(extHook ?? {}),
                 target,
@@ -231,7 +241,10 @@ export class OutboundBuffer {
                     return;
             }
             // 降级：静态发送（writer 不存在 or 流式失败）→ 富媒体感知发送
-            await sendRichOutbound(this.bot, this.record.replyTarget, this.buffer, this.limit, this.cwd, (m) => this.logger.error(m), this.resolveTarget, this.chunkTarget, this.onBlockSent, this.refLookup);
+            // 0.1.6：把 target / sender / phase 传给扩展链。
+            //   0.1.5 这里只传到第 10 个参数(refLookup) ⇒ 链本身照跑(缺省也跑)，但 `ctx.target`/`ctx.sender`
+            //   都是 null：分句/TTS/卡片的"补发"会落到 null sender 上，配图也没目标 ⇒ 表现成"扩展像没生效"。
+            await sendRichOutbound(this.bot, this.record.replyTarget, this.buffer, this.limit, this.cwd, (m) => this.logger.error(m), this.resolveTarget, this.chunkTarget, this.onBlockSent, this.refLookup, { target: this.record.replyTarget, sender: this.bot, logger: this.logger, turnId: this.record.sessionKey, phase: 'send' });
         }
         catch (err) {
             this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

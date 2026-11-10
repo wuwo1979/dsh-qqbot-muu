@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import subprocess
 import sys
@@ -58,14 +59,46 @@ def to_wav(src: Path, dst: Path, sr=44100, mono=True):
     subprocess.run([str(c) for c in cmd], check=True, stdin=subprocess.DEVNULL)
 
 
+PROBE_LOG = Path(r"F:\qqbot\tmp\sing-probe.log")
+
+
 def probe_seconds(path: Path) -> float:
-    cp = subprocess.run([str(FFMPEG), "-hide_banner", "-i", str(path)],
-                        capture_output=True, text=True, errors="replace")
-    for line in (cp.stderr or "").splitlines():
+    # 本机执行环境不允许创建管道（CreatePipe → WinError 5），所以 ffmpeg 的 stderr 落到文件再读。
+    PROBE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(PROBE_LOG, "wb") as fh:
+        subprocess.run([str(FFMPEG), "-hide_banner", "-i", str(path)],
+                       stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT)
+    try:
+        text = PROBE_LOG.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return 0.0
+    for line in text.splitlines():
         if "Duration:" in line:
             hh, mm, ss = line.split("Duration:")[1].split(",")[0].strip().split(":")
             return int(hh) * 3600 + int(mm) * 60 + float(ss)
     return 0.0
+
+
+def estimate_shift(vocals: Path, target_hz: float, lo: int, hi: int) -> tuple:
+    """用 yin 估原曲人声的中位基频，算出「往目标基频靠」需要几个半音。
+
+    RVC 只移调、不搬共振峰，所以升得越多越尖——这里把上限定死，宁可不那么童。
+    返回 (半音, 原曲中位 Hz)；估不出来就 (0, 0)。
+    """
+    try:
+        import numpy as np
+        import librosa
+        y, sr = librosa.load(str(vocals), sr=16000, mono=True, duration=90)
+        f0 = librosa.yin(y, fmin=80, fmax=800, sr=sr)
+        f0 = f0[np.isfinite(f0) & (f0 > 80) & (f0 < 800)]
+        if f0.size < 50:
+            return 0, 0.0
+        med = float(np.median(f0))
+        shift = 12.0 * math.log2(target_hz / med)
+        return int(max(lo, min(hi, round(shift)))), med
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [auto-pitch] 估音高失败（{type(exc).__name__}: {exc}），回落固定半音")
+        return None, 0.0
 
 
 def main(argv=None) -> int:
@@ -76,8 +109,18 @@ def main(argv=None) -> int:
     ap.add_argument("--out-prefix", default=r"F:\qqbot\tmp\sing-demo")
     ap.add_argument("--workdir", default=r"F:\qqbot\tmp\sing-demo-work")
     ap.add_argument("--device", default="cuda:0")
+    # 2026-11-09 六调：唱歌必须用 harvest。rmvpe 是给说话的，歌声里长音/颤音会八度误判，
+    # 出来就是「死鬼索命」那种忽高忽低的怪腔。harvest 对歌声稳得多（慢一点，值得）。
+    ap.add_argument("--method", default="harvest", choices=["harvest", "rmvpe", "pm", "crepe"])
     ap.add_argument("--segment", type=int, default=7, help="demucs 分段长度（6GB 卡用 7）")
     ap.add_argument("--skip-demucs", action="store_true")
+    # 2026-11-09 五调：固定半音是「一首行、换一首就翻车」的根因——不同歌的人声音域差太多，
+    # 同一首歌里原唱可能是童声（本来就高），再升 3 度必然发尖。改成按原曲人声中位基频
+    # 自动算：往目标基频靠，并夹在 [lo, hi] 里。
+    ap.add_argument("--auto-pitch", type=float, default=0.0,
+                    help="自动音高：目标人声基频 Hz（0=关闭，用 --pitch 的固定值）")
+    ap.add_argument("--auto-lo", type=int, default=-2, help="自动音高下限（半音）")
+    ap.add_argument("--auto-hi", type=int, default=4, help="自动音高上限（半音）")
     args = ap.parse_args(argv)
 
     song = Path(args.song)
@@ -111,11 +154,21 @@ def main(argv=None) -> int:
         model, _, index = rest.partition("|")
         dst = work / f"conv-{name}.wav"
         pitch = pitches.get(name, "0")
+        if args.auto_pitch and args.auto_pitch > 0:
+            auto, med = estimate_shift(vocals, args.auto_pitch, args.auto_lo, args.auto_hi)
+            if auto is not None:
+                pitch = str(auto)
+                print(f"  自动音高：原曲人声中位 {med:.0f}Hz → 目标 {args.auto_pitch:.0f}Hz"
+                      f" = {auto:+d} 半音（夹在 {args.auto_lo:+d}~{args.auto_hi:+d}）", flush=True)
         print(f"[2/3] RVC 换声 {name} (pitch={pitch}) ...", flush=True)
         cmd = [py, "-m", "rvc_python", "cli",
                "-i", str(vocals), "-o", str(dst), "-mp", model,
-               "-de", args.device, "-me", "rmvpe", "-pi", pitch,
-               "-ir", "0.6", "-fr", "3", "-rmr", "0.25", "-pr", "0.5"]
+               "-de", args.device, "-me", args.method, "-pi", pitch,
+               # 2026-11-09 四调：目标是「童真、纯净清亮、少沙感」。沙感 = 换声颗粒 + 高频嘶声。
+               # index_rate 0.75→0.5（index 拉满颗粒最明显）、filter_radius 3→7（多轮中值平滑，
+               # 去沙最有效的旋钮）、rms_mix_rate 0.33→0.25（别把音量包络电子化）、protect 0.5→0.33
+               # （护住清辅音和气声，咬字才不发糊）。
+               "-ir", "0.5", "-fr", "7", "-rmr", "0.25", "-pr", "0.33"]
         if index:
             cmd += ["-ip", index]
         rc = run(cmd, log)
@@ -133,18 +186,31 @@ def main(argv=None) -> int:
         cmd = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", vocal]
         if inst and inst.exists():
             # 伴奏压到 -3dB 给人声让位；人声 mono 上抬成立体声，避免 amix 退化成单声道
+            # 2026-11-09 四调：沙感很大一部分是换声残留的高频嘶声，微信语音条采样率
+            # 只到 24k（Nyquist 12k），所以干脆 12k 低通掉——反正发出去也存不住，
+            # 留着只会变成「沙」。deesser 也加了一档。
+            # 2026-11-09 六调：afftdn 强降噪会把残留噪声修成「水声/幽灵感」——用户原话
+            # 「像死鬼索命」，就是它干的。降到 nr=3 只削最底的嘶声，把人声留给 RVC 本身的质感。
             cmd += ["-i", inst, "-filter_complex",
-                    "[0:a]aformat=channel_layouts=stereo,volume=1.0[v];"
-                    "[1:a]aformat=channel_layouts=stereo,volume=0.7[i];"
-                    "[v][i]amix=inputs=2:duration=shortest:normalize=0[out]",
+                    "[0:a]aformat=channel_layouts=stereo,highpass=f=75,"
+                    "afftdn=nr=3:nf=-55,"
+                    "deesser=i=0.35:m=0.6:f=0.5,"
+                    "equalizer=f=7500:t=q:w=1.2:g=-2,"
+                    "lowpass=f=11500:poles=2,"
+                    "alimiter=limit=0.92:level=false,volume=0.98[v];"
+                    "[1:a]aformat=channel_layouts=stereo,volume=0.4[i];"
+                    "[v][i]amix=inputs=2:duration=shortest:normalize=0,"
+                    "loudnorm=I=-15:TP=-1.5:LRA=11:print_format=none,aresample=44100[out]",
                     "-map", "[out]"]
         else:
             cmd += ["-af", "aformat=channel_layouts=stereo"]
         cmd += ["-ar", "44100", "-b:a", "192k", str(out)]
-        cp = subprocess.run([str(c) for c in cmd], stdin=subprocess.DEVNULL,
-                            capture_output=True)
+        mix_err = work / "mix.err"
+        with open(mix_err, "wb") as eh:
+            cp = subprocess.run([str(c) for c in cmd], stdin=subprocess.DEVNULL,
+                                stdout=eh, stderr=subprocess.STDOUT)
         if cp.returncode != 0:
-            print("  混音失败:", cp.stderr.decode("utf-8", "replace")[-600:])
+            print("  混音失败:", mix_err.read_text(encoding="utf-8", errors="replace")[-600:])
             continue
         made.append(out)
         print(f"  成品: {out} ({probe_seconds(out):.2f}s, "

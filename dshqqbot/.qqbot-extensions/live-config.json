@@ -1,0 +1,66 @@
+{
+  "enabled": true,
+  "platform": "bilibili",
+  "bilibili": {
+    "channel": "web",
+    "roomId": "",
+    "alwaysConnect": false,
+    "pollLiveMs": 60000,
+    "open": {
+      "appId": "",
+      "accessKeyId": "",
+      "identityCode": ""
+    }
+  },
+  "douyin": {
+    "enabled": false,
+    "roomId": "",
+    "note": "接口占位：抖音直播弹幕长连需要 x-bogus/设备签名与企业开发者白名单，当前不实现。"
+  },
+  "reply": {
+    "enabled": true,
+    "dryRun": true,
+    "personaName": "小蓝",
+    "mentionNames": ["小蓝", "小蓝蓝", "鲸鱼娘", "咕噜"],
+    "keywords": [],
+    "minGapMs": 8000,
+    "maxPerMinute": 4,
+    "maxPerHour": 30,
+    "maxPerDay": 120,
+    "perUserCooldownMs": 600000,
+    "maxRepliesPerUserPerHour": 2,
+    "dedupWindowMs": 120000,
+    "chatSampleRate": 0.12,
+    "questionSampleRate": 0.5,
+    "giftMinPrice": 5000,
+    "replyToFollow": true,
+    "replyToEnter": false,
+    "enterAggregate": {
+      "windowMs": 60000,
+      "minCount": 5,
+      "enabled": true
+    },
+    "quietHours": [],
+    "quietAllowCritical": true,
+    "maxChars": 26,
+    "reserveRatio": 0.2,
+    "llm": {
+      "maxCallsPerHour": 10,
+      "maxCallsPerDay": 40,
+      "maxOutputTokens": 60,
+      "maxInputChars": 260,
+      "maxTokensPerDay": 12000,
+      "model": "deepseek-chat",
+      "timeoutMs": 15000,
+      "temperature": 0.85
+    }
+  },
+  "log": {
+    "persistEvents": true,
+    "maxBytes": 1048576,
+    "keepLines": 2000
+  },
+  "storage": {
+    "root": ""
+  }
+}

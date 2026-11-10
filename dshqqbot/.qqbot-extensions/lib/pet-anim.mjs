@@ -97,6 +97,35 @@ FORMS.xiaolan.randomPool = FORMS.xiaolan.anims.filter((a) => a.name !== '小蓝-
 export const PET_ANIMS = FORMS.xiaolan.anims;
 export const PET_ID = 'xiaolan';
 
+// ── 互动状态机（2026-11-07 主人要求：切换/待机/抚摸/对话各有清楚的动作）──────
+// 四个对外状态固定，形态内部映射到各自素材；de 娘素材少，非 idle 统一复用开心。
+export const PET_STATES = {
+  xiaolan: { idle: '小蓝-待机', pet: '小蓝-开心', talk: '小蓝-说话', wave: '小蓝-挥手', point: '小蓝-指', pickup: '小蓝-被拎起' },
+  classic: { idle: '小蓝-待机', pet: '小蓝-开心', talk: '小蓝-说话', wave: '小蓝-挥手', point: '小蓝-指', pickup: '小蓝-被拎起' },
+  de: { idle: 'de娘-待机', pet: 'de娘-开心', talk: 'de娘-开心', wave: 'de娘-开心', point: 'de娘-开心', pickup: 'de娘-开心' },
+  muu: { idle: '待机呼吸休闲', pet: '点击回应-开心跃动', talk: '悠闲哼歌', wave: '点击回应-元气挥手', point: '点击回应-傲娇生气', pickup: '被鼠标拖拽悬空反馈' },
+};
+
+export const PET_STATE_LABELS = {
+  idle: '待机', pet: '抚摸', talk: '说话', wave: '挥手', point: '指一指', pickup: '拎起来',
+};
+
+/** 形态 + 状态 → 动作名；未知状态回落 idle（永不抛异常） */
+export function stateAnim(formId, state) {
+  const m = PET_STATES[formId] || PET_STATES.xiaolan;
+  return m[String(state || '')] || m.idle;
+}
+
+/** 供面板渲染的状态清单：只列出该形态真有素材的状态 */
+export function stateList(formId) {
+  const f = FORMS[formId] || FORMS.xiaolan;
+  const m = PET_STATES[formId] || PET_STATES.xiaolan;
+  const known = new Set(f.anims.map((a) => a.name));
+  return Object.keys(PET_STATE_LABELS)
+    .map((k) => ({ state: k, label: PET_STATE_LABELS[k], anim: m[k], available: known.has(m[k]) }))
+    .filter((x) => x.available);
+}
+
 // ── 第三方右键菜单（dsh-pet 官方扩展点，2026-10-31 主人要求「加一个切换形象」）────────
 // 注册：POST {BASE}/menu/item {owner, labels}（整体覆盖；桌宿进程重启即清空 → 丢册自动重注册）
 // 点击：渲染端 POST {BASE}/menu/click → 我们 GET {BASE}/menu/events?owner=… 长轮询取走（读取即消费）
@@ -219,15 +248,22 @@ async function dshFetchRetry(pathname, opts = {}) {
 
 // ── 当前形态探测（真源 = dsh-pet 配置里的 display） ────────────────────
 let _formCache = { at: 0, form: null };
+let _lastForm = 'xiaolan';              // 最近一个已知形态（关桌宠后回归用，不再写 'hidden'）
+let _hidden = false;                    // 桌宠总开关关闭中；形态判断仍沿用 _lastForm
+// 切换窗口：switchForm 先上后下，中间配置里会短暂两只都 visible。
+// 以前 currentForm 会把这个中间态当 mixed 吐给前端 → 前端认为形态变了 → 清空/重设视频源 → 闪。
+// 现在切换一开始就写目标，6 秒内探测直接返回目标（乐观态），mixed 不再外泄。
+let _pendingForm = { form: null, until: 0 };
 
 /** display 是否含「桌面/网页可见」 */
 function isDisplayed(display) {
   return display === 'desktop' || display === 'both';
 }
 
-/** 当前形态：xiaolan | muu | mixed（两只都可见，待修正）| null（探不到） */
-export async function currentForm({ force = false } = {}) {
+/** 当前形态：xiaolan | classic | de | muu | mixed（两只都可见，待修正）| null（探不到） */
+export async function currentForm({ force = false, ignorePending = false } = {}) {
   const now = Date.now();
+  if (!ignorePending && _pendingForm.form && now < _pendingForm.until) return _pendingForm.form;
   if (!force && _formCache.form && now - _formCache.at < 5000) return _formCache.form;
   const res = await dshFetchRetry('config');
   const j = res?.json;
@@ -237,7 +273,7 @@ export async function currentForm({ force = false } = {}) {
     : null;
   if (!pets || !pets.length) {
     // 探不到就保留上次结论（启动默认小蓝）
-    const fb = _formCache.form || 'xiaolan';
+    const fb = _formCache.form || _lastForm || 'xiaolan';
     _formCache = { at: now, form: fb };
     return fb;
   }
@@ -247,8 +283,9 @@ export async function currentForm({ force = false } = {}) {
   let form;
   if (shown.length > 1) form = 'mixed';       // 异常态：多只都在
   else if (shown.length === 1) form = shown[0];
-  else form = _formCache.form || 'xiaolan';      // 都隐藏 → 维持上次
+  else form = _formCache.form || _lastForm || 'xiaolan';      // 都隐藏 → 维持上次
   _formCache = { at: now, form };
+  if (FORMS[form]) _lastForm = form;
   return form;
 }
 
@@ -304,19 +341,39 @@ function silenceMuuWhisper() {
  * @returns {Promise<{ok:true, form:string, label:string, changed:string[]}
  *                  |{ok:false, reason:string, message:string}>}
  */
+// 单飞：同一目标的并发切换合并成一次（前端切换按钮/轮询同时打进来的状态竞争）
+let _switchInFlight = null;
+
 export async function switchForm(target) {
   const t = String(target || '').trim();
   if (!FORMS[t]) {
     return { ok: false, reason: 'unknown-form', message: `不认识的形态: ${t}（可选：${FORM_IDS.join('/')}）` };
   }
-  const cur = (await currentForm({ force: true })) || 'xiaolan';
+  if (_switchInFlight && _switchInFlight.target === t) return _switchInFlight.promise;
+  const p = doSwitchForm(t).finally(() => {
+    if (_switchInFlight && _switchInFlight.promise === p) _switchInFlight = null;
+  });
+  _switchInFlight = { target: t, promise: p };
+  return p;
+}
+
+async function doSwitchForm(t) {
+  // 先读真实当前形态（ignorePending：避免上一次切换的乐观态把这次误判成「已经切好了」）
+  const cur = (await currentForm({ force: true, ignorePending: true })) || _lastForm || 'xiaolan';
   if (cur === t) {
+    _pendingForm = { form: t, until: Date.now() + 6000 };
+    _formCache = { at: Date.now(), form: t };
+    _lastForm = t;
+    _hidden = false;
     return { ok: true, form: t, label: FORMS[t].label, changed: [], message: `当前已经是${FORMS[t].label}形态` };
   }
+  // 乐观态：先对外宣布目标，6 秒窗口内 currentForm 不再吐 mixed，避免前端把中间态当形态变化
+  _pendingForm = { form: t, until: Date.now() + 6000 };
   const changed = [];
   // 1) 目标上场（先上后下，保证任一时刻至少逻辑上有一只在）
   const up = await dshFetchRetry('pet-display', { method: 'POST', body: { id: FORMS[t].id, display: 'both' } });
   if (up.status !== 200 || !up.json || up.json.ok === false) {
+    _pendingForm = { form: null, until: 0 };
     return { ok: false, reason: (up.json && up.json.reason) || `http-${up.status}`, message: (up.json && up.json.message) || `${FORMS[t].label} 上场失败` };
   }
   changed.push(`${FORMS[t].id}:both`);
@@ -335,6 +392,8 @@ export async function switchForm(target) {
   // 3) 零 token 纪律：肥鱼条目的碎碎念必须关（写在 main-config.jsonc）
   if (t === 'muu') silenceMuuWhisper();
   _formCache = { at: Date.now(), form: t };
+  _lastForm = t;
+  _hidden = false;
   saveFormPreference(t); // 偏好落盘：重启 harness 后 hooks 启动自校正用
   return { ok: true, form: t, label: FORMS[t].label, changed };
 }
@@ -349,7 +408,8 @@ export async function petAnim(name, { form = null, surface = 'any' } = {}) {
   const fid = form || (await currentForm()) || 'xiaolan';
   const f = formOf(fid);
   if (!f) return { ok: false, reason: 'unknown-form', message: `不认识的形态: ${fid}` };
-  const known = new Set([...f.anims.map((a) => a.name), ...f.randomPool.map((a) => a.name || a)]);
+  // classic 没有 randomPool：旧代码在这里会 TypeError，原版小蓝的动作全触发不了
+  const known = new Set([...f.anims.map((a) => a.name), ...((f.randomPool || []).map((a) => a.name || a))]);
   if (!known.has(name)) {
     return { ok: false, reason: 'unknown-anim', message: `${f.label}不会这个动作: ${name}` };
   }
@@ -385,7 +445,10 @@ export async function petAnim(name, { form = null, surface = 'any' } = {}) {
 export async function randomAnim(form = null) {
   const fid = form || (await currentForm()) || 'xiaolan';
   const f = formOf(fid) || FORMS.xiaolan;
-  return f.randomPool[Math.floor(Math.random() * f.randomPool.length)];
+  const pool = (f.randomPool && f.randomPool.length)
+    ? f.randomPool
+    : f.anims.filter((a) => !/待机/.test(a.name)); // classic/de 没有随机池：退化成“除了待机随便一个”
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 /** 按 label 或动画名在【当前形态】里找动作（找不到回 null） */
@@ -419,15 +482,23 @@ export async function hideAllPets() {
       if (r.status === 200 && r.json && r.json.ok !== false) off.push(FORMS[fid].id);
     } catch { /* 单个失败继续关下一个 */ }
   }
-  _formCache = { at: Date.now(), form: 'hidden' };
+  // 不再把形态写成 'hidden'（FORMS 里没有它，会让前端回落小蓝、并反复触发刷新）。
+  // 只记开关状态，形态继续沿用 _lastForm；下次开启直接用偏好或上次形态。
+  _hidden = true;
+  _pendingForm = { form: null, until: 0 };
+  _formCache = { at: Date.now(), form: _lastForm || 'xiaolan' };
   return { ok: off.length > 0, off };
 }
 
 /** 开启桌宠：回归用户最后选的形态（偏好落盘），没有偏好默认小蓝。 */
 export async function showPet() {
-  const pref = loadFormPreference() || 'xiaolan';
+  const pref = loadFormPreference() || _lastForm || 'xiaolan';
+  _hidden = false;
   return switchForm(pref);
 }
+
+/** 桌宠总开关是否关闭（前端显示状态用；配置探不到时按进程内记录） */
+export function isHidden() { return _hidden; }
 
 // ── 对外小工具（P2 群动画 / P3 网页桌宠用） ────────────────────────────
 /** 暴露 web 端点（port+token）给 hooks 做媒体代理；force=true 强刷 token。勿把 token 写进任何响应体 */
@@ -470,4 +541,18 @@ export function animSourcePath(name) {
 export function _testReset() {
   _ep = null;
   _formCache = { at: 0, form: null };
+  _pendingForm = { form: null, until: 0 };
+  _switchInFlight = null;
+  _lastForm = 'xiaolan';
+  _hidden = false;
+}
+
+/** 稳定快照串：只有形态/开关/动作表/皮肤真正变化时才变，供前端判重避免重绘 */
+export function formRev({ form = '', petOn = true, anims = [], outfits = [] } = {}) {
+  return [
+    form,
+    petOn ? 'on' : 'off',
+    anims.map((a) => a.name || a).join(','),
+    outfits.map((o) => `${o.id}${o.active ? '*' : ''}`).join(','),
+  ].join('|');
 }

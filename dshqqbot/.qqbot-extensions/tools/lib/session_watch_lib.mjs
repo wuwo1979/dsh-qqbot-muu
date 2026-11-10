@@ -61,9 +61,14 @@ export const __LIB_VERSION__ = 'lib-v14-20261014-通用路由+扫盘解析+会�
 // ── ★ 2026-10-13 持久化改造（主人指示：**以本地存档为准，别只靠内存**）──────────────
 //   本文件的风格是"用到时动态 import"；这里用**顶层 await** 一次性取到同步版 fs，
 //   后面的 ensureLoaded()（同步读存档）才能被同步函数（如 listWatching）直接调用。
-const { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } = await import('node:fs');
-const { dirname, join } = await import('node:path');
+const { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } = await import('node:fs');
+const { dirname, join, resolve } = await import('node:path');
 const { fileURLToPath } = await import('node:url');
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+/** 会话“最后活动”取时（文件 mtime，不用目录 mtime）；同时对外导出供命令层复用 */
+const { lastActivityOfDir } = await import('../../lib/timefmt.mjs');
+export { lastActivityOfDir };
 
 /**
  * 盯梢名单。**放在 globalThis 上**，不是模块局部变量。
@@ -392,10 +397,43 @@ export function stripRouteMark(text) {
     .trim();
 }
 
-/** `~/.dsh/sessions` 根目录（Windows 用 USERPROFILE，其余用 HOME） */
-function sessionsRootDir() {
+/**
+ * 会话根候选（2026-11-08）：不再只认 `~/.dsh/sessions`（DSH Desktop 下这个目录根本不存在，
+ * 扫盘一直返回空）。按优先级列出所有可能位置，取实际存在的。
+ */
+function sessionRootCandidates() {
+  const out = [];
+  const push = (p) => {
+    const v = String(p || '').trim();
+    if (v && out.indexOf(v) < 0) out.push(v);
+  };
+  push(process.env.QQBOT_SESSIONS_ROOT);
   const home = String(process.env.USERPROFILE || process.env.HOME || '').trim();
-  return home ? join(home, '.dsh', 'sessions') : '';
+  if (home) push(join(home, '.dsh', 'sessions'));
+  const dshHome = String(process.env.DSH_HOME || '').trim();
+  if (dshHome) push(join(dshHome, 'harness', 'sessions'));
+  const appdata = String(process.env.APPDATA || '').trim();
+  if (appdata) push(join(appdata, 'dsh-desktop', 'harness', 'sessions'));
+  // 本仓库：<repo>/data/harness/sessions（本文件在 <repo>/<dataRoot>/.qqbot-extensions/tools/lib）
+  try { push(join(resolve(HERE, '..', '..', '..', '..'), 'data', 'harness', 'sessions')); } catch { /* ignore */ }
+  return out;
+}
+
+/** 实际存在的会话根列表（可能多个：不同 DSH 安装位置） */
+export function sessionsRootDirs() {
+  const out = [];
+  for (const r of sessionRootCandidates()) {
+    let ok = false;
+    try { ok = existsSync(r); } catch { ok = false; }
+    if (ok) out.push(r);
+  }
+  return out;
+}
+
+/** 首选会话根：第一个存在的；都不存在时返回候选首位（保持旧行为） */
+function sessionsRootDir() {
+  const dirs = sessionsRootDirs();
+  return dirs[0] || (sessionRootCandidates()[0] || '');
 }
 
 /**
@@ -411,55 +449,73 @@ export function findSessionOnDisk(key) {
     return { id: want, workspace: '' };
   }
   if (want.length < 4) return { id: '', workspace: '' };
-  const root = sessionsRootDir();
-  if (!root) return { id: '', workspace: '' };
-  try {
-    for (const ws of readdirSync(root)) {
-      let entries = [];
-      try { entries = readdirSync(join(root, ws)); } catch { continue; }
-      for (const d of entries) {
-        const raw = String(d).toLowerCase();
-        // ⚠️ 会话目录名**可能带前缀**（子会话是 `session-<uuid>`）⇒ 两边都过 shortSessionId 再比，
-        //    否则像 `cf871e99` 这种短 id 会解析失败（本轮实测踩到）。
-        const sh = shortSessionId(String(d)).toLowerCase();
-        if (sh.startsWith(want) || raw.startsWith(want)) return { id: String(d), workspace: String(ws) };
+  for (const root of sessionsRootDirs()) {
+    try {
+      for (const ws of readdirSync(root)) {
+        let entries = [];
+        try { entries = readdirSync(join(root, ws)); } catch { continue; }
+        for (const d of entries) {
+          const raw = String(d).toLowerCase();
+          // ⚠️ 会话目录名**可能带前缀**（子会话是 `session-<uuid>`）⇒ 两边都过 shortSessionId 再比，
+          //    否则像 `cf871e99` 这种短 id 会解析失败（本轮实测踩到）。
+          const sh = shortSessionId(String(d)).toLowerCase();
+          if (sh.startsWith(want) || raw.startsWith(want)) return { id: String(d), workspace: String(ws) };
+        }
       }
-    }
-  } catch { /* ignore */ }
+    } catch { /* 换下一个根 */ }
+  }
   return { id: '', workspace: '' };
 }
 
 /**
- * 列会话目录（按 mtime 从新到旧）—— 给「/会话列表」命令用。
+ * 列会话目录（按“最后活动”从新到旧）—— 给「/会话列表」命令用。
+ * mtime = 目录内会话文件的最新 mtime（目录自身 mtime 不随追加写入变化，长期会话会停滞）。
  * @param {string} [workspaceDir] 传了就只列该工作区；不传列全部
  */
 export function listSessionDirs(workspaceDir) {
-  const root = sessionsRootDir();
-  if (!root) return [];
+  const roots = sessionsRootDirs();
+  if (!roots.length) return [];
   const out = [];
-  const pushWs = (ws) => {
+  const seen = new Set();
+  const pushWs = (root, ws) => {
     const wsDir = join(root, ws);
     let entries = [];
     try { entries = readdirSync(wsDir); } catch { return; }
     for (const d of entries) {
       const dir = join(wsDir, d);
-      let mtime = 0;
-      try { mtime = statSync(dir).mtimeMs; } catch { /* ignore */ }
-      out.push({ id: String(d), short: shortSessionId(String(d)), workspace: String(ws), mtime });
+      const key = `${ws}/${shortSessionId(String(d))}`;
+      if (seen.has(key)) continue;                 // 多个根指向同一会话时只留一份
+      seen.add(key);
+      out.push({
+        id: String(d),
+        short: shortSessionId(String(d)),
+        workspace: String(ws),
+        dir,
+        mtime: lastActivityOfDir(dir),
+      });
     }
   };
-  try {
-    if (workspaceDir) pushWs(workspaceDir);
-    else for (const ws of readdirSync(root)) pushWs(ws);
-  } catch { /* ignore */ }
+  for (const root of roots) {
+    try {
+      if (workspaceDir) pushWs(root, workspaceDir);
+      else for (const ws of readdirSync(root)) pushWs(root, ws);
+    } catch { /* 换下一个根 */ }
+  }
   return out.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
 }
 
-/** 列出 `~/.dsh/sessions` 下的工作区转义目录名（给向导第一步用） */
+/** 列出所有会话根下的工作区转义目录名（给向导第一步用） */
 export function listWorkspaceDirs() {
-  const root = sessionsRootDir();
-  if (!root) return [];
-  try { return readdirSync(root).filter((d) => !String(d).startsWith('.')); } catch { return []; }
+  const out = [];
+  for (const root of sessionsRootDirs()) {
+    let dirs = [];
+    try { dirs = readdirSync(root); } catch { continue; }
+    for (const d of dirs) {
+      const name = String(d);
+      if (!name.startsWith('.') && out.indexOf(name) < 0) out.push(name);
+    }
+  }
+  return out;
 }
 
 export function resolveShortId(root, short) {

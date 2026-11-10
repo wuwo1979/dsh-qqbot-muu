@@ -233,6 +233,7 @@ export function cleanChatText(text) {
   t = stripTagBlock(t, '状态', true);
   t = stripTagBlock(t, 'B站', true);
   t = stripTagBlock(t, '别重复', true);
+  t = stripTagBlock(t, '听懂', true);
   return t
     .replace(/\[MEDIA:[^\]]*\]/gi, '')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')

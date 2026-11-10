@@ -10926,7 +10926,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
       safe('conversation view', function () {
         slots.inject('conversation.view', function () {
           return slots.register(
-            { name: 'conversation.view', id: 'qqbot-ext', order: 81, label: 'QQ机器人扩展' },
+            { name: 'conversation.view', id: 'qqbot-ext', order: 81, label: 'QQ' },
             ExtPanel)
         })
       })

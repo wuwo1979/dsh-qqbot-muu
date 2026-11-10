@@ -34,6 +34,30 @@ COOKIE_CANDIDATES = [
 ]
 
 
+_BUVID_CACHE = {"v": None}
+
+
+def warm_buvid() -> str:
+    """抓一次首页拿 buvid3/b_nut —— 缺这个指纹，搜索接口会直接给 412。"""
+    if _BUVID_CACHE["v"] is not None:
+        return _BUVID_CACHE["v"]
+    got = ""
+    try:
+        req = urllib.request.Request("https://www.bilibili.com/", headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            hdrs = r.headers.get_all("Set-Cookie") or []
+        want = {}
+        for h in hdrs:
+            k, _, rest = h.partition("=")
+            if k in ("buvid3", "buvid4", "b_nut", "buvid_fp"):
+                want[k] = rest.split(";")[0]
+        got = "; ".join(f"{k}={v}" for k, v in want.items())
+    except Exception:
+        got = ""
+    _BUVID_CACHE["v"] = got
+    return got
+
+
 def cookie_header() -> str:
     for p in COOKIE_CANDIDATES:
         if not p.is_file():
@@ -53,8 +77,11 @@ def cookie_header() -> str:
             if isinstance(v, (str, int)):
                 parts.append(f"{k}={v}")
         if parts:
+            extra = warm_buvid()
+            if extra:
+                parts.append(extra)
             return "; ".join(parts)
-    return ""
+    return warm_buvid()
 
 
 def http_json(url: str, cookie: str, referer: str = "https://www.bilibili.com/") -> dict:
@@ -162,12 +189,29 @@ def download(url: str, dst: Path, cookie: str) -> int:
     return n
 
 
+def dur_seconds(h: dict) -> int:
+    """搜索结果里的 "4:31" / "1:02:03" → 秒。"""
+    raw = str(h.get("duration") or "").strip()
+    parts = [p for p in raw.split(":") if p.isdigit()]
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return 0
+    if len(nums) == 2:
+        return nums[0] * 60 + nums[1]
+    if len(nums) == 3:
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    return nums[0] if nums else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--bvid", default="")
     ap.add_argument("--url", default="")
     ap.add_argument("--search", default="")
     ap.add_argument("--pick", type=int, default=1, help="搜索结果的第几条（1 起）")
+    ap.add_argument("--min-sec", type=int, default=60, help="最短时长，挡掉片段/试听")
+    ap.add_argument("--max-sec", type=int, default=420, help="最长时长，挡掉循环歌单(40min)")
     ap.add_argument("--out", required=True, help="产物目录")
     args = ap.parse_args(argv)
 
@@ -183,7 +227,12 @@ def main(argv=None) -> int:
         print(f"[search] {len(hits)} 条结果：")
         for i, h in enumerate(hits, 1):
             print(f"  {i}. {h['title']}  [{h['owner']}]  {h['duration']}  {h['bvid']}  play={h['play']}")
-        picked = hits[min(max(args.pick, 1), len(hits)) - 1]
+        # 40 分钟的循环歌单最容易被搜到，按标题关键词 + 时长先筛一轮
+        ok = [h for h in hits if args.min_sec <= dur_seconds(h) <= args.max_sec]
+        if not ok:
+            print("[warn] 没有时长合适的，退回原始结果")
+            ok = hits
+        picked = ok[min(max(args.pick, 1), len(ok)) - 1]
         print(f"[pick] {picked['title']} → {picked['url']}")
 
     raw = args.bvid or args.url or (picked or {}).get("bvid") or ""

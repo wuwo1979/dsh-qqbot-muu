@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadIndex, pathOfItem, haystackOf, lexicalScore } from '../lib/sticker-resolve.mjs';
 import { embedTexts, loadRetrieval, modelTagOf } from '../lib/embedder.mjs';
+import { facetFilterMatch, shortTagline } from '../lib/sticker-schema.mjs';
 
 export const name = 'sticker-auto';
 
@@ -175,13 +176,14 @@ function isBlocked(item) {
  * 选一张表情。语义优先（本地向量），不足再退回关键词；都过不了准入分就返回 null。
  * @returns {Promise<{ok:true,item:object,path:string,score:number,mode:string}|{ok:false,reason:string}>}
  */
-export async function choose(root, query, { exclude = [], opt = DEFAULTS, cfg = null } = {}) {
+export async function choose(root, query, { exclude = [], opt = DEFAULTS, cfg = null, facets = null } = {}) {
   const q = String(query || '').replace(/\[MEDIA:[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, Math.max(20, opt.maxQueryChars));
   if (q.length < 4) return { ok: false, reason: 'query-too-short' };
   const rec = loadIndex(root);
   // [qqbot-mod] layer-guard 2026-10-28：trash/negative 层没有 removed 标记但文件还在，
   //   不显式排除的话自动路径会把回收站的图捞出来发群。
-  const tagged = rec.items.filter((it) => it && !it.removed && it.layer !== 'trash' && it.layer !== 'negative' && !isBlocked(it) && haystackOf(it));
+  const tagged = rec.items.filter((it) => it && !it.removed && it.layer !== 'trash' && it.layer !== 'negative'
+    && !isBlocked(it) && haystackOf(it) && facetFilterMatch(it, facets));
   if (!tagged.length && !rec.items.length) return { ok: false, reason: 'empty-library' };
   if (!tagged.length) return { ok: false, reason: 'no-tags' };
 
@@ -262,7 +264,7 @@ export async function onOutbound(ctx, next) {
       return next();
     }
 
-    const picked = await choose(root, text, { exclude: rt.recent, opt });
+    const picked = await choose(root, text, { exclude: rt.recent, opt, facets: { platform: 'qq' } });
     if (!picked.ok) {
       appendLog(root, { result: 'skip', why: picked.reason, scope: ctx?.target?.scope || '' });
       return next();
@@ -275,7 +277,8 @@ export async function onOutbound(ctx, next) {
     const recent = [...rt.recent, String(picked.item.id)].slice(-Math.max(1, opt.recentKeep));
     const saved = writeJson(runtimeFile(root), { lastAt: Date.now(), hourStart: rate.hourStart, hourCount: rate.hourCount, recent, updatedAt: Date.now() });
     appendLog(root, {
-      result: 'sent', id: picked.item.id, score: Number(picked.score.toFixed(3)), mode: picked.mode,
+      result: 'sent', id: picked.item.id, tags: shortTagline(picked.item),
+      score: Number(picked.score.toFixed(3)), mode: picked.mode,
       scope: ctx?.target?.scope || '', query: summaryOf(text), persisted: saved,
     });
   } catch (e) {

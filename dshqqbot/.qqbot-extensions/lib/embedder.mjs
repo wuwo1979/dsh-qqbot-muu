@@ -30,12 +30,17 @@ export function pluginDir() {
   const found = findPluginDir();
   if (found) return found;
   const envHome = String(process.env.DSH_HOME || '').trim();
+  const base = 'C:/Users/Administrator/AppData/Roaming/dsh-desktop/harness/profiles/web/node_modules';
+  // 2026-11-05：插件已改名 dsh-qqbot-muu，旧 @zaofan/dsh-qqbot 目录已不存在——新名优先
   const cands = [
+    envHome && join(envHome, 'profiles', 'web', 'node_modules', 'dsh-qqbot-muu'),
     envHome && join(envHome, 'profiles', 'web', 'node_modules', '@zaofan', 'dsh-qqbot'),
-    'C:/Users/Administrator/AppData/Roaming/dsh-desktop/harness/profiles/web/node_modules/@zaofan/dsh-qqbot',
+    join(base, 'dsh-qqbot-muu'),
+    join(base, '@zaofan', 'dsh-qqbot'),
+    'C:/Users/Administrator/.dsh/profiles/web/node_modules/dsh-qqbot-muu',
     'C:/Users/Administrator/.dsh/profiles/web/node_modules/@zaofan/dsh-qqbot',
   ].filter(Boolean);
-  return cands.find((p) => existsSync(join(p, 'dist', 'features', 'local-embed.js'))) || cands[1];
+  return cands.find((p) => existsSync(join(p, 'dist', 'features', 'local-embed.js'))) || cands.find(Boolean) || '';
 }
 
 /** 读 retrieval 配置（独立读文件，避免与 memory.mjs 循环依赖） */

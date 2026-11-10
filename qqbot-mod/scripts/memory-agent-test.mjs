@@ -258,6 +258,21 @@ head('7 自我反思（runSelfReflection）');
     dataRoot: DATA_ROOT, cfg: {}, chatImpl: async () => ({ ok: true, text: '不是 json' }),
   });
   chk(bad.ok === false && bad.reason === 'parse', '非 JSON 输出安全失败');
+
+  // 2026-11-07：用户真实反馈必须进反思素材（闭环验证）
+  await M.remember(DATA_ROOT, P.GLOBAL_SCOPE, {
+    text: '用户反馈：你刚才太凶了，别反问（我上一条：那你呢？）',
+    kind: 'insight', subj: 'feedback',
+  });
+  let seen = '';
+  const rr2 = await A.runSelfReflection({
+    dataRoot: DATA_ROOT, cfg: {}, chatImpl: async ({ messages }) => {
+      seen = messages.map((m) => m.content).join('\n');
+      return { ok: true, text: JSON.stringify({ growth: '以后先接住对方的话，再问，不反问抬杠。' }) };
+    },
+  });
+  chk(rr2.ok === true, `带反馈的反思跑通（${rr2.reason || rr2.error || ''}）`);
+  chk(seen.includes('最近用户反馈') && seen.includes('太凶'), '反思 prompt 真的读到了用户反馈');
 }
 
 console.log(`\nPASS ${pass} / FAIL ${fail}`);

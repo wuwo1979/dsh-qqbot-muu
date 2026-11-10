@@ -89,11 +89,25 @@ async function main() {
   // ── 工具：只检索不发送 ──
   {
     const r = await tool.run({ id: A }, { dataRoot: ROOT, qq: fakeQQ() });
-    ok('工具按 id 返回标记', r.ok === true && r.msg.includes('[MEDIA:image|') && r.data.candidates[0].id === A, r.msg);
+    ok('工具按 id 返回短标记', r.ok === true && r.msg.includes('[STICKER:' + A + ']') && r.data.candidates[0].id === A, r.msg);
+    ok('紧凑模式不塞路径/描述', !r.msg.includes('MEDIA:image|') && !r.msg.includes('一只无语的猫')
+      && !r.data.candidates[0].path && !r.data.candidates[0].desc, r.data.candidates[0]);
   }
   {
     const r = await tool.run({ query: '无语' }, { dataRoot: ROOT, qq: fakeQQ() });
     ok('工具按语义检索', r.ok === true && r.data.candidates.length >= 1, r.msg);
+    ok('候选只含 id/短标签/分数', r.data.candidates.every((c) => c.id && typeof c.tags === 'string'
+      && !c.path && !c.desc), r.data.candidates[0]);
+  }
+  {
+    const r = await tool.run({ emotion: '无语' }, { dataRoot: ROOT, qq: fakeQQ() });
+    ok('按情绪标签检索', r.ok === true && r.data.candidates[0].id === A, r.msg);
+    const miss = await tool.run({ emotion: '无语', scene: '群聊' }, { dataRoot: ROOT, qq: fakeQQ() });
+    ok('跨面标签取交集', miss.ok === false && /没有同时满足/.test(miss.msg), miss.msg);
+  }
+  {
+    const r = await tool.run({ id: A, mode: 'path' }, { dataRoot: ROOT, qq: fakeQQ() });
+    ok('调试模式仍可回路径', r.ok === true && r.msg.includes('[MEDIA:image|') && r.data.candidates[0].path, r.msg);
   }
   {
     // 空库：语义/关键词都拿不到候选时必须明确说没有，绝不编造文件名
@@ -117,7 +131,7 @@ async function main() {
   {
     const r = await tool.run({ id: A, target: GID, scope: 'group' }, { dataRoot: ROOT, qq: fakeQQ(false) });
     ok('QQ 拒绝时明确失败', r.ok === false && /没发出去/.test(r.msg), r.msg);
-    ok('失败时仍给出兜底标记', r.msg.includes('[MEDIA:image|'), r.msg);
+    ok('失败时仍给出兜底标记', r.msg.includes('[STICKER:' + A + ']'), r.msg);
   }
   {
     const r = await tool.run({ id: A, target: '测试群' }, { dataRoot: ROOT, qq: fakeQQ(true) });

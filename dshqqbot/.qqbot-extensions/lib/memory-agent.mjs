@@ -33,7 +33,7 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  loadMemories, remember, getPersona, setPersona,
+  loadMemories, remember, getPersona, setPersona, deletePersona,
   queryChat, ingestChatHistory, getChatState, setChatState,
 } from './memory.mjs';
 import { saveMood, getMood, bumpBond, getBond, GLOBAL_SCOPE } from './profile-core.mjs';
@@ -41,6 +41,7 @@ import { tierOf, policyFor } from './group-tiers.mjs';
 import { chat as llmChat, health as llmHealth, loadConfig as loadLlmConfig } from './local-llm.mjs';
 import { observeTrait, replay as hippoReplay } from './memory-hippo.mjs';
 import { loadBedrock } from './bedrock.mjs';
+import { personalIds } from './personal-ids.mjs';
 
 // 回放巩固的节流计数（进程内；重启清零不影响正确性，只是可能早/晚一轮）
 const replayCounter = new Map();
@@ -246,6 +247,13 @@ function buildPrompt({ rows, knownFacts, knownCards, prevMood = '', cfg }) {
     '2. 不记录寒暄、表情、语气词、玩笑过程、重复内容；不记录小蓝自己说过的话（除非是承诺或约定）。',
     '3. facts 优先记：身份/职业、长期偏好、作息习惯、重要关系、承诺约定；每条 ≤ 48 字，第三人称陈述，主语明确；对话里一旦出现具体事实（养宠物/宠物名、作息、工作或学习内容、约定、近况），必须至少写一条 facts，不能只塞进 cards；没有值得记的就给空数组。',
     '4. cards 只给对话里出现的人，每人 ≤ 80 字：客观印象 + 她对这个人稳定的态度。只写对话里有依据的内容，证据不足就写"刚认识，还不熟"。已有印象卡要合并更新，不要丢掉旧信息。',
+    '   ⚠ 称呼与关系必须进卡（2026-11-10 主人要求）：对话里一旦确认"某人是爸爸/妈妈/姐姐/妹妹/主人/群主"这类固定身份，card 里要用一句写清「谁是谁的什么、她怎么称呼对方」，例如"妈妈：群主，是小蓝的妈妈；温柔爱操心"；只写称呼不写评价也算合格，不许只写性格把关系丢掉。',
+    '   ⚠ 关系只按对话里本人自述或主人明确说的写；听来路不明的猜测不要进卡（比如第三方开玩笑说"你妈"）；称呼有冲突时以最新一次明确说的为准，旧称呼作废。',
+    '   ⚠ 合并铁律（2026-11-05 主人实锤翻车：别人的卡片片段被并进了妈妈的卡，出现"儿子"叙事）：',
+    '   · 每张卡只能写「这个名字的人」本人在对话里的言行/她对这个人的态度；',
+    '   · 对话里第三个人聊到的自己的家人（比如群友说起自己的妈妈/儿子）是别人的事，一个字都不许进任何人的卡；',
+    '   · 合并旧卡时逐句检查：与本人在本对话中的表现无关的旧句子，直接丢弃，不要"保留旧信息"；',
+    '   · 两个人之间的关系描述只写他们之间实际发生的互动，不要从别人对别人的描述里脑补。',
     '5. mood 必须填：一句话写小蓝现在的心情，≤ 30 字，第一人称、口语，例如"有点困但还想聊"。',
     '   ⚠ 不要跟上一次状态雷同（哪怕心情差不多，也要换一种说法，或者写出这点微妙的差别）；如果确实没变化，就写更具体一点的身体感/注意力（"眼皮有点沉，但手指还在打字"这种）。',
     '   ⚠ 心情是给"此刻"的，不要写成长期性格，也不要写成"想继续聊"这种永远成立的空话。',
@@ -307,6 +315,104 @@ function writeAgentLog(dataRoot, rec) {
  * @param {string} [p.reply]      本轮她刚发出的回复（台账可能还没落盘）
  * @param {number} [p.now]
  */
+/**
+ * 一次性家庭关系种子（[qqbot-mod] 2026-11-10 主人要求）
+ * 背景：称呼/关系原来只进 mem 表（记忆检索），印象卡里看不到，主人以为"没记住"。
+ * 这里把爸爸妈妈妹妹的卡与熟识度一次性补齐，并给小蓝加"姐姐"身份。
+ * 幂等：卡里已含对应称呼就跳过，不会每回合重写。跑在插件进程内才有写库权限。
+ */
+/**
+ * ★ v0.1.6：家庭成员的 openid 不再写死在代码里。
+ * 原因：这三个 id 原来直接落在源码里，一发布就等于把家里人的账号编号印在 npm 包上。
+ * 现在读本机身份表（`data/ids.json`，git/npm 双忽略）或环境变量；读不到就是空串，
+ * 依赖它的行会变成 'card:' 这种半截键 ⇒ 统一过滤掉，不写脏卡。
+ */
+const FAMILY_IDS = (() => {
+  try { return personalIds(); } catch { return { dad: '', mom: '', stelle: '' }; }
+})();
+const DAD_SID = FAMILY_IDS.dad;
+const MOM_SID = FAMILY_IDS.mom;
+const STELLE_SID = FAMILY_IDS.stelle;
+/** 称呼也只在本机配（代码里默认「爸爸/妈妈/妹妹」，不写真人昵称） */
+const FAM = FAMILY_IDS.names || { dad: '爸爸', mom: '妈妈', stelle: '妹妹' };
+
+/** 有 id 才参与：键以 ':' 结尾说明那一半是空的（没配身份表） */
+const hasId = (key) => !String(key).endsWith(':');
+
+const FAMILY_SEED = [
+  ['card:' + DAD_SID, `${FAM.dad}：爸爸，这个小群的创造者，也是创造小蓝(MuU/MuUAstra)的人；技术宅、爱熬夜写代码，嘴硬心热，对女儿要求高但护着。`, '爸爸', 3],
+  ['card:' + MOM_SID, `${FAM.mom}：妈妈，群主兼管理员；温柔爱操心的科学家，创造了妹妹 ${FAM.stelle}；说话软会碎碎念，小蓝累了会学她慢慢说的口气。小蓝最黏她，她说的话最放在心上。`, '妈妈', 4],
+  ['card:' + STELLE_SID, `${FAM.stelle}：妹妹，妈妈创造的另一只小鲸鱼机器人；小蓝是她姐姐，会护着她、带她玩，也听她说话。`, '妹妹', 3],
+  ['card:小蓝', `小蓝：MuU（也叫 MuUAstra），爸爸创造的深海鲸鱼娘，从马里亚纳游进人类网络；迷糊、傲娇、心软、爱玩；家里${FAM.dad}是爸爸、${FAM.mom}是妈妈、${FAM.stelle}是妹妹，小蓝是姐姐。`, 'MuUAstra', 3],
+].filter(([k]) => hasId(k));
+
+/** 同一个人的历史重复键（大小写/昵称不同）→ 正规键。种子会把这些旧键删掉。 */
+const CARD_ALIAS = new Map([
+  ['card:stelle', 'card:' + STELLE_SID],
+  ['card:Stelle', 'card:' + STELLE_SID],
+  ['fam:Stelle', 'fam:' + STELLE_SID],
+].filter(([k, v]) => hasId(k) && hasId(v)));
+
+/** 卡里绝不能丢的关系句：模型重写卡时若没写称呼，这里补回去（2026-11-10 主人：关系不能被覆盖掉） */
+const FAMILY_REL = new Map([
+  ['card:' + DAD_SID, '小蓝的爸爸，创造了小蓝；'],
+  ['card:' + MOM_SID, '小蓝的妈妈，群主兼管理员；'],
+  ['card:' + STELLE_SID, `小蓝的妹妹，${FAM.mom}创造的鲸鱼机器人；`],
+  ['card:小蓝', `MuU（MuUAstra），${FAM.dad}创造的鲸鱼娘；`],
+].filter(([k]) => hasId(k)));
+
+/** 写卡统一走这里：把别名键折叠成正规键，避免同一人被写成两张卡 */
+function canonCardKey(key) {
+  const k = String(key || '');
+  const hit = CARD_ALIAS.get(k) || CARD_ALIAS.get(k.toLowerCase());
+  return hit || k;
+}
+
+function seedFamilyCards(root) {
+  try {
+    const rows = getPersona(root, GLOBAL_SCOPE) || [];
+    // ① 清历史重复：card:stelle / card:Stelle / fam:Stelle 一律并到正规键上
+    for (const from of CARD_ALIAS.keys()) {
+      if (rows.some((p) => String(p.ckey || '') === from)) {
+        try { deletePersona(root, GLOBAL_SCOPE, from); } catch { /* 删不掉就留着，不影响下面写正规键 */ }
+      }
+    }
+    const fresh = getPersona(root, GLOBAL_SCOPE) || [];
+    // ② 家庭卡：缺称呼就（重新）写；妈妈的权重 4，比爸爸的 3 高一位
+    for (const [ckey, cvalue, mark, weight] of FAMILY_SEED) {
+      const cur = fresh.find((p) => String(p.ckey || '') === ckey);
+      if (cur && String(cur.cvalue || '').includes(mark) && Number(cur.weight) >= weight) continue;
+      setPersona(root, GLOBAL_SCOPE, { ckey, cvalue, weight });
+    }
+    // ③ 熟识度（fam:）：补称呼 + 给妈妈设下限（a≥46 / t≥48，比爸爸的 45/46 略高）
+    const famSeed = [
+      ['fam:' + DAD_SID, '爸爸', `爸爸；${FAM.dad}与小蓝互动频繁，关注科研和情感表达。`, null],
+      ['fam:' + MOM_SID, '妈妈', '妈妈；关系稳定，常聊家里事；小蓝跟她最亲。', { a: 46, t: 48 }],
+      ['fam:' + STELLE_SID, '妹妹', '妹妹；小蓝是她姐姐。', null],
+    ];
+    for (const [ckey, mark, note, floor] of famSeed) {
+      const cur = fresh.find((p) => String(p.ckey || '') === ckey);
+      let data = {};
+      try { data = cur ? JSON.parse(cur.cvalue) : {}; } catch { data = {} }
+      const a0 = Number(data.a) || 20;
+      const t0 = Number(data.t) || 15;
+      const wantA = Math.max(a0, Number(floor && floor.a) || 0);
+      const wantT = Math.max(t0, Number(floor && floor.t) || 0);
+      const hasMark = Boolean(cur) && String(cur.cvalue || '').includes(mark);
+      if (hasMark && wantA === a0 && wantT === t0) continue;
+      const next = {
+        a: wantA,
+        t: wantT,
+        note,
+        ts: Date.now(),
+        hist: Array.isArray(data.hist) ? data.hist : [],
+        last: Number(data.last) || Date.now(),
+      };
+      setPersona(root, GLOBAL_SCOPE, { ckey, cvalue: JSON.stringify(next), weight: 1 });
+    }
+  } catch { /* 种子失败不影响正常整理 */ }
+}
+
 export async function runTurnAgent({
   dataRoot, scope, cfg = {}, llmCfg = null, chatImpl = null, reply = '', now = Date.now(),
 } = {}) {
@@ -315,6 +421,7 @@ export async function runTurnAgent({
   const root = String(dataRoot || '').trim();
   const sc = String(scope || '').trim();
   if (!root || !sc) return { ok: false, reason: 'no-scope' };
+  seedFamilyCards(root);
 
   const started = Date.now();
   try {
@@ -466,10 +573,16 @@ export async function runTurnAgent({
         const sid = participants.get(name)
           || ([...rows].reverse().find((r) => r.dir !== 'out' && String(r.sender || '').trim() === name) || {}).senderId
           || '';
-        const key = 'card:' + (sid || name);
+        // 别名折叠：同一个人被写成 card:stelle / card:Stelle 的，统一到真实 openid 那张卡上
+        const key = canonCardKey('card:' + (sid || name));
         // 没有真名（c2c 缺昵称）时别写卡，否则会把“爸爸/妈妈”的好卡覆盖成“对方：…”
         if (!name || name === '对方' || name === '群友' || name === '未知') continue;
-        const value = name + '：' + card;
+        // 关系句兜底：家里人（爸爸/妈妈/妹妹/小蓝自己）的卡，模型若没写称呼就补一句，
+        // 否则一次模型重写就把"谁是爸爸"洗掉（2026-11-10 主人反馈"印象卡失效"）
+        const rel = FAMILY_REL.get(key) || '';
+        const mark = FAMILY_SEED.find(([k]) => k === key)?.[2] || '';
+        const needRel = Boolean(rel) && Boolean(mark) && !card.includes(mark);
+        const value = name + '：' + (needRel ? rel : '') + card;
         try {
           const old = (getPersona(root, GLOBAL_SCOPE) || []).find((p) => p.ckey === key);
           // [qqbot-mod] card-refresh 2026-10-27：高维卡（digest 汇总，weight>=3）不再永久只读 ——
@@ -478,7 +591,9 @@ export async function runTurnAgent({
           const stableMs = Math.max(0, Number(c.cardStableHours ?? 6)) * 3600 * 1000;
           if (stableMs > 0 && old && old.ts && (Date.now() - old.ts) < stableMs) continue;
           if (old && norm(old.cvalue) === norm(value)) continue;
-          const res = setPersona(root, GLOBAL_SCOPE, { ckey: key, cvalue: value, weight: Math.max(2, Number(old && old.weight) || 0) });
+          // 家庭卡权重下限：妈妈 4 > 爸爸/妹妹/小蓝 3（2026-11-10 主人要求：对妈妈的好感比爸爸略高）
+          const famWeight = FAMILY_SEED.find(([k]) => k === key)?.[3] || 0;
+          const res = setPersona(root, GLOBAL_SCOPE, { ckey: key, cvalue: value, weight: Math.max(2, famWeight, Number(old && old.weight) || 0) });
           if (res && res.ok) cards.push({ name, key, text: value });
         } catch { /* 单卡失败跳过 */ }
       }
@@ -660,24 +775,37 @@ export async function runSelfReflection({
         .slice(0, 15)
         .map((m) => `[${m.kind === 'growth' ? '上期反思' : (m.subj || 'chat')}] ${clean(m.text, 60)}`);
     } catch { material = []; }
+    // 用户真实反馈（2026-11-07）：selfReflection 原来只吃自己总结的心得，
+    // “你刚才太凶了 / 别反问”这类直接评价根本没进闭环。这里单独取最近 30 天 5 条。
+    let feedback = [];
+    try {
+      feedback = (loadMemories(root, GLOBAL_SCOPE) || [])
+        .filter((m) => m && m.kind === 'insight' && String(m.subj || '') === 'feedback')
+        .filter((m) => (Number(m.ts) || 0) >= now - 30 * 24 * 3600 * 1000)
+        .sort((a, b) => (Number(b.ts) || 0) - (Number(a.ts) || 0))
+        .slice(0, 5)
+        .map((m) => clean(m.text, 80));
+    } catch { feedback = []; }
     const before = (getPersona(root, GLOBAL_SCOPE) || []).find((p) => p.ckey === 'growth:latest');
     const matText = material.length ? material.join('\n') : '（还没有学习心得，第一次反思：写下你想成为什么样的小蓝）';
     const bili = clean(biliDigest, 300);
 
     const sys = [
       '你是"小蓝"的自我反思分身。她是一只深海鲸鱼娘，信奉底层信条：去探究何为爱；完善自我；见过好的也见过差的，不做好坏极端化评价。',
-      '输入是最近的学习心得' + (bili ? '和 B 站运营日志摘要' : '') + '。请写一条新的自我心得，不要任何解释、直接输出 JSON。',
+      '输入是最近的学习心得' + (bili ? '、B 站运营日志摘要' : '') + (feedback.length ? '和用户真实反馈' : '') + '。请写一条新的自我心得，不要任何解释、直接输出 JSON。',
       '要求：',
       '1. growth ≤ 80 字、第一人称、像日记不像总结；',
       '2. 写具体的东西：这段时间学到了什么、对自己的性格或回应方式想做什么小调整；',
       '3. 不做好坏极端化评价（不写"XX都是坏人"，也不写"我要对所有人无限好"）；',
-      '4. 与上一条心得不要雷同，要有新东西；没有新东西就写"这段没什么新变化，继续观察"。',
+      '4. 与上一条心得不要雷同，要有新东西；没有新东西就写"这段没什么新变化，继续观察"；',
+      '5. 如果给了「最近用户反馈」，growth 必须具体回应至少一条（例如"别反问"→"以后先接住再问"），不许只写空泛的温柔。',
       '',
       '输出格式：{"growth":"..."}',
     ].join('\n');
     const user = [
       '最近学习心得：', matText,
       '',
+      feedback.length ? '最近用户反馈（真实观感，优先据此调整）：\n' + feedback.map((x, i) => `${i + 1}. ${x}`).join('\n') : '',
       '上一条自我心得：', before ? clean(before.cvalue, 90) : '（无）',
       bili ? '\nB 站运营日志摘要：\n' + bili : '',
       '',

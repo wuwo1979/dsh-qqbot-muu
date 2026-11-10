@@ -11,6 +11,7 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
+import { facetFilterMatch, facetText, facetsOf, relatedEmotions } from './sticker-schema.mjs';
 
 export function stickerDir(dataRoot) {
   return join(String(dataRoot || ''), '表情包');
@@ -65,10 +66,10 @@ export function pathOfId(dataRoot, id, layer = '') {
   return pathOfItem(dataRoot, it);
 }
 
-/** 条目可搜索的文本（标签 + 描述 + 备注） */
+/** 条目可搜索的文本（标签 + 描述 + 备注 + 五面标签） */
 export function haystackOf(item) {
   const tags = Array.isArray(item.tags) ? item.tags : [];
-  return [item.desc, item.descZh, item.note, ...tags]
+  return [item.desc, item.descZh, item.note, ...tags, facetText(item)]
     .filter(Boolean).join(' ').trim();
 }
 
@@ -76,10 +77,15 @@ export function haystackOf(item) {
 function tokens(s) {
   const out = [];
   const text = String(s || '').toLowerCase();
-  const latin = text.match(/[a-z0-9_]{2,}/g) || [];
-  out.push(...latin);
-  const cjk = text.replace(/[a-z0-9_\s\p{P}]/gu, '');
-  for (let i = 0; i + 1 < cjk.length; i += 1) out.push(cjk.slice(i, i + 2));
+  // 先按分隔符切段：短查询「累 躺」拆成两个单字词，避免整段只取 bigram 而全丢
+  const parts = text.split(/[,，、/|\\\s]+/).filter(Boolean);
+  for (const part of parts) {
+    const latin = part.match(/[a-z0-9_]{2,}/g) || [];
+    out.push(...latin);
+    const cjk = part.replace(/[a-z0-9_\p{P}]/gu, '');
+    if (cjk.length === 1) out.push(cjk);
+    else for (let i = 0; i + 1 < cjk.length; i += 1) out.push(cjk.slice(i, i + 2));
+  }
   return out;
 }
 
@@ -153,9 +159,12 @@ export function resolveToken(dataRoot, token) {
  * @param {number} [o.semanticMin] 语义结果的准入分（默认 0.5；向量总是有分数，
  *   不设阈值会把风马牛不相及的图也当成候选）
  */
-export async function search(dataRoot, query, { limit = 8, semantic = null, layer = '', semanticMin = 0.5 } = {}) {
+export async function search(dataRoot, query, {
+  limit = 8, semantic = null, layer = '', semanticMin = 0.5,
+  facets = null, dedupe = true,
+} = {}) {
   const rec = loadIndex(dataRoot);
-  const pool = rec.items.filter((x) => !layer || String(x.layer) === String(layer));
+  const pool = rec.items.filter((x) => (!layer || String(x.layer) === String(layer)) && facetFilterMatch(x, facets));
   const scored = [];
   for (const it of pool) {
     if (it && it.removed) continue;
@@ -163,6 +172,20 @@ export async function search(dataRoot, query, { limit = 8, semantic = null, laye
     if (s > 0) scored.push({ item: it, score: s, path: pathOfItem(dataRoot, it) });
   }
   scored.sort((a, b) => b.score - a.score);
+  // 字面一个都没命中时，按近义情绪兜底（「震惊」→「惊讶」组），避免空手而归
+  if (!scored.length && query) {
+    const related = relatedEmotions(query);
+    if (related.length) {
+      for (const it of pool) {
+        if (it.removed) continue;
+        const f = facetsOf(it);
+        if (f.emotion.some((x) => related.includes(x))) {
+          scored.push({ item: it, score: 0.3, path: pathOfItem(dataRoot, it) });
+        }
+      }
+      scored.sort((a, b) => b.score - a.score);
+    }
+  }
   if (semantic) {
     try {
       const sem = await semantic(query, pool);
@@ -171,6 +194,7 @@ export async function search(dataRoot, query, { limit = 8, semantic = null, laye
         for (const r of scored) merged.set(r.item.id, r);
         for (const r of sem) {
           if (!r || !r.item) continue;
+          if (!facetFilterMatch(r.item, facets)) continue;
           if (Number(r.score) < Number(semanticMin || 0.5)) continue;
           const old = merged.get(r.item.id);
           const score = Math.max(0.001, Number(r.score) || 0);
@@ -180,15 +204,43 @@ export async function search(dataRoot, query, { limit = 8, semantic = null, laye
             path: pathOfItem(dataRoot, r.item),
           });
         }
-        const out = [...merged.values()]
+        const out = dedupePicks([...merged.values()]
           .filter((x) => existsSync(x.path))
-          .sort((a, b) => b.score - a.score)
+          .sort((a, b) => b.score - a.score), dedupe)
           .slice(0, Math.max(1, Number(limit) || 8));
         return out;
       }
     } catch { /* 语义失败就用关键词结果 */ }
   }
-  return scored.filter((x) => existsSync(x.path)).slice(0, Math.max(1, Number(limit) || 8));
+  return dedupePicks(scored.filter((x) => existsSync(x.path)), dedupe)
+    .slice(0, Math.max(1, Number(limit) || 8));
 }
 
-export default { stickerDir, loadIndex, pathOfItem, pathOfId, resolveToken, search, haystackOf };
+/** 同图去重：优先 dhash（视觉重复），没有就按 id。保留分数最高的那张。 */
+export function dedupePicks(picks = [], on = true) {
+  if (!on) return picks;
+  const seen = new Set();
+  const out = [];
+  for (const p of picks) {
+    const key = String(p?.item?.dhash || '') || ('id:' + String(p?.item?.id || p?.path || ''));
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
+/** 只按五面标签组合检索（不需要自然语言 query） */
+export async function searchByFacets(dataRoot, facets, { limit = 8, layer = '', dedupe = true } = {}) {
+  const rec = loadIndex(dataRoot);
+  const pool = rec.items.filter((x) => {
+    if (!x || x.removed) return false;
+    if (layer && String(x.layer) !== String(layer)) return false;
+    return facetFilterMatch(x, facets);
+  });
+  const scored = pool.map((it) => ({ item: it, score: 1, path: pathOfItem(dataRoot, it) }))
+    .filter((x) => existsSync(x.path));
+  return dedupePicks(scored, dedupe).slice(0, Math.max(1, Number(limit) || 8));
+}
+
+export default { stickerDir, loadIndex, pathOfItem, pathOfId, resolveToken, search, searchByFacets, dedupePicks, haystackOf };

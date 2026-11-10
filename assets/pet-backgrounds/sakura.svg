@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#fffafc"/>
+      <stop offset="0.5" stop-color="#ffeaf3"/>
+      <stop offset="1" stop-color="#ffd9e9"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="30%" r="60%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#g)"/>
+  <rect width="512" height="512" fill="url(#halo)"/>
+  <g fill="#f7a8c8" opacity="0.45">
+    <ellipse cx="90" cy="120" rx="46" ry="26" transform="rotate(-24 90 120)"/>
+    <ellipse cx="430" cy="90" rx="34" ry="19" transform="rotate(18 430 90)"/>
+    <ellipse cx="440" cy="400" rx="50" ry="28" transform="rotate(-12 440 400)"/>
+    <ellipse cx="110" cy="430" rx="38" ry="21" transform="rotate(26 110 430)"/>
+  </g>
+  <g fill="#ffffff" opacity="0.7">
+    <circle cx="210" cy="70" r="9"/>
+    <circle cx="330" cy="150" r="6"/>
+    <circle cx="160" cy="330" r="8"/>
+    <circle cx="380" cy="300" r="5"/>
+    <circle cx="60" cy="270" r="6"/>
+  </g>
+</svg>

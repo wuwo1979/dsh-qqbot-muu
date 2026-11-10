@@ -13,6 +13,8 @@
  * 失败哲学：任何一个服务缺失都只降级、不报错中断 —— 把"哪些服务可用"如实报出来，
  *          方便在别的 DSH 版本上继续排查。
  */
+import { toLocalStamp } from '../lib/timefmt.mjs';
+
 const WORKSPACE_SERVICE = 'workspaceRegistry';
 const SESSION_SERVICE = 'sessionQuery';
 /** 探测用的候选服务名（有就报出来，便于后续工具挑正确的那个） */
@@ -35,17 +37,16 @@ function pick(obj, names) {
   return undefined;
 }
 
-/** 时间戳 → 本地 MM-dd HH:mm（吃 number / string / Date） */
-function fmtTime(v) {
-  if (v === undefined || v === null) return '';
-  try {
-    const d = v instanceof Date ? v : new Date(typeof v === 'number' ? v : String(v));
-    if (Number.isNaN(d.getTime())) return '';
-    // ⚠️ 用 UTC 字段显示：实测宿主把**本地时间**当 UTC 存
-    //   （createdAt=1791762071432 → UTC 23:41 才与主人的实际时间对得上；按本地读会多 8 小时）。
-    const p = (n) => String(n).padStart(2, '0');
-    return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-  } catch { return ''; }
+/**
+ * 会话时间：宿主 header 的 createdAt 是**真 UTC** ⇒ 一律按本地时区渲染（见 lib/timefmt.mjs）。
+ * 有“最后活动”字段就用它；只有创建时间时额外标 `·创建`，避免把旧会话看成刚活跃过。
+ */
+function timeCell(s) {
+  const last = pick(s, ['lastActivity', 'lastActivityAt', 'updatedAt', 'lastMessageAt']);
+  const created = pick(s, ['createdAt', 'createdAtMs', 'startedAt', 'timestamp']);
+  if (last) return toLocalStamp(last);
+  const t = created ? toLocalStamp(created) : '';
+  return t && t !== '—' ? t + ' ·创建' : '';
 }
 
 function safeGet(root, name) {
@@ -131,7 +132,7 @@ export default {
       const id = String(pick(s, ['id', 'sessionId', 'sid']) ?? '?');
       const title = String(pick(s, ['title', 'name', 'summary']) ?? '').slice(0, 40);
       const live = pick(s, ['live', 'isLive']) ? 'live' : 'persisted';
-      const t = fmtTime(pick(s, ['lastActivity', 'lastActivityAt', 'updatedAt', 'createdAt', 'createdAtMs', 'startedAt']));
+      const t = timeCell(s);
       const short = id.length > 14 && !full ? id.slice(0, 8) + '…' + id.slice(-4) : id;
       // 血缘（子代理实测建议：跨会话编排必须看到 parent/origin/depth，否则只能另开 debug 手工比对）
       const origin = pick(s, ['origin']) ?? '';
