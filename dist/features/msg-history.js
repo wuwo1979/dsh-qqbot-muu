@@ -16,8 +16,12 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-/** 默认保留天数（主人定：7 天） */
-export const KEEP_DAYS = 7;
+/**
+ * 默认保留天数。
+ * 2026-11-11 主人反馈「浮窗里聊天记录少了很多」：原来是 7 天，一次重启就把上周的清掉了，
+ * 而浮窗在"会话记录丢失"时只能靠这本台账补历史 ⇒ 台账留多久 = 浮窗能看见多久。改 30 天。
+ */
+export const KEEP_DAYS = 30;
 /** 单日文件读取上限（防御：一天消息特别多时别把内存吃爆） */
 const MAX_READ_LINES = 5000;
 /** 正文摘要长度 */

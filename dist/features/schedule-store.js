@@ -8,7 +8,7 @@
  *
  * ⚠️ 本地手改功能(fork 新增)。
  */
-import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 const FILE_NAME = 'timers.json';
 /** 最小相对秒(与 ticker 粒度对齐) */
@@ -36,6 +36,8 @@ export class ScheduleStore {
     dirty = false;
     dataDir;
     logger;
+    /** 上次读到磁盘时的 mtime —— 外部(工具/手改)写了 timers.json 就据此重读 */
+    _mtimeMs = 0;
     constructor(dataDir, logger) {
         this.dataDir = dataDir;
         this.logger = logger;
@@ -51,11 +53,26 @@ export class ScheduleStore {
             if (existsSync(p)) {
                 const raw = JSON.parse(readFileSync(p, 'utf8'));
                 this.jobs = Array.isArray(raw.jobs) ? raw.jobs : [];
+                try { this._mtimeMs = statSync(p).mtimeMs; } catch { /* 拿不到 mtime 就下次再说 */ }
             }
         }
         catch {
             this.jobs = [];
         }
+    }
+    /**
+     * 外部改盘后重读（2026-11-11 加）：
+     * `qq_timer` 工具是**直接写 timers.json** 的，内存里的这份不重读就永远看不见新任务
+     * ⇒ 表现成「说明明建了定时任务，到点却没动」。只在没有待保存改动时重读，避免覆盖自己刚写的。
+     */
+    reloadIfChanged() {
+        if (this.dirty || this.saveTimer) return;
+        try {
+            const p = this.file();
+            if (!existsSync(p)) return;
+            const m = statSync(p).mtimeMs;
+            if (m && m !== this._mtimeMs) this.load();
+        } catch { /* 读不到就当没变 */ }
     }
     save() {
         this.dirty = true;
@@ -169,6 +186,7 @@ export class ScheduleStore {
     }
     /** 当前应触发的任务(由 ticker 调用) */
     due(now = Date.now()) {
+        this.reloadIfChanged();
         const today = new Date(now);
         const ymd = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
         const curMin = today.getHours() * 60 + today.getMinutes();
