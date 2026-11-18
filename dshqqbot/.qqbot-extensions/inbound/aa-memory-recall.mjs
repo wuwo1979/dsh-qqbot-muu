@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * memory-recall.mjs — 入站时按需召回长期记忆（Neuro 式「检索而非重放」）
  *
@@ -86,7 +117,7 @@ export const name = 'aa-memory-recall';
 function dataRootOf(cfg) {
   const env = String(process.env.QQBOT_MEMORY_DATA_ROOT || '').trim();
   if (env) return env;
-  return (cfg && cfg.dataRoot) || 'F:/qqbot/dshqqbot';
+  return (cfg && cfg.dataRoot) || __repoRoot() + "/dshqqbot";
 }
 
 /** 会话作用域：群按群 openid，私聊按用户 openid */
@@ -177,7 +208,7 @@ function worthRemembering(text, cfg) {
 // 模型照样看得见（语义不变）；只有真变了才注入一份新的（新版在后，模型取最新）。
 // 快块（[记忆]召回/[状态]/[echo]）是为当前句服务的，保持每条，但连续相同内容也跳过。
 const _slowBlockMemo = new Map(); // key: scope+'|'+tag → 上次注入文本
-let _lastRoot = 'F:/qqbot/dshqqbot'; // onInbound 每轮刷新，供 blockIfChanged 持久化记账用
+let _lastRoot = __repoRoot() + "/dshqqbot"; // onInbound 每轮刷新，供 blockIfChanged 持久化记账用
 // 2026-10-29：召回源判重——key: scope → 上次实际注入的那批记忆源文本指纹。
 // 连续同话题时同一批旧记忆不再每条重发（历史里上一份仍在，模型照样看得见）。
 const _recallSrcMemo = new Map();

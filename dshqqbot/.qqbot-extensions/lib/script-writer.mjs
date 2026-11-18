@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * lib/script-writer.mjs — 让云端 DeepSeek（OpenAI 兼容）或本地 Ollama 写 B 站文案
  *
@@ -273,7 +304,7 @@ export async function cloudChat(body, cfg = {}, { apiKey } = {}) {
   const _inChars = JSON.stringify(body?.messages || '').length;
   const _log = (ok, extra) => {
     try {
-      const root = String(process.env.QQBOT_DATA_ROOT || '').trim() || 'F:/qqbot/dshqqbot';
+      const root = String(process.env.QQBOT_DATA_ROOT || '').trim() || __repoRoot() + "/dshqqbot";
       const f = root.replace(/\\/g, '/') + '/.qqbot/cloud-calls.jsonl';
       appendFileSync(f, JSON.stringify({ ts: Date.now(), tag: _tag, model: String(body?.model || c.model || ''), inChars: _inChars, ok, ms: Date.now() - t0, ...extra }) + '\n', 'utf8');
     } catch { /* 记不上不影响主流程 */ }

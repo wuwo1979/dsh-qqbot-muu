@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 import { join, resolve, relative, isAbsolute, basename, extname } from 'node:path';
 import { readFileSync as qqReadFileSync, writeFileSync as qqWriteFileSync, mkdirSync as qqMkdirSync, realpathSync as qqRealpathSync, existsSync as qqExistsSync, statSync as qqStatSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -5,10 +36,10 @@ import { fileURLToPath } from 'node:url';
 /** 项目根：dist/gateway → 上两级。
  *  2026-11-14：插件被 pnpm 复制进 profiles/web/node_modules/.pnpm/… 之后，上两级成了**包目录**而不是
  *  仓库根，媒体白名单（assets/media/tmp/render/voices）会整体指错。这里优先认「上两级里真有
- *  wechat-bridge/util.mjs」的那个，其次 QQBOT_REPO_ROOT，最后回落老部署 F:/qqbot。 */
+ *  wechat-bridge/util.mjs」的那个，其次 QQBOT_REPO_ROOT，最后回落老部署 <仓库根>。 */
 const QQBOT_ROOT = (() => {
     const up = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
-    const cands = [up, String(process.env.QQBOT_REPO_ROOT || '').trim(), 'F:/qqbot'].filter(Boolean);
+    const cands = [up, String(process.env.QQBOT_REPO_ROOT || '').trim(), __repoRoot() + ""].filter(Boolean);
     return cands.find((p) => { try { return qqExistsSync(join(p, 'wechat-bridge', 'util.mjs')) } catch { return false } }) || up;
 })();
 /** 允许出站的本地媒体根目录（P0-4）：[MEDIA]/send_media 只能引用这些目录内的文件 */
@@ -185,7 +216,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     //   纪律：绝不打日志泄露 secret 内容；任何失败静默，不影响启动。
     try {
         const _sec = String(config.appSecret ?? '');
-        const _cwd = String(config.cwd ?? '').trim() || 'F:/qqbot';
+        const _cwd = String(config.cwd ?? '').trim() || __repoRoot() + "";
         const _nsSafe = myNs.replace(/[^\w.-]/g, '_');
         const _mirrorPath = join(_cwd, 'secrets', 'runtime', `qqbot-account-${_nsSafe}.json`);
         // 自有存储路径（与 settings-host ns-guard 同规则）：<DSH_HOME>/qqbot-settings/<profile>/<ns>.json
@@ -1092,7 +1123,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             }
         })();
         // 2026-11-18（v0.1.7）：profile 依赖自检 —— 老用户升级后如果 profile 里还是
-        // "file:F:/qqbot" 这种绝对盘符写法，pnpm 会把它当相对路径拼到 profile 目录下、
+        // "file:<仓库根>" 这种绝对盘符写法，pnpm 会把它当相对路径拼到 profile 目录下、
         // 直接 ENOENT → dshmarket 基线立不起来 → 整机进安全模式（2026-11-13 事故一）。
         // 这里只在运行期【检测 + 记日志 + 落标记】，不擅自改 profile（改配置会让市场重装，
         // 正在跑的实例更危险）；真正的修复交给 scripts/dsh-profile-links.mjs。

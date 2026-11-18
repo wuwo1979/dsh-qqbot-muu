@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * lib/bili-ops.mjs — B 站账号自主运营核心
  *
@@ -39,7 +70,7 @@ import { planStoryboard } from './shot-planner.mjs';
 import { drawGated } from './image-gate.mjs';
 import * as TV from './text-video.mjs';
 
-const DEFAULT_DATA_ROOT = 'F:/qqbot/dshqqbot';
+const DEFAULT_DATA_ROOT = __repoRoot() + "/dshqqbot";
 
 // 评论/回复生成串行化：云端调用并发 1，避免一次刷出多条、也避免把 B 站接口打急
 let _reviewTail = Promise.resolve();
@@ -167,7 +198,7 @@ const CHARACTER_NEG = 'purple hair, violet hair, lavender hair, pink hair, magen
 // 海报、同一张脸），要么把发色/服装改掉；逐屏换场景时身份必然漂移，主人反馈
 // "画面和话没关系、人物不像她"。合成路线把两件事拆开：场景让 SD 画（不带角色），
 // 人物用固定透明立绘贴上去，身份 100% 稳定，场景也真的会跟着旁白变。
-const POSE_DIR = 'F:/qqbot/assets/char/pose';
+const POSE_DIR = __repoRoot() + "/assets/char/pose";
 // 空镜用的负向词：本地 SD1.5 对 "no people" 不敏感，必须把人物词压低权重。
 const CHAR_SCENE_NEG = CHARACTER_NEG + ', (1girl:1.8), (person:1.8), (human:1.6), face, eyes, hands, arms, portrait, sitting person';
 const POSE_ORDER = ['idle', 'talk', 'wave', 'happy', 'point'];
@@ -194,8 +225,8 @@ async function sceneBg(prompt, outPath, o = {}) {
       : /street|city|road|rain|neon|crossing/.test(s) ? 'street'
         : /cafe|coffee|bar|restaurant|kitchen/.test(s) ? 'cafe'
           : 'room';
-  const script = 'F:/qqbot/qqbot-mod/scripts/scene_bg.py';
-  const py = o.pythonBin || 'F:/qqbot/.venv-draw/Scripts/python.exe';
+  const script = __repoRoot() + "/qqbot-mod/scripts/scene_bg.py";
+  const py = o.pythonBin || __repoRoot() + "/.venv-draw/Scripts/python.exe";
   const r = await new Promise((resolve) => {
     try {
       const p = spawn(py, [script, '--out', outPath, '--w', String(o.width || 576), '--h', String(o.height || 1024),
@@ -213,8 +244,8 @@ async function sceneBg(prompt, outPath, o = {}) {
 }
 
 /** 调 python 把立绘贴到场景图上。失败返回 {ok:false,reason}，调用方退回纯场景图。 */async function composeChar(bgPath, posePath, outPath, o = {}) {
-  const script = 'F:/qqbot/qqbot-mod/scripts/compose_char.py';
-  const py = o.pythonBin || 'F:/qqbot/.venv-draw/Scripts/python.exe';
+  const script = __repoRoot() + "/qqbot-mod/scripts/compose_char.py";
+  const py = o.pythonBin || __repoRoot() + "/.venv-draw/Scripts/python.exe";
   try {
     const args = [script, '--bg', bgPath, '--pose', posePath, '--out', outPath,
       '--height-ratio', String(o.heightRatio ?? 0.66),
@@ -318,8 +349,8 @@ export function detectDubbing(...texts) {
 /**
  * 音效库根目录（SFX 模块会自己在根下建「音效/」）。
  * 为什么需要：默认根是 {dataRoot}，但宿主的 F:/qqbot/dshqqbot 目录对「新建子目录」是拒绝的
- * （实测 New-Item 'F:\qqbot\dshqqbot\zztest-a' → 对路径访问被拒绝），于是
- *   音效库初始化失败：EPERM: operation not permitted, mkdir 'F:\qqbot\dshqqbot\音效\lib\builtin'
+ * （实测 New-Item __repoRoot() + "//dshqqbot/zztest-a" → 对路径访问被拒绝），于是
+ *   音效库初始化失败：EPERM: operation not permitted, mkdir __repoRoot() + "//dshqqbot/\u97f3\u6548/lib/builtin"
  * 整条链路没音效、每次出片都带一条 warning。这里先试 dataRoot，写不动就退到 storage.root
  * （storage.root 默认在可写盘，实测 F:/qqbot/data/bili-ops 可写）。
  */

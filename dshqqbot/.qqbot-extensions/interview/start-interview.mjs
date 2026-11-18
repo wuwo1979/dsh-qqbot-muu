@@ -26,7 +26,7 @@ const KEY = String(process.env.INTERVIEW_KEY || 'xiaolan');
 
 const DSH_HOST = String(process.env.QQBOT_HOST || '127.0.0.1');
 const DSH_PORT = Number(process.env.QQBOT_PORT || 43129);
-const DSH_EXE = String(process.env.DSH_DESKTOP_EXE || 'F:\\DSH\\DSH Desktop\\DSH Desktop.exe');
+const DSH_EXE = String(process.env.DSH_DESKTOP_EXE || '');
 
 const SA_PORT = Number(process.env.INTERVIEW_PORT || 4321);
 const SA_TRIES = 15;                  // 15 × 1s

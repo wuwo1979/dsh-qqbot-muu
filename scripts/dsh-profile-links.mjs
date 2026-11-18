@@ -1,11 +1,42 @@
-// 把 F:\qqbot 里的三个本地插件以「profile 内相对路径」接进 DSH profile，
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
+// 把 <仓库根> 里的三个本地插件以「profile 内相对路径」接进 DSH profile，
 // 并在 profile 里建 local-plugins/<包名> 的 junction（软链）指向真身。
 //
 // 为什么要这么绕（2026-11-14 触发安全模式的事故）：
-//   profile 的 package.json 曾经写成  "dsh-qqbot-muu": "file:F:/qqbot"。
-//   桌面端自带的是 pnpm 10.34.5，它把 file: 后面的 "F:/qqbot" 当**相对路径**，
-//   拼成 C:\...\profiles\web\F:\qqbot 再去 scandir，直接 ENOENT：
-//     ENOENT: no such file or directory, scandir '...\profiles\web\F:\qqbot'
+//   profile 的 package.json 曾经写成  "dsh-qqbot-muu": "file:<仓库根>"。
+//   桌面端自带的是 pnpm 10.34.5，它把 file: 后面的 (__repoRoot() + "") 当**相对路径**，
+//   拼成 C:\...\profiles\web\<仓库根> 再去 scandir，直接 ENOENT：
+//     ENOENT: no such file or directory, scandir '...\profiles\web\<仓库根>'
 //   install 一失败，dshmarket 基线就立不起来，桌面端判定「正常 profile 不可恢复」
 //   → 自动进安全模式，所有第三方插件（QQ/微信/小天才）全部不加载。
 //   （pnpm 12 能正确解析这种写法，所以换个 pnpm 版本就复现不出来，很难猜。）
@@ -28,9 +59,9 @@ import { join, resolve } from 'node:path'
 
 /** [包名, 真身绝对路径] —— 和 package.json 的 dsh.profile.bundles 对应 */
 const PLUGINS = [
-  ['dsh-qqbot-muu', 'F:/qqbot'],
-  ['dsh-wechat-muu', 'F:/qqbot/dsh-wechat-muu'],
-  ['dsh-xtc-muu', 'F:/qqbot/dsh-xtc-muu'],
+  ['dsh-qqbot-muu', __repoRoot() + ""],
+  ['dsh-wechat-muu', __repoRoot() + "/dsh-wechat-muu"],
+  ['dsh-xtc-muu', __repoRoot() + "/dsh-xtc-muu"],
 ]
 
 const args = process.argv.slice(2)

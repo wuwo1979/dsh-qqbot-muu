@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * router-observe.mjs — 分流决策的**观察期**钩子（不改变任何行为）
  *
@@ -25,7 +56,7 @@ const MAX_BYTES = 2 * 1024 * 1024; // 超 2MB 自动轮转一份
 function dataRootOf(cfg) {
   const env = String(process.env.QQBOT_MEMORY_DATA_ROOT || '').trim();
   if (env) return env;
-  return (cfg && cfg.dataRoot) || 'F:/qqbot/dshqqbot';
+  return (cfg && cfg.dataRoot) || __repoRoot() + "/dshqqbot";
 }
 
 function logPath(root) {

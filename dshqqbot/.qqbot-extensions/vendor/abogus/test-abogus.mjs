@@ -1,10 +1,41 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 // 实测：abogus 签名 + 真实 cookie 能不能拉到抖音作品列表和评论（只读）
-import * as douyin from 'file:///F:/qqbot/dshqqbot/.qqbot-extensions/lib/platforms/douyin.mjs'
+import * as douyin from pathToFileURL(join(__repoRoot(), "dshqqbot/.qqbot-extensions/lib/platforms/douyin.mjs")).href
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
-const AB = require('F:/qqbot/dshqqbot/.qqbot-extensions/vendor/abogus/node_modules/abogus')
+const AB = require(__repoRoot() + "/dshqqbot/.qqbot-extensions/vendor/abogus/node_modules/abogus")
 
-const root = 'F:/qqbot/dshqqbot'
+const root = __repoRoot() + "/dshqqbot"
 const st = await douyin.status(root)
 const ck = douyin.loadCookie(root)
 console.log('login:', st.loggedIn, st.nickname, 'aweme count:', st.stats && st.stats.aweme)

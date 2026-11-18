@@ -6132,9 +6132,9 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         if (rootBtn) rootBtn.onclick = async function () {
           try {
             // [qqbot-mod] 2026-10-28: 不再猜路径 —— kind:'bili-jobs' 让宿主用 bili-ops.paths() 给真实产物根
-            //   （之前写死 F:/qqbot/dshqqbot/.qqbot/bili-ops/jobs，真产物在 F:/qqbot/data/bili-ops/jobs）
+            //   （之前写死 dshqqbot/.qqbot/bili-ops/jobs，真产物在 data/bili-ops/jobs）
             var r = await apiPost('open-dir', { kind: 'bili-jobs' })
-            var p = (r && r.path) || 'F:/qqbot/data/bili-ops/jobs'
+            var p = (r && r.path) || 'data/bili-ops/jobs'
             var cnt = (r && typeof r.count === 'number') ? r.count : -1
             var cntText = cnt < 0 ? '项数未知' : (cnt === 0 ? '空目录：还没渲染过视频' : cnt + ' 项')
             var okText = (r && r.ok) ? ('已打开（' + ((r && r.via) || 'explorer') + '，' + cntText + '）') : ('没弹出来：' + ((r && r.error) || '未知原因'))
@@ -6221,7 +6221,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
             '画面硬规则（imagePrompt 必须遵守）：',
             '· 背景统一"深海蓝+月白"柔和色调，有景深层次与地面投影带；',
             '· 禁止空旷渐变底、禁止恐怖谷脸、禁手部特写；大字号短句排版由管线字幕负责，画面里不要塞文字；',
-            '· 角色形象基准：F:/qqbot/设定/小蓝_2D三视图_建模基准.png；透明立绘两套：assets/char/pose/*.png（v1 720×980）与 assets/char-v2/pose-alpha/*.png（v2 已抠透明，动作渲染用这套）。',
+            '· 角色形象基准：设定/小蓝_2D三视图_建模基准.png；透明立绘两套：assets/char/pose/*.png（v1 720×980）与 assets/char-v2/pose-alpha/*.png（v2 已抠透明，动作渲染用这套）。',
             '',
             '规格：orientation=vertical（B站竖屏 1080×1920）。成片目标 ≥60 秒——管线会自动检查：总旁白不足 240 字会拒收重写，所以别拷电报体。',
             '音频：dubbing 参数【必传】——主人的选题里写了什么引擎就传什么：提到 IndexTTS/Index → dubbing="index"；提到 Breeze → dubbing="breeze"；完全没提 → dubbing="gsv"。注意管线有 dubbingOverride（默认强制 index）：LLM 怕超时自己改 gsv 也会被拉回来；index 拉起前管线会自动腾卡（停 gsv/breeze），慢是正常的，不要中途重试。',

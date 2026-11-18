@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * draw-core.mjs — 本地文生图（sd-turbo，走常驻 python 微服务）
  *
@@ -20,10 +51,10 @@ export const CONFIG_NAME = 'draw-config.json';
 export const DEFAULTS = {
   enabled: true,
   // 画画的 python：优先用专门的 venv（不污染 Anaconda 基环境）
-  pythonBin: 'F:/qqbot/.venv-draw/Scripts/python.exe',
-  serverScript: 'F:/qqbot/qqbot-mod/scripts/sd_server.py',
+  pythonBin: __repoRoot() + "/.venv-draw/Scripts/python.exe",
+  serverScript: __repoRoot() + "/qqbot-mod/scripts/sd_server.py",
   // 默认用 SD1.5 动漫模型（单文件）：sd-turbo 2 步出来的图糊得没法看
-  modelDir: 'F:/qqbot/.models/counterfeit3/Counterfeit-V3.0_fix_fp16.safetensors',
+  modelDir: __repoRoot() + "/.models/counterfeit3/Counterfeit-V3.0_fix_fp16.safetensors",
   baseUrl: 'http://127.0.0.1:7861',
   /** 单张图最多等多久（首次含加载） */
   timeoutMs: 120000,
@@ -60,7 +91,7 @@ export const DEFAULTS = {
 export function dataRootOf(cfg) {
   const env = String(process.env.QQBOT_MEMORY_DATA_ROOT || '').trim();
   if (env) return env;
-  return (cfg && cfg.dataRoot) || 'F:/qqbot/dshqqbot';
+  return (cfg && cfg.dataRoot) || __repoRoot() + "/dshqqbot";
 }
 
 export function configPath(dataRoot) {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-qqbot-muu",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "独立的 DSH QQ 桌宠助手插件：统一记忆库/印象卡、人格注入、表情包视觉打标、三形态桌宠+公网受限链接、逐帧视频流水线、B站运营（自持底盘，零 @zaofan 依赖）",
   "type": "module",
   "main": "./entry.js",
@@ -53,7 +53,8 @@
     "!tmp/**",
     "!data/**",
     "!scripts/publish-npm.mjs",
-    "docs/RELEASE_CHECKLIST.md"
+    "docs/RELEASE_CHECKLIST.md",
+    "!scripts/*.ps1"
   ],
   "dsh": {
     "bundle": {

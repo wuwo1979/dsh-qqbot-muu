@@ -1945,7 +1945,7 @@ export async function apply(ctx) {
             '\n最小示例(照抄改值):\n' +
             '· 唤醒单发 {session_id:"<uuid>", text:"帮我看下这个"}\n' +
             '· 跨群喇叭不唤醒 {peer_id:"<群openid>", scope:"group", text:"公告:…", mode:"append"}\n' +
-            '· 批量(每项自带 text) {batch:[{peer_id:"<g1>",scope:"group",text:"A"},{peer_id:"<g2>",scope:"group",text:"B",media:"D:/pic.png"}]} ← 用 batch 时**不要再传顶层 text**',
+            '· 批量(每项自带 text) {batch:[{peer_id:"<g1>",scope:"group",text:"A"},{peer_id:"<g2>",scope:"group",text:"B",media:"<图片路径>"}]} ← 用 batch 时**不要再传顶层 text**',
         parameters: {
             session_id: { type: 'string', description: '目标会话 id(完整 sessionId, 来自 session_list)' },
             peer_id: { type: 'string', description: '或按 peer 寻址: 群 openid/私聊 openid(需带 scope)' },
