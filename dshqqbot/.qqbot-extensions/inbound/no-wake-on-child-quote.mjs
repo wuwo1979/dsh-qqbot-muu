@@ -156,7 +156,7 @@ async function loadLib() {
  * ⇒ 真机上完全静默、无法定位。" 本扩展此前一直用 `ctx.logger.debug` ⇒ 等于瞎的，
  * 导致"引用回流没投递"排查了三轮全靠猜。此后所有关键判定一律 `appendDiag` 落盘。
  */
-const DIAG_FILE = 'D:/newwenjianjia/aiwork/鲸鱼娘/dshqqbot/.qqbot-extensions/data/no-wake-diag.log';
+const DIAG_FILE = __repoRoot() + '/dshqqbot/.qqbot-extensions/data/no-wake-diag.log';
 
 async function appendDiag(line) {
   try {

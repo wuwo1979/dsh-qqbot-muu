@@ -1,4 +1,35 @@
 #!/usr/bin/env node
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * install.mjs — 把 dsh-qqbot-muu 的扩展装进任意 bot 数据根
  *
@@ -16,7 +47,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = dirname(fileURLToPath(import.meta.url));
 const SRC = join(REPO, 'dshqqbot', '.qqbot-extensions');
-const LOCAL_ROOT = 'F:/qqbot/dshqqbot';
+const LOCAL_ROOT = __repoRoot() + "/dshqqbot";
 
 function argValue(name) {
   const i = process.argv.indexOf(name);
@@ -64,8 +95,8 @@ function walk(dir, rel) {
 }
 
 // ── 可移植化：把只属于作者机器的绝对路径改写成「目标机上有就有、没有就关掉」 ──
-// 起因（2026-10-28）：随包发的 draw-config.json 里写着 F:/qqbot/.venv-draw/...、
-// F:/qqbot/.models/...，别人的机器上这些路径不存在，出图会一路 fetch failed。
+// 起因（2026-10-28）：随包发的 draw-config.json 里写着 <仓库根>、
+// <仓库根>，别人的机器上这些路径不存在，出图会一路 fetch failed。
 const REPO_POSIX = REPO.replace(/\\/g, '/').replace(/\/+$/, '');
 const REWRITES = [
   [new RegExp(escapeRe(REPO_POSIX) + '/qqbot-mod', 'g'), REPO_POSIX + '/qqbot-mod'],

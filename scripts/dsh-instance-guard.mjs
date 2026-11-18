@@ -20,7 +20,7 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export const LOCK_PORT = Number(process.env.DSH_GUARD_PORT || 4789)
-export const LOCK_FILE = process.env.DSH_GUARD_LOCK || 'F:\\qqbot\\dshqqbot\\.qqbot\\dsh-instance.json'
+export const LOCK_FILE = process.env.DSH_GUARD_LOCK || __repoRoot() + '/dshqqbot/.qqbot/dsh-instance.json'
 
 const isWin = process.platform === 'win32'
 

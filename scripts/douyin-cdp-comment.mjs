@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 // 抖音评论回复（真实 Chrome + CDP，坐标点击，兼容 React）
 // 用法：
 //   node scripts/douyin-cdp-comment.mjs --url <作品链接> --scan
@@ -16,7 +47,7 @@ const log = (...a) => console.log('[dy-comment]', ...a)
 const url = arg('url')
 const match = arg('match')
 const text = arg('text')
-const shotPath = arg('shot', `F:/qqbot/tmp/dy-comment-${Date.now()}.png`)
+const shotPath = arg('shot', `${__repoRoot()}/tmp/dy-comment-${Date.now()}.png`)
 
 const list = await (await fetch(`${CDP}/json/list`)).json()
 const page = list.find((t) => t.type === 'page')
@@ -29,7 +60,7 @@ ws.on('message', (raw) => { const m = JSON.parse(String(raw)); if (m.id && waite
 const send = (method, params = {}) => new Promise((res, rej) => { const mid = ++id; waiters.set(mid, (m) => (m.error ? rej(new Error(m.error.message)) : res(m.result))); ws.send(JSON.stringify({ id: mid, method, params })) })
 const run = async (expr) => (await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result?.value
 const shot = async () => { const s = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(shotPath, Buffer.from(s.data, 'base64')); log('shot', shotPath) }
-const shot0 = async () => { const s2 = await send('Page.captureScreenshot', { format: 'png' }); const p2 = `F:/qqbot/tmp/dy-comment-${Date.now()}.png`; writeFileSync(p2, Buffer.from(s2.data, 'base64')); return p2 }
+const shot0 = async () => { const s2 = await send('Page.captureScreenshot', { format: 'png' }); const p2 = `${__repoRoot()}/tmp/dy-comment-${Date.now()}.png`; writeFileSync(p2, Buffer.from(s2.data, 'base64')); return p2 }
 const clickAt = async (x, y) => {
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' })
   await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 })

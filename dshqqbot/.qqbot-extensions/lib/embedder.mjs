@@ -30,15 +30,18 @@ export function pluginDir() {
   const found = findPluginDir();
   if (found) return found;
   const envHome = String(process.env.DSH_HOME || '').trim();
-  const base = 'C:/Users/Administrator/AppData/Roaming/dsh-desktop/harness/profiles/web/node_modules';
+  const home = String(process.env.USERPROFILE || process.env.HOME || '').split(String.fromCharCode(92)).join('/');
+  const appData = String(process.env.APPDATA || '').split(String.fromCharCode(92)).join('/');
+  const base = appData ? appData + '/dsh-desktop/harness/profiles/web/node_modules' : '';
+  const dotDsh = home ? home + '/.dsh/profiles/web/node_modules' : '';
   // 2026-11-05：插件已改名 dsh-qqbot-muu，旧 @zaofan/dsh-qqbot 目录已不存在——新名优先
   const cands = [
     envHome && join(envHome, 'profiles', 'web', 'node_modules', 'dsh-qqbot-muu'),
     envHome && join(envHome, 'profiles', 'web', 'node_modules', '@zaofan', 'dsh-qqbot'),
     join(base, 'dsh-qqbot-muu'),
     join(base, '@zaofan', 'dsh-qqbot'),
-    'C:/Users/Administrator/.dsh/profiles/web/node_modules/dsh-qqbot-muu',
-    'C:/Users/Administrator/.dsh/profiles/web/node_modules/@zaofan/dsh-qqbot',
+    dotDsh && join(dotDsh, 'dsh-qqbot-muu'),
+    dotDsh && join(dotDsh, '@zaofan', 'dsh-qqbot'),
   ].filter(Boolean);
   return cands.find((p) => existsSync(join(p, 'dist', 'features', 'local-embed.js'))) || cands.find(Boolean) || '';
 }

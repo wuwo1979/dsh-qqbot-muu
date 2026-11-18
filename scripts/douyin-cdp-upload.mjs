@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 // 抖音投稿（真实 Chrome + CDP）：把本地成片塞进创作中心的上传框
 // 用法：node scripts/douyin-cdp-upload.mjs --file "F:\...\video.mp4" --title "..." --desc "..."
 // 只做「塞文件 + 填文案」，最后一步发布按钮留给人点（抖音对自动发布风控很凶）
@@ -32,7 +63,7 @@ await send('Page.enable'); await send('Runtime.enable'); await send('DOM.enable'
 await send('Page.navigate', { url: 'https://creator.douyin.com/creator-micro/content/upload' })
 await sleep(9000)
 const href = await run('location.href')
-const shotPath = await shot(`F:/qqbot/tmp/dy-upload-${Date.now()}.png`)
+const shotPath = await shot(`${__repoRoot()}/tmp/dy-upload-${Date.now()}.png`)
 
 // 找 input[type=file] 并塞文件
 const doc = await send('DOM.getDocument', { depth: -1, pierce: true })
@@ -60,7 +91,7 @@ if (title) {
     return false
   })()`)
 }
-const shot2 = await shot(`F:/qqbot/tmp/dy-upload-${Date.now()}.png`)
+const shot2 = await shot(`${__repoRoot()}/tmp/dy-upload-${Date.now()}.png`)
 const bodyText = await run('document.body.innerText.slice(0, 400)')
 out({ ok: true, href, shot: shot2, needsManualPublish: true, hint: '文件已塞进去，剩下「发布」按钮需要人点（抖音对自动发布风控）', bodyText })
 ws.close()

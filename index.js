@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * index.js — DSH 插件壳（市场兼容层）
  *
@@ -12,7 +43,7 @@ export const name = 'dsh-qqbot-muu';
 export const inject = [];
 
 export function apply(ctx, config = {}) {
-  const dataRoot = String(config.dataRoot || process.env.QQBOT_MEMORY_DATA_ROOT || 'F:/qqbot/dshqqbot');
+  const dataRoot = String(config.dataRoot || process.env.QQBOT_MEMORY_DATA_ROOT || __repoRoot() + "/dshqqbot");
   ctx.logger?.info?.(
     `[dsh-qqbot-muu] extension pack loaded (dataRoot=${dataRoot}). ` +
       'Run `dsh-qqbot-muu-install` to install/update .qqbot-extensions and patches.',

@@ -1,5 +1,18 @@
 # 更新日志
 
+## 0.1.8
+
+### 修复
+- **彻底去掉写死的本机绝对路径**：`dist/`、`client/`、`dshqqbot/.qqbot-extensions/`、`scripts/` 里所有 `F:/qqbot/...`、`C:/Users/Administrator/...`、`D:/...` 改成运行期推导（环境变量 → 从模块自身位置往上找仓库根 → cwd），别人机器上不会再指向不存在的目录。
+- `settings-host.js` 里 Chrome 调试实例的 `--user-data-dir=F:\qqbot	mp\chrome-dy` 原来会被 JS 解析成制表符 + 相对路径，已改成按仓库根拼接。
+- `tts-core.mjs` 的 Python 兜底不再写死 `E:\Anaconda\python.exe`，改成 `QQBOT_PYTHON` → `python`。
+- `embedder.mjs` 找插件目录不再写死某个用户目录，改成 `USERPROFILE` / `APPDATA` + `DSH_HOME` 推导。
+- `start-interview.mjs` 不再写死 DSH 桌面端安装路径（仍可用 `DSH_DESKTOP_EXE` 覆盖）。
+
+### 发版闸门
+- 绝对路径检查现在真的会拦：系统目录（`C:/Windows`、`Program Files`）豁免，其余一律点名。
+- 运维用的 `scripts/*.ps1` 不再打包进 npm 包。
+
 ## 0.1.7 — 2026-11-18
 
 这一版主要是「别再让用户被同样的问题绊倒」：修掉已知 bug、把隐私数据从发布包里清干净、补上升级自检。

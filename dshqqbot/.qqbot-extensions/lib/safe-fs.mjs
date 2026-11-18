@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * lib/safe-fs.mjs — 文件操作留底（可回溯 / 可撤回 / 可清理）
  *
@@ -11,7 +42,7 @@
  *   3. **能看得见**：list() 给出 id / 时间 / 原因 / 文件数 / 占用，方便决定留还是删；
  *   4. **能恢复、能省空间**：restore() 原样写回；rm()/prune() 删快照回收空间。
  *
- * 存储布局（默认 dataRoot = F:/qqbot/dshqqbot）：
+ * 存储布局（默认 dataRoot = <仓库根>）：
  *   <dataRoot>/.qqbot/safe/index.jsonl      一行一条快照元数据（append-only，删快照时重写）
  *   <dataRoot>/.qqbot/safe/snaps/<id>/…     原件副本（保持相对路径）
  */
@@ -30,7 +61,7 @@ function safeRoot(dataRoot) {
   // 可用环境变量 QQBOT_SNAPSHOTS 覆盖（想放别的盘就设它）。
   const env = process.env.QQBOT_SNAPSHOTS;
   if (env && String(env).trim()) return resolve(String(env).trim());
-  const root = String(dataRoot || 'F:/qqbot/dshqqbot');
+  const root = String(dataRoot || __repoRoot() + "/dshqqbot");
   return join(dirname(resolve(root)), 'snapshots');
 }
 function indexPath(dataRoot) {

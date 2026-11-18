@@ -9,7 +9,7 @@ import { loadConfig, loadBiliCookies } from '../config.mjs';
 import { createRedactor, makeLogger } from '../redact.mjs';
 import { BiliWebAdapter } from '../adapters/bilibili-web.mjs';
 
-const dataRoot = 'f:/qqbot/dshqqbot';
+const dataRoot = __repoRoot() + '/dshqqbot';
 const roomId = String(process.argv[2] || '').trim();
 const cfg = loadConfig(dataRoot);
 const cookies = loadBiliCookies(dataRoot);

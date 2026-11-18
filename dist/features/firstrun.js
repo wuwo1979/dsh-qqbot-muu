@@ -226,7 +226,7 @@ export function seedExtensions(opts = {}) {
                         return 0;
                     }
                 })();
-                // 文本文件顺手把作者机绝对路径改写成这台机器的数据根（否则扩展里写死的 F:/qqbot/dshqqbot 会指向不存在的目录）
+                // 文本文件顺手把作者机绝对路径改写成这台机器的数据根（否则扩展里写死的 <仓库根> 会指向不存在的目录）
                 if (size > 0 && size <= REWRITE_MAX_BYTES && /\.(mjs|js|cjs|json|ya?ml|md|txt)$/i.test(e.name)) {
                     const raw = readFileSync(abs, 'utf8');
                     if (AUTHOR_ROOT_RE.test(raw)) {

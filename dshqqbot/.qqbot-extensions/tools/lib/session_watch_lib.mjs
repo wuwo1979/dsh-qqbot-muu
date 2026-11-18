@@ -833,7 +833,7 @@ async function forwardToQq(entry, text) {
  *   "一开始只往 logger 写，而**从来没人注入过 logger** ⇒ 真机上完全静默、无法定位。"
  *   本库涉及"转发到 QQ"，静默一次就是一条内容永久丢失，必须能事后追。
  */
-const SW_DIAG_FILE = 'D:/newwenjianjia/aiwork/鲸鱼娘/dshqqbot/.qqbot-extensions/data/session-watch-diag.log';
+const SW_DIAG_FILE = __repoRoot() + '/dshqqbot/.qqbot-extensions/data/session-watch-diag.log';
 
 async function swDiag(line) {
   try {

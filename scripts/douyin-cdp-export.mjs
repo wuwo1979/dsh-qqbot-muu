@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 // 抖音私信导出（真实 Chrome + CDP）→ ndjson + memory.db
 // 用法：
 //   node scripts/douyin-cdp-export.mjs --peer <昵称> --scope douyin:dm:<id> [--reset] [--dry] [--no-db]
@@ -8,7 +39,7 @@ import { createHash } from 'node:crypto'
 import WebSocket from 'ws'
 import { DatabaseSync } from 'node:sqlite'
 
-const ROOT = 'F:/qqbot'
+const ROOT = __repoRoot() + ""
 const CDP = 'http://127.0.0.1:9222'
 const DB = join(ROOT, 'dshqqbot', '.qqbot', 'memory.db')
 const OUTDIR = join(ROOT, 'data', 'douyin-exports')

@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * backfill-wechat-archive.mjs — 把微信桥自己的 messages.jsonl 补进统一台账。
  *
@@ -10,13 +41,13 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
-const REPO = 'F:/qqbot'
-const DATA_ROOT = 'F:/qqbot/dshqqbot'
+const REPO = __repoRoot() + ""
+const DATA_ROOT = __repoRoot() + "/dshqqbot"
 const SRC = join(REPO, 'wechat-bridge', 'messages.jsonl')
 const dry = process.argv.includes('--dry-run')
 
-const { loadPeople, scopeFor } = await import('file:///F:/qqbot/dshqqbot/.qqbot-extensions/lib/person-link.mjs')
-const { appendChat } = await import('file:///F:/qqbot/dshqqbot/.qqbot-extensions/lib/chatlog-db.mjs')
+const { loadPeople, scopeFor } = await import(pathToFileURL(join(__repoRoot(), "dshqqbot/.qqbot-extensions/lib/person-link.mjs")).href)
+const { appendChat } = await import(pathToFileURL(join(__repoRoot(), "dshqqbot/.qqbot-extensions/lib/chatlog-db.mjs")).href)
 
 if (!existsSync(SRC)) { console.log('没有 messages.jsonl，跳过'); process.exit(0) }
 const rows = []

@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * tts-core.mjs — 小蓝的中文语音合成核心（edge-tts → mp3）
  *
@@ -24,7 +55,7 @@ import { join, dirname, isAbsolute } from 'node:path';
 // 适配层是个普通 python 进程，起它的 shell 一退它就没了；插件这边每次合成前先探活，
 // 探不到就直接 detached 起 python（adapter/server.py --manage），再等它 listening。
 const TTS_START_WAIT_MS = 60000;
-const TTS_DEFAULT_REPO = 'F:/qqbot';
+const TTS_DEFAULT_REPO = __repoRoot() + "";
 
 function ttsServiceBase(endpoint) {
   try {
@@ -355,7 +386,7 @@ async function synthWslIndex(say, { wsl, dir, outPath, timeoutMs }) {
 }
 const BITRATE = 48000;        // edge-tts 默认 mp3 码率 bps，用来估算时长
 
-const FALLBACK_PYTHON = 'E:\\Anaconda\\python.exe';
+const FALLBACK_PYTHON = String(process.env.QQBOT_PYTHON || 'python');
 
 /** 写死的常用中文音色（不联网查，够用就行） */
 const VOICES = [
@@ -390,7 +421,7 @@ function resolveExecutable(cmd) {
 }
 
 /**
- * 依次尝试 QQBOT_PYTHON → E:\Anaconda\python.exe → python；都找不到就返回 'python' 交给系统。
+ * 依次尝试 QQBOT_PYTHON → python（PATH）；都找不到就返回 'python' 交给系统。
  * 例外：显式传入的 override 原样使用（测试注入/特殊环境），不偷偷回退 ——
  * 否则"把 pythonBin 指到坏路径"这种失败路径永远测不出来。
  */

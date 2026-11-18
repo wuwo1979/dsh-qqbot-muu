@@ -1,3 +1,34 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 // overlay-check.mjs — 启动时自检「补丁是否还活着」（主人 2026-10-27 需求）
 //
 // 背景：所有定制都打在 profiles/.generations/live/…/@zaofan/dsh-qqbot 的文件上，
@@ -121,7 +152,7 @@ export async function run(env) {
     } else {
       logger.warn?.(`[overlay-check] ⚠️ 检测到 ${out.missing.length} 个定制缺失（多半是上游升级换了 generation）——`)
       for (const m of out.missing) logger.warn?.(`[overlay-check]   ✗ ${m.desc}（标记 ${m.mark} 不在 ${m.file}；重放：qqbot-mod/patches/${m.fix}${String(m.fix).endsWith('.mjs') ? ' --apply' : ''}）`)
-      logger.warn?.('[overlay-check]   修复方式：node F:/qqbot/qqbot-mod/patches/<对应脚本> --apply，或 live-overlay/install.mjs --apply 三路合并整体重放')
+      logger.warn?.('[overlay-check]   修复方式：node <仓库根>/qqbot-mod/patches/<对应脚本> --apply，或 live-overlay/install.mjs --apply 三路合并整体重放')
       // ── 自动重放（主人 2026-10-27：上游升级不能影响我们）──
       // 走三路合并（base=官方基线 / ours=定制 / live=新 generation），只撞行才冲突，冲突不写盘。
       // 护栏：① 环境变量 QQBOT_AUTO_REPLAY=0 关闭；② 同一 generation 最多自动试 2 次；
@@ -129,7 +160,7 @@ export async function run(env) {
       try {
         const AUTO = String(process.env.QQBOT_AUTO_REPLAY ?? '1') !== '0'
         const DRY = String(process.env.QQBOT_REPLAY_DRY ?? '') === '1'
-        const REPO = 'F:/qqbot'
+        const REPO = __repoRoot() + ""
         const INSTALLER = REPO + '/qqbot-mod/patches/live-overlay/install.mjs'
         const stateDir = join(env.dataRoot || '', '.qqbot-extensions', 'hooks', 'data')
         const statePath = join(stateDir, 'overlay-replay-state.json')

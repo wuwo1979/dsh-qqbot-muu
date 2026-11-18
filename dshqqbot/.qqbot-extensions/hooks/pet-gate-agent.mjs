@@ -1,8 +1,39 @@
+import { existsSync as __existsSync } from 'node:fs'
+const __repoRoot = (() => {
+  let cached = ''
+  const norm = (p) => String(p || '').split(String.fromCharCode(92)).join('/')
+  return () => {
+    if (cached) return cached
+    const cands = []
+    const env = String(process.env.QQBOT_ROOT || process.env.QQBOT_REPO_ROOT || '').trim()
+    if (env) cands.push(norm(env))
+    try {
+      let here = decodeURIComponent(new URL('.', import.meta.url).pathname)
+      if (here[0] === '/' && here[2] === ':') here = here.slice(1)
+      here = norm(here).replace(/\/+$/, '')
+      let d = here
+      for (let i = 0; i < 6; i += 1) {
+        if (!d) break
+        cands.push(d)
+        const k = d.lastIndexOf('/')
+        d = k > 0 ? d.slice(0, k) : ''
+      }
+    } catch { /* noop */ }
+    try { cands.push(norm(process.cwd())) } catch { /* noop */ }
+    for (const c of cands) {
+      try {
+        if (c && (__existsSync(c + '/qqbot-mod/muu-shared.mjs') || __existsSync(c + '/dshqqbot'))) { cached = c; return cached }
+      } catch { /* noop */ }
+    }
+    cached = norm(cands.find(Boolean) || '.')
+    return cached
+  }
+})()
 /**
  * hooks/pet-gate-agent.mjs — 公网桌宠网关的本机连接器自启动（2026-11-01）
  *
  * 职责：DSH 启动时若 pet-gate/secrets.json 已配置 cloudUrl，就 spawn 一个
- *       detached 的 `node pet-gate/agent.mjs` 子进程（F:/qqbot/pet-gate/agent.mjs）。
+ *       detached 的 `node pet-gate/agent.mjs` 子进程（<仓库根>）。
  * agent 自己断线重连、失败退避；这里只负责拉起 + 每 10 分钟巡检补拉。
  * 主人手动管理：node pet-gate/agent.mjs status / reset-seat / new-key
  *
@@ -13,7 +44,7 @@ import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const GATE_DIR = 'F:/qqbot/pet-gate';
+const GATE_DIR = __repoRoot() + "/pet-gate";
 const AGENT = join(GATE_DIR, 'agent.mjs');
 const HERE = dirname(fileURLToPath(import.meta.url));
 

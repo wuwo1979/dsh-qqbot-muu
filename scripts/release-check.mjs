@@ -184,11 +184,12 @@ for (const rel of packed) {
   if (!existsSync(abs)) continue
   let txt = ''
   try { txt = readFileSync(abs, 'utf8') } catch { continue }
-  const lines = txt.split('\n')
   let n = 0
-  for (const line of lines) {
+  for (const line of txt.split('\n')) {
     if (/^\s*(\*|\/\/|#)/.test(line)) continue
-    if (ABS_PATH_RE.test(line)) n += 1
+    // 系统目录（Windows 字体 / Program Files）不算「作者本机路径」，允许作为兜底
+    const sysLine = line.indexOf('Windows') >= 0 || line.indexOf('Program Files') >= 0
+    if (!sysLine && ABS_PATH_RE.test(line)) n += 1
   }
   if (n) absOffenders.push(`${relative(REPO, abs).split(sep).join('/')}（${n} 处）`)
 }

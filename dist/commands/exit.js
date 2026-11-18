@@ -35,7 +35,7 @@ export function selfRestart(delayMs = 1600, killWaitMs = 2000) {
         const pid = process.pid;
         const cwd = process.cwd();
         const env = { ...process.env }; // ★ 必须带上，否则 ELECTRON_RUN_AS_NODE / DSH_HOME 会丢
-        const logFile = join(process.env.QQBOT_LOG_DIR || 'F:\\qqbot\\logs', 'bot-restart.log');
+        const logFile = join(process.env.QQBOT_LOG_DIR || __repoRoot() + '/logs', 'bot-restart.log');
         const helper = [
             "const { spawn } = require('child_process');",
             "const { appendFileSync, mkdirSync, unlinkSync } = require('fs');",
