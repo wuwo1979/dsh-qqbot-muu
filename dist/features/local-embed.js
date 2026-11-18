@@ -178,7 +178,31 @@ export function createLocalEmbedder(opts = {}) {
                 mod.env.allowRemoteModels = false; // 全离线, 不上传任何内容
                 mod.env.localModelPath = dirname(modelDir); // 与 dsh 同款: 指到父目录
                 const name = basename(modelDir);
-                extractor = (await mod.pipeline('feature-extraction', name, { dtype: spec.dtype }));
+                // ★ 2026-11-18 修: onnxruntime 默认按核数开线程池, 会跟宿主抢 CPU(用户报过 file-history 冲突)
+                //   ① 进程级 OMP 线程数钉死 1(必须在建 session 之前设)  ② session 内部单线程 + 顺序执行
+                try {
+                    process.env.OMP_NUM_THREADS = '1';
+                    process.env.OPENBLAS_NUM_THREADS = '1';
+                    process.env.MKL_NUM_THREADS = '1';
+                } catch { }
+                try {
+                    const be = mod.env?.backends;
+                    if (be?.onnx && typeof be.onnx === 'object') {
+                        be.onnx.intraOpNumThreads = 1;
+                        be.onnx.interOpNumThreads = 1;
+                    }
+                } catch { }
+                extractor = (await mod.pipeline('feature-extraction', name, {
+                    dtype: spec.dtype,
+                    session_options: {
+                        intraOpNumThreads: 1,
+                        interOpNumThreads: 1,
+                        executionMode: 'sequential',
+                        graphOptimizationLevel: 'all',
+                    },
+                }));
+                lastUseAt = Date.now();
+                scheduleIdleRelease();
                 loadMs = Date.now() - t0;
                 logger?.info(`[im-qqbot] 智能回复(本地小模型)就绪: ${name} (${loadMs}ms)`);
                 return true;
@@ -204,9 +228,41 @@ export function createLocalEmbedder(opts = {}) {
         })();
         return loading;
     }
+    // ★ 2026-11-18 修: 串行化 + 空闲卸载, 避免长期占用 CPU 线程池
+    let lastUseAt = 0;
+    let idleTimer;
+    let chain = Promise.resolve();
+    function scheduleIdleRelease() {
+        if (idleTimer)
+            clearTimeout(idleTimer);
+        const idleMs = Number(opts.idleReleaseMs ?? 300000);
+        if (!(idleMs > 0))
+            return;
+        idleTimer = setTimeout(() => {
+            idleTimer = undefined;
+            if (Date.now() - lastUseAt < idleMs)
+                return scheduleIdleRelease();
+            try {
+                if (extractor?.dispose)
+                    extractor.dispose();
+            } catch { }
+            extractor = undefined;
+            logger?.info('[im-qqbot] 智能回复: 本地小模型空闲 5 分钟, 已释放(下次用到再加载)');
+        }, idleMs + 1000);
+        if (idleTimer.unref)
+            idleTimer.unref();
+    }
     async function run(texts, isQuery) {
         if (opts.enabled === false || texts.length === 0)
             return undefined;
+        // 串行执行: 同一时刻只有一次推理, 后到的排队(避免并发把线程吃满)
+        const job = chain.then(() => runOne(texts, isQuery));
+        chain = job.catch(() => undefined);
+        return job;
+    }
+    async function runOne(texts, isQuery) {
+        lastUseAt = Date.now();
+        scheduleIdleRelease();
         if (!(await load()))
             return undefined;
         if (!extractor && lexical) {
@@ -220,7 +276,7 @@ export function createLocalEmbedder(opts = {}) {
         }
         try {
             // ★ P1: 前缀与池化随模型走
-            const input = texts.map((t) => (isQuery && spec.queryPrefix ? spec.queryPrefix + t : t));
+            const input = texts.slice(0, Number(opts.maxBatch ?? 32)).map((t) => (isQuery && spec.queryPrefix ? spec.queryPrefix + t : t));
             // bge-zh: CLS pooling + 归一化(点积即余弦)
             const out = await extractor(input, { pooling: spec.pooling, normalize: true });
             const arr = out.tolist();

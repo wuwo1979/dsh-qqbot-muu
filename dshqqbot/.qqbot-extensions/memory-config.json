@@ -51,8 +51,8 @@
  },
  "_retrieval说明": "检索用的向量模型。local=插件自带 ONNX bge-small-zh；ollama:nomic-embed-text 等=本机 Ollama。图片/表情检索可单独指定 stickerEmbeddingModel（留空跟随 embeddingModel）。换模型后到浮窗「记忆→模型」点一次「重建向量」。",
  "retrieval": {
-  "embeddingModel": "local",
-  "stickerEmbeddingModel": "local",
+  "embeddingModel": "ollama:nomic-embed-text",
+  "stickerEmbeddingModel": "ollama:nomic-embed-text",
   "visionModel": "qwen2.5vl:3b",
   "rerankModel": "",
   "ollamaBase": "http://127.0.0.1:11434",

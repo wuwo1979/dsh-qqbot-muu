@@ -7,7 +7,7 @@
  *   node scripts/publish-npm.mjs
  *
  * 顺序（任何一步失败就停，不带着隐私风险发出去）：
- *   1. scripts/check-pack-privacy.mjs（运行时数据 / Cookie / 令牌 / 真名 / 非 ASCII 文件名）
+ *   1. scripts/release-check.mjs --strict（打包内容 / 令牌 / 真名 / 本机绝对路径 / 默认人设 / profile 依赖）
  *   2. 与 GitHub 上的文件清单对账（防止包里少了东西）
  *   3. npm publish --access public
  */
@@ -40,7 +40,7 @@ function tokenFromFile() {
 // 1) 隐私闸门
 step('隐私闸门');
 try {
-  const out = run('node', ['scripts/check-pack-privacy.mjs']);
+  const out = run('node', ['scripts/release-check.mjs', '--strict']);
   console.log(out.trim().split('\n').slice(-2).join('\n'));
 } catch (e) {
   console.error('❌ 隐私自检没通过，停止发布：');

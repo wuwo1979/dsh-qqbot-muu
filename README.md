@@ -244,7 +244,7 @@ access:
 > care/allowlist 名单为空时启动日志会打醒目提示（不会静默）。
 > 拒绝时日志会打醒目提示（不会静默）。
 
-## 🚀 新装即用（v0.1.6 · 只缺省才写入的默认值）
+## 🚀 新装即用（v0.1.7 · 只缺省才写入的默认值）
 
 下载插件后**不用手工调**：启动时做一次"补丁式迁移"，只往**空位**里补默认值。
 
@@ -279,6 +279,22 @@ access:
 - 面试记录只落本机 `secrets/interview/sessions/<sid>/`，**不进群历史、不进模型上下文**；
   保留策略见 `secrets/interview/config.json` 的 `privacy` / `retention`（默认 14 天后归档）。
 - `/答题` 是判定式练习（关键词命中判定，零模型），**不落盘**，答完就散。
+
+## 🧭 部署与端口（一张表）
+
+| 服务 | 端口 | 启动 |
+| --- | --- | --- |
+| DSH Desktop（宿主 / 浮窗） | 43129 | 正常启动 |
+| 微信桥 `wechat-bridge` | 4311 | `wechat-bridge\start-bridge.bat`（需 `X-Bridge-Token`） |
+| 平板 WCX（微信） | 3001 | `adb forward tcp:3001 tcp:3001`，重启后要重建 |
+| 小天才桥 `xtc-bridge` | 4332 | `xtc-bridge\start-4332.bat`（沙箱外双击） |
+| TTS 适配层 | 9881（GSV 9880 / Breeze 7860） | `python skills/local-tts/adapter/server.py --port 9881 --manage ...` |
+| Ollama（向量 / 视觉） | 11434 | 系统自启 |
+
+记忆库统一在 `dshqqbot/.qqbot/memory.db`，作用域按 `c2c:<openid>` / `group:<群 id>` / `__global__` 分；
+微信侧当前写的是 `wechat:<convId>`（独立 scope，尚未归一）。
+
+完整版（启动顺序、每条链路当前能做什么、故障对照表）见本地文档 `docs/部署与链路-2026-11-13.md`（`docs/` 不入库）。
 
 ## 🔒 隐私
 
@@ -332,6 +348,8 @@ submission/                   插件市场提交条目
 - 已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（DSH 桌面端内置插件市场的数据源）
 - 条目：`submission/wuwo1979__dsh-qqbot-muu.yml`（本地预检：`node scripts/check-submission.mjs`）
 - **更新机制**：市场不会自动跟随本仓库发版。每发一个新 Release，需要向上游仓库提 PR，把条目里的 `tarball:` 指到新版本——已随 v0.1.4 完成
+- **发版守门**：每次发版前跑 `npm run release:check:strict`（`npm publish` 会自动跑），查打包内容、token/私钥/真实账号、入口语法、profile 依赖、默认人设；清单见 `docs/RELEASE_CHECKLIST.md`
+- **v0.1.7**：修小模型抢 CPU、小天才重复发、`/bot-restart`；发布包已剔除全部个人数据与硬编码账号；启动时自检 profile 依赖，避免升级后进安全模式（见 `CHANGELOG.md`）
 
 ## 致谢与许可
 

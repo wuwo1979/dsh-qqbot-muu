@@ -42,6 +42,7 @@ import { chat as llmChat, health as llmHealth, loadConfig as loadLlmConfig } fro
 import { observeTrait, replay as hippoReplay } from './memory-hippo.mjs';
 import { loadBedrock } from './bedrock.mjs';
 import { personalIds } from './personal-ids.mjs';
+import { isPrivateScope } from './private-guard.mjs';
 
 // 回放巩固的节流计数（进程内；重启清零不影响正确性，只是可能早/晚一轮）
 const replayCounter = new Map();
@@ -348,6 +349,13 @@ const FAMILY_SEED = [
 
 /** 同一个人的历史重复键（大小写/昵称不同）→ 正规键。种子会把这些旧键删掉。 */
 const CARD_ALIAS = new Map([
+  // 2026-11-15：模型有时会拿自称开一张卡（card:本鲸），面板上就多出一个「本鲸」的人。
+  // 自称一律折到小蓝自己的卡上，剩下的交给 SELF_NAMES 拦。
+  ['card:本鲸', 'card:小蓝'],
+  ['card:鲸鲸', 'card:小蓝'],
+  ['card:MuU', 'card:小蓝'],
+  ['card:muu', 'card:小蓝'],
+  ['card:MuUAstra', 'card:小蓝'],
   ['card:stelle', 'card:' + STELLE_SID],
   ['card:Stelle', 'card:' + STELLE_SID],
   ['fam:Stelle', 'fam:' + STELLE_SID],
@@ -362,6 +370,15 @@ const FAMILY_REL = new Map([
 ].filter(([k]) => hasId(k)));
 
 /** 写卡统一走这里：把别名键折叠成正规键，避免同一人被写成两张卡 */
+/** 小蓝的自称/别名：绝不能当成「群友」开印象卡（2026-11-15 主人抓到 card:本鲸） */
+const SELF_NAMES = new Set(['本鲸', '本鲸说', '鲸鲸', '小蓝', 'MuU', 'muu', 'MuUAstra', '鲸鱼娘', '小蓝(MuU)', '小蓝MuU']);
+function isSelfName(name) {
+  const n = String(name || '').trim();
+  if (!n) return false;
+  if (SELF_NAMES.has(n)) return true;
+  return /^(本鲸|小蓝|鲸鲸)/.test(n) && n.length <= 6;
+}
+
 function canonCardKey(key) {
   const k = String(key || '');
   const hit = CARD_ALIAS.get(k) || CARD_ALIAS.get(k.toLowerCase());
@@ -387,7 +404,7 @@ function seedFamilyCards(root) {
     // ③ 熟识度（fam:）：补称呼 + 给妈妈设下限（a≥46 / t≥48，比爸爸的 45/46 略高）
     const famSeed = [
       ['fam:' + DAD_SID, '爸爸', `爸爸；${FAM.dad}与小蓝互动频繁，关注科研和情感表达。`, null],
-      ['fam:' + MOM_SID, '妈妈', '妈妈；关系稳定，常聊家里事；小蓝跟她最亲。', { a: 46, t: 48 }],
+      ['fam:' + MOM_SID, '妈妈', '妈妈；关系稳定，常聊家里事；小蓝跟她最亲。', { a: 48, t: 50 }],
       ['fam:' + STELLE_SID, '妹妹', '妹妹；小蓝是她姐姐。', null],
     ];
     for (const [ckey, mark, note, floor] of famSeed) {
@@ -421,6 +438,8 @@ export async function runTurnAgent({
   const root = String(dataRoot || '').trim();
   const sc = String(scope || '').trim();
   if (!root || !sc) return { ok: false, reason: 'no-scope' };
+  // 私聊护城河（2026-11-16）：家人/朋友的私人对话只进 private-chat.db，不提炼进常规记忆
+  if (isPrivateScope(sc)) return { ok: false, reason: 'private-scope' };
   seedFamilyCards(root);
 
   const started = Date.now();
@@ -577,6 +596,7 @@ export async function runTurnAgent({
         const key = canonCardKey('card:' + (sid || name));
         // 没有真名（c2c 缺昵称）时别写卡，否则会把“爸爸/妈妈”的好卡覆盖成“对方：…”
         if (!name || name === '对方' || name === '群友' || name === '未知') continue;
+        if (isSelfName(name)) continue;
         // 关系句兜底：家里人（爸爸/妈妈/妹妹/小蓝自己）的卡，模型若没写称呼就补一句，
         // 否则一次模型重写就把"谁是爸爸"洗掉（2026-11-10 主人反馈"印象卡失效"）
         const rel = FAMILY_REL.get(key) || '';

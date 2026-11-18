@@ -482,7 +482,7 @@ async function optionsOfRaw(ctx, step, st) {
         for (const d of dirsAll) lastMap.set(bareId(d.id), d.mtime || 0);
         const lastOf = (s) => lastMap.get(bareId(s.id)) || s.createdAt || 0;
         const score = (s) => (live.get(bareId(s.id))?.title ? 1 : 0);
-        mine.sort((a, b) => (score(b) - score(a)) || (lastOf(b) - lastOf(a));
+        mine.sort((a, b) => (score(b) - score(a)) || (lastOf(b) - lastOf(a)));
         const shown = mine.slice(0, 80);
         const named = mine.filter((s) => live.get(bareId(s.id))?.title).length;
         LAST_SCOPE = `${mine.length} 个会话（${named} 个在线有名）`;

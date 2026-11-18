@@ -1,38 +1,67 @@
 // 把 F:\qqbot 里改过的插件源码同步到 DSH 真正加载的 pnpm 安装副本。
 //
-// 为什么需要：DSH 通过 profiles/web 的 pnpm file: 依赖加载插件，file: 依赖是
-// **拷贝**（不是软链/硬链接），所以改 F:\qqbot 下的源码不会影响正在跑的那一份，
+// 为什么需要：profile 里三个本地插件是 file:./local-plugins/<包名> 依赖，
+// pnpm 10 会**复制**目录内容到 node_modules/.pnpm/<包名>@<hash>/node_modules/<包名>
+// （不是软链，也不是硬链接），所以改 F:\qqbot 下的源码不会影响正在跑的那一份，
 // 重启宿主也白重启。改完源码后跑一次本脚本，再重启 DSH。
 //
 // 用法：
 //   F:\nodejs\node.exe F:\qqbot\scripts\sync-plugin-copies.mjs
 // 注意：目标目录在 AppData 下，DSH 沙箱默认写不了，需要在放开权限的终端里跑
 //       （或在 DSH 里用 danger-full-access 执行）。
+//
+// 2026-11-14 起：profile 依赖改成相对路径 + local-plugins 软链，
+// 见 scripts/dsh-profile-links.mjs 的头注释（那次绝对路径 file: 直接触发过安全模式）。
 
-import { readdirSync, cpSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { readdirSync, cpSync, existsSync, statSync } from 'node:fs'
+import { join, basename } from 'node:path'
 
-const PROF = 'C:/Users/Administrator/AppData/Roaming/dsh-desktop/harness/profiles/web'
+const profileArg = process.argv.indexOf('--profile')
+const PROF = profileArg >= 0 && process.argv[profileArg + 1]
+  ? process.argv[profileArg + 1]
+  : join(process.env.APPDATA ?? '', 'dsh-desktop', 'harness', 'profiles', 'web')
 const PNPM = join(PROF, 'node_modules', '.pnpm')
 
-/** [源目录, .pnpm 目录名前缀, 副本内相对路径] */
+/** [源路径, .pnpm 目录名前缀, 副本内相对路径(文件可省略，默认同名)] */
 const PAIRS = [
-  ['F:/qqbot/dsh-wechat-muu', 'dsh-wechat-muu@', 'dsh-wechat-muu'],
+  // 根包 dsh-qqbot-muu（F:\qqbot 自身）
+  ['F:/qqbot/entry.js', 'dsh-qqbot-muu@', 'dsh-qqbot-muu/entry.js'],
+  ['F:/qqbot/index.js', 'dsh-qqbot-muu@', 'dsh-qqbot-muu/index.js'],
+  ['F:/qqbot/cordis.patch.yml', 'dsh-qqbot-muu@', 'dsh-qqbot-muu/cordis.patch.yml'],
   ['F:/qqbot/dshqqbot/.qqbot-extensions', 'dsh-qqbot-muu@', 'dsh-qqbot-muu/dshqqbot/.qqbot-extensions'],
+  // 2026-11-13：dist/（调度器、任务管理、事件评估）和设置面板也是拷贝加载的，改完必须一起同步
+  ['F:/qqbot/dist', 'dsh-qqbot-muu@', 'dsh-qqbot-muu/dist'],
+  ['F:/qqbot/client', 'dsh-qqbot-muu@', 'dsh-qqbot-muu/client'],
+  ['F:/qqbot/settings-host.js', 'dsh-qqbot-muu@', 'dsh-qqbot-muu/settings-host.js'],
+  // 两个子插件：整目录同步（2026-11-14 补上 dsh-xtc-muu，之前漏了，改小天才通道不生效）
+  ['F:/qqbot/dsh-wechat-muu', 'dsh-wechat-muu@', 'dsh-wechat-muu'],
+  ['F:/qqbot/dsh-xtc-muu', 'dsh-xtc-muu@', 'dsh-xtc-muu'],
 ]
+
+if (!existsSync(PNPM)) {
+  console.error(`✗ 没有找到 pnpm 安装目录：${PNPM}`)
+  console.error('  profile 还没装好？先跑：node scripts/dsh-profile-preflight.mjs --repair --install')
+  process.exit(1)
+}
 
 let bad = 0
 for (const [src, prefix, rel] of PAIRS) {
-  if (!existsSync(src)) { console.log(`✗ 源目录不存在：${src}`); bad += 1; continue }
+  if (!existsSync(src)) { console.log(`✗ 源不存在：${src}`); bad += 1; continue }
   const hit = readdirSync(PNPM).filter((x) => x.startsWith(prefix)).sort().pop()
   if (!hit) { console.log(`✗ 没找到安装副本：${prefix}`); bad += 1; continue }
-  const dst = join(PNPM, hit, 'node_modules', rel)
-  if (!existsSync(dst)) { console.log(`✗ 副本内路径不存在：${dst}`); bad += 1; continue }
+  const root = join(PNPM, hit, 'node_modules')
+  const dst = rel ? join(root, rel) : join(root, basename(src))
   try {
-    cpSync(src, dst, { recursive: true, force: true })
-    console.log(`✓ 已同步 ${rel}`)
+    if (statSync(src).isDirectory()) {
+      if (!existsSync(dst)) { console.log(`✗ 副本内路径不存在：${dst}`); bad += 1; continue }
+      cpSync(src, dst, { recursive: true, force: true })
+    } else {
+      if (!existsSync(dst)) { console.log(`✗ 副本内文件不存在：${dst}`); bad += 1; continue }
+      cpSync(src, dst, { force: true })
+    }
+    console.log(`✓ 已同步 ${rel || basename(src)}`)
   } catch (e) {
-    console.log(`✗ 同步失败 ${rel}：${e?.message ?? e}`)
+    console.log(`✗ 同步失败 ${rel || basename(src)}：${e?.message ?? e}`)
     bad += 1
   }
 }

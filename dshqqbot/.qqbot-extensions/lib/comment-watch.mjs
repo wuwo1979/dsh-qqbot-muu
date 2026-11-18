@@ -590,30 +590,54 @@ export async function douyinInteract(root, { count = 15, group = '2' } = {}) {
  *  对还没出过草稿的评论自动生成回复草稿。终点仍是「人手工发」（写接口必风控）。
  *  默认**不自动跑**（主人 2026-10-30 明确：不自动，点运行再搞）——
  *  hook 里要 cfg.douyinPatrol.enabled === true 才定时跑；浮窗按钮手动触发。 */
-export async function douyinPatrol(root, { group = '2', count = 15, maxNew = 3 } = {}) {
+export async function douyinPatrol(root, { group = '2', count = 15, maxNew = 3, auto = false } = {}) {
   const feed = await douyinInteract(root, { group, count });
   if (!feed.ok) return feed;
   const all = feed.rows || [];
   const pending = all.filter((x) => x.awemeId && x.text && !x.draftText && !x.sent);
   const results = [];
   let drafted = 0;
+  let sent = 0;
   const cap = Math.max(1, Number(maxNew) || 3);
   for (const row of pending) {
     if (drafted >= cap) break;
     const g = await douyinGenOne(root, { awemeId: row.awemeId, user: row.user, comment: row.text, title: '' });
-    if (g && g.ok) {
-      drafted += 1;
-      results.push({ user: row.user, comment: String(row.text || '').slice(0, 120), reply: g.text });
+    if (!g || !g.ok) continue;
+    drafted += 1;
+    const item = { user: row.user, comment: String(row.text || '').slice(0, 120), reply: g.text };
+    // 真发：只有调用方显式 auto 才发（hook 里还要过配置 + 环境变量双开关）
+    if (auto && row.cid) {
+      try {
+        const p = await douyin.publishComment(root, { awemeId: row.awemeId, text: g.text, replyId: String(row.cid) });
+        if (p.ok) {
+          sent += 1;
+          item.sent = true;
+          item.cid = p.cid;
+          try {
+            const rl = douyin.replyList(root);
+            const hit = ((rl && rl.replies) || []).find((d) => d.status === 'pending'
+              && String(d.text || '').replace(/\s+/g, '') === String(g.text).replace(/\s+/g, ''));
+            if (hit && hit.id) douyin.replyUpdate(root, { id: hit.id, status: 'sent' });
+          } catch { /* ignore */ }
+        } else {
+          item.sent = false;
+          item.error = String(p.error || '发送失败').slice(0, 120);
+        }
+      } catch (e) {
+        item.sent = false;
+        item.error = String((e && e.message) || e).slice(0, 120);
+      }
     }
+    results.push(item);
   }
   // 巡检到的视频进关注清单，收件箱才能对上草稿/已发状态
   for (const row of pending) {
     if (row.awemeId) douyinWatchAdd(root, { awemeId: row.awemeId });
   }
   try {
-    appendRecord(root, { type: 'comment-watch', platform: 'douyin-patrol', checked: all.length, pending: pending.length, drafted, at: Date.now() });
+    appendRecord(root, { type: 'comment-watch', platform: 'douyin-patrol', checked: all.length, pending: pending.length, drafted, sent, at: Date.now() });
   } catch { /* ignore */ }
-  return { ok: true, checked: all.length, pending: pending.length, drafted, results,
+  return { ok: true, checked: all.length, pending: pending.length, drafted, sent, results,
     note: drafted ? '' : (all.length ? '（这些互动都出过草稿或已回复，没有新要写的）' : '（还没有新的互动消息）') };
 }
 

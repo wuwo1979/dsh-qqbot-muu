@@ -49,6 +49,9 @@
 # 人格 / 世界书（唯一事实源；不含 openid）
 !/qqbot-mod/persona/
 !/qqbot-mod/persona/**
+# 通道共享库（微信 / 小天才 共用的单一来源：人格加载 + 儿童安全；避免各抄一份漂移）
+!/qqbot-mod/muu-shared.mjs
+!/qqbot-mod/kids-mode.mjs
 
 # skills（逐帧视频 / 本地 TTS / Office 交付的 skill 正文与脚本）
 !/skills/
@@ -125,6 +128,18 @@ __pycache__/
 # 桌宠形态运行时状态（2026-10-31）
 dshqqbot/.qqbot-extensions/lib/.pet-form.json
 
+# 小天才通道（新增，与微信通道平行独立）：独立桥 + 独立插件 + 独立面板；数据/代码均与微信隔离
+!/dsh-xtc-muu/
+!/dsh-xtc-muu/**
+# 2026-11-18：小天才桥是本机私有基建（含设备 id / 本机路径），不进公开仓库
+/xtc-bridge/
+# 但下面这些是「人」的数据，绝不能进库/进包：联系人（含妹妹称呼、监护人 wxid）、运行日志、状态
+/xtc-bridge/people.json
+/xtc-bridge/config.json
+/xtc-bridge/*.log
+/xtc-bridge/*.jsonl
+/xtc-bridge/state/
+
 # pet-gate：桌宠公网网关 —— 密钥/席位状态绝不入库；素材由脚本从 harness 拷贝（见 pet-gate/README.md）
 pet-gate/secrets.json
 pet-gate/seats.json
@@ -151,3 +166,10 @@ dist/**/*.orig*
 # Remotion 渲染工作目录（拷贝的素材副本/抽帧产物，不入库）
 skills/video-frame-render/remotion/public/
 skills/video-frame-render/remotion/node_modules/
+
+# v0.1.7：发版日志与发布检查清单要进仓库（docs/ 整体忽略，单文件放行）
+!/CHANGELOG.md
+!/docs/RELEASE_CHECKLIST.md
+
+# 微信本地库密钥提取脚本：只在本机用，不进公开仓库
+/scripts/wx4-*

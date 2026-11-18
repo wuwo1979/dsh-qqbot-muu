@@ -1,6 +1,6 @@
 {
   "name": "dsh-qqbot-muu",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "独立的 DSH QQ 桌宠助手插件：统一记忆库/印象卡、人格注入、表情包视觉打标、三形态桌宠+公网受限链接、逐帧视频流水线、B站运营（自持底盘，零 @zaofan 依赖）",
   "type": "module",
   "main": "./entry.js",
@@ -32,6 +32,7 @@
     "cordis.patch.yml",
     "install.mjs",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "package.json",
     "settings-host.js",
@@ -39,7 +40,20 @@
     "dist/**",
     "client/**",
     "scripts/**",
-    "dshqqbot/.qqbot-extensions/**"
+    "dshqqbot/.qqbot-extensions/**",
+    "!dshqqbot/.qqbot-extensions/data/**",
+    "!dshqqbot/.qqbot-extensions/*.json",
+    "!dshqqbot/.qqbot-extensions/**/*.bak*",
+    "!dshqqbot/.qqbot-extensions/**/*.lnk",
+    "!scripts/*.bak*",
+    "!scripts/private-people*.json",
+    "!dshqqbot/.qqbot-extensions/**/.state/**",
+    "!scripts/wx4-*.ps1",
+    "!scripts/wx4-*.cmd",
+    "!tmp/**",
+    "!data/**",
+    "!scripts/publish-npm.mjs",
+    "docs/RELEASE_CHECKLIST.md"
   ],
   "dsh": {
     "bundle": {
@@ -64,6 +78,8 @@
     "@deepseek-ai/schemastery": "3.18.4",
     "@tencent-connect/qqbot-connector": "1.2.0",
     "@tencent-connect/qqbot-nodejs": "^1.0.4",
+    "frida-compile": "^19.1.0",
+    "frida-java-bridge": "^7.0.13",
     "js-yaml": "^4.1.0",
     "lamejs-fixed": "^1.2.2",
     "silk-wasm": "^3.7.1"
@@ -84,5 +100,10 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/wuwo1979/dsh-qqbot-muu"
+  },
+  "scripts": {
+    "release:check": "node scripts/release-check.mjs",
+    "release:check:strict": "node scripts/release-check.mjs --strict",
+    "prepublishOnly": "node scripts/release-check.mjs --strict"
   }
 }

@@ -199,7 +199,9 @@ async function ensureLocalTtsServer(endpoint, dir, opts) {
       out = openSync(logFile, 'a');
     } catch { /* ignore */ }
     const args = [
-      server, '--port', port, '--manage', '--idle-minutes', '3',
+      // 2026-11-12：从 3 分钟改成 240。3 分钟就卸模型 → 下次合成要冷启动两分多钟，
+      // 而合成侧只等 20 秒，于是「嗓子没好」天天出现。
+      server, '--port', port, '--manage', '--idle-minutes', '240',
       '--breeze', 'http://127.0.0.1:7860', '--gsv', 'http://127.0.0.1:9880',
       '--vram-policy', wantPolicy,
     ];
@@ -618,7 +620,10 @@ export async function synthesize(text, opts = {}) {
         opts.endpoint || process.env.QQBOT_TTS_ENDPOINT || 'http://127.0.0.1:9880/v1/audio/speech',
       ).trim();
       const body = {
-        model: String(opts.model || process.env.QQBOT_TTS_MODEL || 'cosyvoice2'),
+        // 2026-11-12：原来缺省写 'cosyvoice2'，但适配层只认 breeze/gsv/index，
+        // 于是每次合成都是 400 model_not_local（3ms 就失败，听起来就像"嗓子坏了"）。
+        // 留空=让每个音色用它自己的原生引擎（gsv 系→gsv，breeze 系→breeze）。
+        model: String(opts.model ?? process.env.QQBOT_TTS_MODEL ?? ''),
         input: say,
         voice: String(opts.voice || '中文女'),
         response_format: 'mp3',
@@ -630,7 +635,9 @@ export async function synthesize(text, opts = {}) {
       if (opts.strict) body.strict_engine = true;
       // 本地适配层现在是"管家"：后端不在就现场拉起（GSV 冷启动 ≈30s、Breeze 可能几分钟），
       // 第一条请求会把启动时间算进去。HTTP 分支超时保底 240s，配置里可以更大但不能更小。
-      const httpTimeout = Math.max(timeoutMs, 240000);
+      // 2026-11-12：保底从 240s 提到 420s。GSV 在这台 6GB 卡上冷启动实测 2~3 分钟，
+      // 240s 卡在临界点上，经常"刚好超时"——看上去就是合成失败。
+      const httpTimeout = Math.max(timeoutMs, 420000);
       // 先确服务在：9881 没起来时 fetch 只会给一句 "fetch failed"，群里看到的就是那句
       const _up = await ensureLocalTtsServer(endpoint, dir, opts);
       if (!_up) {

@@ -117,6 +117,34 @@ async function run(args = {}) {
         msg: r.users.length ? `关注/互关 ${r.users.length} 人：\n${lines.join('\n')}` : (r.note || '平台没给关注列表'),
       };
     }
+    if (action === 'douyin-comment') {
+      const mod = await import(libUrl('platforms/douyin.mjs'));
+      const text = String(args.text || args.message || '').trim();
+      if (!text) return { ok: false, msg: '要发什么？把评论内容放进 text' };
+      const raw = String(args.link || args.awemeId || '').trim();
+      if (!raw) return { ok: false, msg: '要发到哪个视频？给我抖音链接或 awemeId' };
+      const pv = await mod.parseVideoLink(raw);
+      if (!pv || !pv.ok) return { ok: false, msg: '认不出这个链接：' + String((pv && pv.error) || raw).slice(0, 80) };
+      if (args.confirm !== true && String(args.confirm || '') !== 'true') {
+        return { ok: false, needConfirm: true, msg: `这条会真发到抖音（${pv.awemeId}）：\n「${text}」\n确认发就把 confirm 设成 true 再调一次` };
+      }
+      const r = await mod.publishComment(root, {
+        awemeId: pv.awemeId, text,
+        replyId: String(args.replyId || args.cid || ''),
+        replyToReplyId: String(args.replyToReplyId || ''),
+      });
+      if (!r.ok) {
+        if (r.needCookie) return { ok: false, msg: '抖音还没登录——先在「账号管理」里粘一次 Cookie，我再发' };
+        return { ok: false, msg: '没发出去：' + String(r.error || '未知错误'), detail: r };
+      }
+      try {
+        const rl = mod.replyList(root);
+        const hit = ((rl && rl.replies) || []).find((d) => d.status === 'pending'
+          && String(d.text || '').replace(/\s+/g, '') === String(text).replace(/\s+/g, ''));
+        if (hit && hit.id) mod.replyUpdate(root, { id: hit.id, status: 'sent' });
+      } catch { /* 标状态失败不影响已发出的结果 */ }
+      return { ok: true, cid: r.cid, awemeId: r.awemeId, msg: `发出去了（cid ${r.cid || '?'}）：\n「${r.text}」` };
+    }
     if (action === 'bili') {
       const d = await P.detail(root, 'bili');
       return { ok: true, status: d.status, qr: d.qr, msg: fmtOne(d.status) + (d.status?.loggedIn ? '' : '\n要重新登录：扫码后点「我已确认」') };
@@ -132,13 +160,17 @@ export const expose = 'all';
 export const description =
   '账号管理：B 站 + 抖音 一个入口。status 看两边登录态与今日配额；douyin 给官方登录页与扫码说明；' +
   'douyin-cookie 存 Cookie；douyin-upload 给创作者中心上传页；douyin-like 给抖音视频点赞/取消；' +
-  'douyin-follows 看关注/互关的人；bili 看 B 站状态/二维码。' +
+  'douyin-follows 看关注/互关的人；douyin-comment 发/回复抖音评论（需 confirm:true 才真发）；bili 看 B 站状态/二维码。' +
   '所有写操作都过 pacing（随机 45s~4min、日配额、风控冷却），不做批量刷的行为。';
 export const inputSchema = {
-  action: { type: 'string', required: true, description: 'status | douyin | douyin-cookie | douyin-upload | douyin-like | douyin-follows | bili' },
-  link: { type: 'string', description: 'douyin-like 必填：抖音视频链接（v.douyin.com 短链 / douyin.com/video/<id> / 纯数字 id）' },
-  awemeId: { type: 'string', description: 'douyin-like 可选：直接给视频 ID（给了就不用 link）' },
+  action: { type: 'string', required: true, description: 'status | douyin | douyin-cookie | douyin-upload | douyin-like | douyin-follows | douyin-comment | bili' },
+  link: { type: 'string', description: 'douyin-like / douyin-comment 用：抖音视频链接（v.douyin.com 短链 / douyin.com/video/<id> / 纯数字 id）' },
+  awemeId: { type: 'string', description: 'douyin-like / douyin-comment 可选：直接给视频 ID（给了就不用 link）' },
   like: { type: 'string', description: 'douyin-like 可选：on（默认）或 off（取消赞）' },
+  text: { type: 'string', description: 'douyin-comment 必填：评论内容（≤200 字）' },
+  replyId: { type: 'string', description: 'douyin-comment 可选：要回复的那条评论 cid（不填=发顶层评论）' },
+  replyToReplyId: { type: 'string', description: 'douyin-comment 可选：楼中楼里被回复的 cid' },
+  confirm: { type: 'boolean', description: 'douyin-comment 必填：确认真发就传 true' },
   cookie: { type: 'string', description: 'douyin-cookie 必填：浏览器里 Cookie 那一整行' },
   note: { type: 'string', description: 'douyin-cookie 可选：备注' },
   path: { type: 'string', description: 'douyin-upload 可选：要上传的成片路径（只用于提示）' },

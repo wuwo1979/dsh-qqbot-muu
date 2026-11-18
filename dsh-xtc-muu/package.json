@@ -1,0 +1,43 @@
+{
+  "name": "dsh-xtc-muu",
+  "version": "0.1.0",
+  "description": "小天才（儿童手表聊天平台）通道 —— dsh-qqbot-muu 的附庸，复用其人格/预设/工作目录，仅新增小天才传输层（xtc-bridge）与状态面板。与微信通道完全隔离：独立的桥、独立的人物库、独立的 /api/xtc-muu/* 路由。",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client/xtc-muu.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "client/xtc-muu.js",
+    "cordis.patch.yml",
+    "package.json",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "immediately": true
+    },
+    "engines": {
+      "dsh": ">=0.1.5-rc.2"
+    },
+    "manifestVersion": 1
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "MIT"
+}

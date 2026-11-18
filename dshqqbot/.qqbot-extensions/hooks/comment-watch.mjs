@@ -55,11 +55,19 @@ export async function run(env = {}) {
       }
       // 抖音互动巡检：**默认关闭**；要开在 bili-ops-config.json 加
       //   "douyinPatrol": { "enabled": true, "maxNew": 3 }  → 每 45 分钟一轮
+      // 想让她真的回（评论/@我），再加 "auto": true，并设环境变量 QQBOT_ALLOW_PUBLIC_REPLY=1，
+      // 与 B 站同一套双开关；缺任一项都只出草稿。
       const dp = cfg.douyinPatrol || {};
       if (dp.enabled === true && Date.now() - lastDyAt >= 45 * 60_000) {
         lastDyAt = Date.now();
-        const d = await CW.douyinPatrol(dataRoot, { maxNew: Number(dp.maxNew) || 3 });
-        if (d.ok) logger?.info?.(`[comment-watch] 抖音巡检：互动 ${d.checked} 条，新草稿 ${d.drafted} 条（人手工发）`);
+        const dyAuto = dp.auto === true && String(process.env.QQBOT_ALLOW_PUBLIC_REPLY || '').trim() === '1';
+        if (dp.auto === true && !dyAuto) logger?.warn?.('[comment-watch] douyinPatrol.auto=true 但未设 QQBOT_ALLOW_PUBLIC_REPLY=1，本轮只出草稿');
+        for (const grp of ['2', '601']) {
+          const d = await CW.douyinPatrol(dataRoot, { group: grp, maxNew: Number(dp.maxNew) || 3, auto: dyAuto });
+          if (d.ok) {
+            logger?.info?.(`[comment-watch] 抖音巡检(${grp})：互动 ${d.checked} 条，新草稿 ${d.drafted} 条，真发 ${d.sent || 0} 条`);
+          }
+        }
       }
     } catch (e) {
       logger?.warn?.(`[comment-watch] 出错：${e?.message || String(e)}`);

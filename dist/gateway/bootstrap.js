@@ -2,8 +2,15 @@ import { join, resolve, relative, isAbsolute, basename, extname } from 'node:pat
 import { readFileSync as qqReadFileSync, writeFileSync as qqWriteFileSync, mkdirSync as qqMkdirSync, realpathSync as qqRealpathSync, existsSync as qqExistsSync, statSync as qqStatSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-/** 项目根：dist/gateway → 上两级 */
-const QQBOT_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
+/** 项目根：dist/gateway → 上两级。
+ *  2026-11-14：插件被 pnpm 复制进 profiles/web/node_modules/.pnpm/… 之后，上两级成了**包目录**而不是
+ *  仓库根，媒体白名单（assets/media/tmp/render/voices）会整体指错。这里优先认「上两级里真有
+ *  wechat-bridge/util.mjs」的那个，其次 QQBOT_REPO_ROOT，最后回落老部署 F:/qqbot。 */
+const QQBOT_ROOT = (() => {
+    const up = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
+    const cands = [up, String(process.env.QQBOT_REPO_ROOT || '').trim(), 'F:/qqbot'].filter(Boolean);
+    return cands.find((p) => { try { return qqExistsSync(join(p, 'wechat-bridge', 'util.mjs')) } catch { return false } }) || up;
+})();
 /** 允许出站的本地媒体根目录（P0-4）：[MEDIA]/send_media 只能引用这些目录内的文件 */
 const MEDIA_ALLOW_DIRS = ['assets', 'media', 'tmp/render', 'voices'];
 
@@ -76,6 +83,7 @@ import { SessionManager } from '../session/index.js';
 import { handleInbound, createOutboundHandler } from '../transport/index.js';
 import { parseStreamFrame } from '../transport/events.js';
 import { setMaterialTargetFactory, rewriteLocalMarkdownImages, lastMediaRewrite } from '../features/md-media-rewrite.js';
+import { rollFire, matchEventJobs, bumpActivation } from '../features/schedule-events.js';
 import { buildUserAgent } from '../shared/index.js';
 import { setupMiddlewares } from './middleware-setup.js';
 import { configureDiag, diagWrite } from '../shared/diag.js';
@@ -1069,6 +1077,73 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
         });
         // M3 定时唤醒调度器(与 bot 同生命周期; 任务到点 followup → 回复经出站链路主动推送)
         stopScheduler = startScheduler(manager, config, logger);
+        void (async () => {
+            // 2026-11-15：单实例守护。DSH 每次重启都会换 cookie 和 GUI 端口，旧进程没退干净时
+            // 会有两套 DSH 同时加载 qqbot、各自往 QQ/微信发消息 → 同一条回复发两遍。
+            // 启动后立刻清掉「比我早启动」的实例，并抢固定协调端口、把 cookie 记进锁文件。
+            try {
+                const guardUrl = new URL('file:///' + join(QQBOT_ROOT, 'scripts', 'dsh-instance-guard.mjs').replace(/\\/g, '/'));
+                const guard = await import(guardUrl.href);
+                const r = await guard.ensureSingleInstance({ keepServer: true });
+                if (r?.killed?.length) logger.warn(`[instance] 已结束 ${r.killed.length} 个残留 DSH 实例：${r.killed.join(',')}`);
+                logger.info(`[instance] 单实例守护就绪 cookie=${String(r?.cookie ?? '').slice(0, 8)}… port=${r?.port} guiPort=${r?.guiPort || '?'}`);
+            } catch (e) {
+                logger.warn(`[instance] 单实例守护失败（忽略）：${e instanceof Error ? e.message : String(e)}`);
+            }
+        })();
+        // 2026-11-18（v0.1.7）：profile 依赖自检 —— 老用户升级后如果 profile 里还是
+        // "file:F:/qqbot" 这种绝对盘符写法，pnpm 会把它当相对路径拼到 profile 目录下、
+        // 直接 ENOENT → dshmarket 基线立不起来 → 整机进安全模式（2026-11-13 事故一）。
+        // 这里只在运行期【检测 + 记日志 + 落标记】，不擅自改 profile（改配置会让市场重装，
+        // 正在跑的实例更危险）；真正的修复交给 scripts/dsh-profile-links.mjs。
+        void (async () => {
+            try {
+                const { readFileSync: _rf, writeFileSync: _wf, existsSync: _ex } = await import('node:fs');
+                const { join: _join } = await import('node:path');
+                const home = process.env.APPDATA || '';
+                if (!home) return;
+                const prof = _join(home, 'dsh-desktop', 'harness', 'profiles', 'web', 'package.json');
+                if (!_ex(prof)) return;
+                let man;
+                try { man = JSON.parse(_rf(prof, 'utf8')); } catch { return; }
+                const deps = { ...(man.dependencies || {}), ...(man.devDependencies || {}) };
+                const bad = Object.entries(deps).filter(([, v]) => typeof v === 'string' && /^file:[A-Za-z]:[\/]/.test(v));
+                if (!bad.length) return;
+                logger.warn(`[profile] 检测到 ${bad.length} 个绝对盘符 file: 依赖（升级后可能进安全模式）：${bad.map(([k]) => k).join(',')}`);
+                logger.warn('[profile] 修复：node scripts/dsh-profile-links.mjs（详见 docs/运维-DSH安全模式与profile依赖.md）');
+                try {
+                    const dir = _join(dataRootOf(config), '.qqbot');
+                    const mark = _join(dir, 'profile-fix-needed.json');
+                    _wf(mark, JSON.stringify({ at: Date.now(), profile: prof, bad: bad.map(([k, v]) => ({ name: k, spec: v })) }, null, 2));
+                } catch { }
+            } catch (e) {
+                logger.warn(`[profile] 依赖自检失败（忽略）：${e instanceof Error ? e.message : String(e)}`);
+            }
+        })();
+        // 积压消息补回(2026-11-13): 重启/掉线期间没人回的消息，合成一条注入会话让 agent 自己接话。
+        // 只处理 QQ 的 c2c:/group: scope；微信/小天才由各自插件负责。全流程 fail-soft。
+        // 2026-11-14 改：不只启动时补一次 —— 每 10 分钟巡检一次，中途积压/上次注入失败也能补上。
+        let _catchupBusy = false;
+        const runQqCatchup = async () => {
+            if (_catchupBusy) return;
+            _catchupBusy = true;
+            try {
+                const { catchupUnrepliedMessages } = await import('../features/catchup.js');
+                await catchupUnrepliedMessages({
+                    dataRoot: dataRootOf(config),
+                    manager,
+                    logger,
+                    maxAgeMs: Number(config?.catchup?.maxAgeHours || 24) * 3600_000,
+                });
+            } catch (e) {
+                logger.warn(`[catchup] 积压补回失败（忽略）: ${e instanceof Error ? e.message : String(e)}`);
+            } finally {
+                _catchupBusy = false;
+            }
+        };
+        // 重启后尽快补一次（10s 内），之后每 2 分钟巡检：积压必须自己冒出来，不能等人催。
+        setTimeout(() => { void runQqCatchup(); }, 10_000);
+        setInterval(() => { void runQqCatchup(); }, 2 * 60_000);
         // 入群申请轮询(2026-09-09 主人定, 事件驱动兜底): 定时拉各群审批列表,
         // 有新增就唤醒 LLM 提醒主人; live config 控制(Web 设置热更, 无需重启)。
         stopJoinPoll = startJoinRequestPolling(manager, config, logger);
@@ -1092,18 +1167,44 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                     scheduleInFlight.add(job.id);
                     void (async () => {
                         try {
-                            const ok = await manager.injectToPeer(job.scope, job.peerId, `[定时任务] ${job.prompt}`, 'subagent-settled');
+                            // 窗口/天气任务：到点先判断该不该开口（不合适就顺延，不打扰）
+                            const { passesGuard } = await import('../features/schedule-guard.js');
+                            if (!(await passesGuard(job, { logger }))) {
+                                store.markDone(job.id);
+                                logger.info(`[schedule] guard 判定不开口 job=${job.id}（已顺延下一个点）`);
+                                return;
+                            }
+                            // 窗口任务按权重摇一次：不是每个点都非说不可，说多了自然淡（weight 由入站回涨）
+                            if (job.kind === 'window' && !rollFire(job)) {
+                                store.markDone(job.id);
+                                logger.info(`[schedule] 窗口任务这次不说 job=${job.id} weight=${Number(job.weight).toFixed(2)}（已顺延）`);
+                                return;
+                            }
+                            // 2026-11-14：注入失败不再 3 次就静默停用（人看到的是「任务没发就没了」）。
+                            // 先补一次会话（重启后会话表可能是空的），再重试；给 4 分钟窗口，
+                            // 真失败也把原因写在 job 上，面板显示 + 可点「重试」。
+                            let ok = await manager.injectToPeer(job.scope, job.peerId, `[定时任务] ${job.prompt}`, 'subagent-settled');
+                            if (!ok) {
+                                try {
+                                    manager.getOrCreate?.(job.scope, job.peerId, 'schedule', { scope: job.scope, targetId: job.peerId });
+                                    ok = await manager.injectToPeer(job.scope, job.peerId, `[定时任务] ${job.prompt}`, 'subagent-settled');
+                                }
+                                catch { /* 建会话失败按失败处理 */ }
+                            }
                             if (ok) {
                                 scheduleMissed.delete(job.id);
+                                store.reportFire(job.id);
                                 store.markDone(job.id);
                                 logger.info(`[schedule] 触发 ok job=${job.id} kind=${job.kind} → ${job.scope}:${job.peerId}`);
                             }
                             else {
                                 const n = (scheduleMissed.get(job.id) ?? 0) + 1;
-                                if (n >= 3) {
+                                store.reportFail(job.id, `会话不在/注入失败（第 ${n} 次）`);
+                                if (n >= 8) {
                                     scheduleMissed.delete(job.id);
                                     store.setEnabled(job.id, false);
-                                    logger.warn(`[schedule] job=${job.id} 连续${n}次会话不在/注入失败, 已自动停用(可在设置重新启用)`);
+                                    store.reportFail(job.id, '连续 8 次投递失败，已暂停；可点「重试」补发');
+                                    logger.warn(`[schedule] job=${job.id} 连续${n}次会话不在/注入失败, 已自动停用(可在设置点重试)`);
                                 }
                                 else {
                                     scheduleMissed.set(job.id, n);
@@ -1118,6 +1219,63 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                             scheduleInFlight.delete(job.id);
                         }
                     })();
+                }
+                // 事件型任务 + 权重激活（2026-11-13）：不看点到没到，看聊天里有没有那件事。
+                // 说了就进冷却、权重往下淡；对方真回话（同 scope 有入站）权重往上回涨。
+                try {
+                    bumpActivation(store, { dataRoot: dataRootOf(config), now });
+                    for (const { job, hits, samples } of matchEventJobs(store, { dataRoot: dataRootOf(config), now })) {
+                        if (scheduleInFlight.has(job.id))
+                            continue;
+                        if (!rollFire(job)) {
+                            store.markDone(job.id);
+                            logger.info(`[schedule] 事件任务这次不说 job=${job.id} weight=${Number(job.weight).toFixed(2)}（进冷却）`);
+                            continue;
+                        }
+                        scheduleInFlight.add(job.id);
+                        void (async () => {
+                            try {
+                                const hint = `刚才聊天里出现了「${hits.join('/')}」：${samples.join(' / ')}`;
+                                let ok = await manager.injectToPeer(job.scope, job.peerId, `[事件任务] ${hint}。${job.prompt}`, 'subagent-settled');
+                                if (!ok) {
+                                    try {
+                                        manager.getOrCreate?.(job.scope, job.peerId, 'schedule', { scope: job.scope, targetId: job.peerId });
+                                        ok = await manager.injectToPeer(job.scope, job.peerId, `[事件任务] ${hint}。${job.prompt}`, 'subagent-settled');
+                                    }
+                                    catch { /* 建会话失败按失败处理 */ }
+                                }
+                                if (ok) {
+                                    scheduleMissed.delete(job.id);
+                                    store.reportFire(job.id);
+                                    store.markDone(job.id);
+                                    logger.info(`[schedule] 事件触发 ok job=${job.id} hits=${hits.join(',')} → ${job.scope}:${job.peerId}`);
+                                }
+                                else {
+                                    const n = (scheduleMissed.get(job.id) ?? 0) + 1;
+                                    store.reportFail(job.id, `事件注入失败（第 ${n} 次）`);
+                                    if (n >= 8) {
+                                        scheduleMissed.delete(job.id);
+                                        store.setEnabled(job.id, false);
+                                        store.reportFail(job.id, '连续 8 次注入失败，已暂停；可点「重试」补发');
+                                        logger.warn(`[schedule] 事件任务 job=${job.id} 连续${n}次注入失败, 已自动停用`);
+                                    }
+                                    else {
+                                        scheduleMissed.set(job.id, n);
+                                        logger.warn(`[schedule] 事件任务 job=${job.id} 注入失败 第${n}次, 下轮重试`);
+                                    }
+                                }
+                            }
+                            catch (err) {
+                                logger.warn?.(`[schedule] 事件任务触发异常 job=${job.id}: ${err instanceof Error ? err.message : String(err)}`);
+                            }
+                            finally {
+                                scheduleInFlight.delete(job.id);
+                            }
+                        })();
+                    }
+                }
+                catch (err) {
+                    logger.warn?.(`[schedule] 事件任务评估异常: ${err instanceof Error ? err.message : String(err)}`);
                 }
             }
             catch (err) {

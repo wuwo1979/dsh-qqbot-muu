@@ -1,55 +1,81 @@
 /**
  * /bot-restart — 通用自重启 dsh 宿主(2026-09-08, 主人定: 通用插件能力)
  *
+ * 2026-11-18 修（用户报「/bot-restart 有 bug、重启后留残留实例」）：
+ *  ① 旧版 spawn 不传 env → ELECTRON_RUN_AS_NODE / DSH_HOME 等丢失，新宿主可能起不来或起成另一套；
+ *  ② 旧版杀完立刻 spawn，端口还没释放 → 新宿主绑定失败直接退出，看起来就是「重启后没了」；
+ *  ③ 没有失败可见性 → 现在写日志（默认 F:\qqbot\logs\bot-restart.log，可用 QQBOT_LOG_DIR 覆盖）。
+ *
  * 通用性: 不依赖任何硬编码路径/外部脚本 —— 动态自发现:
  *  - process.execPath = node 可执行文件; process.argv.slice(1) = 宿主启动参数(如 bin.js web);
  *  - 中间"重启助手"脚本写入系统 tmpdir(无中文路径坑), 用同一 node 解释器 detached 运行;
- *  - 助手: 延迟→杀当前宿主进程(process.kill)→等端口释放→按原命令重新 spawn 宿主(detached, unref)。
- * 跨平台(win/mac/linux), 任何机器装了本插件即可用 /bot-restart(或兼容的 /bot-exit)。
+ *  - 助手: 延迟→杀当前宿主进程→等 2s→按原命令 + 原环境变量重 spawn(失败最多 3 次)→日志。
+ * 跨平台(win/mac/linux)。
  */
 import { spawn } from 'node:child_process';
-import { writeFileSync, rmSync } from 'node:fs';
+import { writeFileSync, rmSync, mkdirSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+
+function logLine(file, text) {
+    try {
+        mkdirSync(dirname(file), { recursive: true });
+        appendFileSync(file, `${new Date().toISOString()} ${text}\n`);
+    }
+    catch { /* ignore */ }
+}
+
 /** 触发自重启: 生成独立重启助手并脱手运行(当前宿主被杀也能继续拉起新宿主) */
 export function selfRestart(delayMs = 1600, killWaitMs = 2000) {
     try {
-        const exe = process.execPath; // node 路径(动态)
-        // 宿主启动参数(动态, 如 [bin.js, 'web'])——自重启强制带 --no-open:
-        // 后台重启不再弹浏览器标签页(dsh web 启动默认开浏览器; 主人 2026-09-08 定)。
+        const exe = process.execPath;
         const args = [...process.argv.slice(1)];
         if (!args.includes('--no-open'))
             args.push('--no-open');
-        const pid = process.pid; // 当前宿主 PID(自己)
+        const pid = process.pid;
         const cwd = process.cwd();
-        // 重启助手(独立 node 进程): 延迟 → 杀宿主 → 等 → 按原命令拉起新宿主
+        const env = { ...process.env }; // ★ 必须带上，否则 ELECTRON_RUN_AS_NODE / DSH_HOME 会丢
+        const logFile = join(process.env.QQBOT_LOG_DIR || 'F:\\qqbot\\logs', 'bot-restart.log');
         const helper = [
             "const { spawn } = require('child_process');",
+            "const { appendFileSync, mkdirSync, unlinkSync } = require('fs');",
+            "const path = require('path');",
             `const pid = ${JSON.stringify(pid)};`,
             `const exe = ${JSON.stringify(exe)};`,
             `const args = ${JSON.stringify(args)};`,
             `const cwd = ${JSON.stringify(cwd)};`,
+            `const env = ${JSON.stringify(env)};`,
+            `const logFile = ${JSON.stringify(logFile)};`,
+            "function log(t) { try { mkdirSync(path.dirname(logFile), { recursive: true }); appendFileSync(logFile, new Date().toISOString() + ' [helper] ' + t + '\\n'); } catch {} }",
             'setTimeout(() => {',
-            '  try { process.kill(pid, \'SIGTERM\'); } catch {}',
+            "  log('kill ' + pid);",
+            "  try { process.kill(pid); } catch (e) { log('kill fail ' + e.message); }",
             `  setTimeout(() => {`,
-            '    try {',
-            '      const c = spawn(exe, args, { detached: true, stdio: \'ignore\', cwd });',
-            '      c.unref();',
-            '      try { require(\'fs\').unlinkSync(__filename); } catch {}',
-            '    } catch (e) { console.error(\'[restart-helper] spawn fail\', e); }',
+            '    let tries = 0;',
+            '    const boot = () => {',
+            '      tries += 1;',
+            '      try {',
+            "        const c = spawn(exe, args, { detached: true, stdio: 'ignore', cwd, env });",
+            "        c.on('error', (e) => log('spawn error ' + e.message));",
+            "        c.on('exit', (code) => { if (code !== 0 && tries < 3) { log('child exited ' + code + ', retry ' + tries); setTimeout(boot, 2500); } else { log('child exit ' + code + ' tries ' + tries); } });",
+            '        c.unref();',
+            "        log('spawned pid=' + c.pid + ' try=' + tries);",
+            "        if (tries >= 3) { try { unlinkSync(__filename); } catch {} }",
+            '      } catch (e) {',
+            "        log('spawn throw ' + e.message);",
+            '        if (tries < 3) setTimeout(boot, 2500);',
+            '      }',
+            '    };',
+            '    boot();',
             `  }, ${killWaitMs});`,
             `}, ${delayMs});`,
         ].join('\n');
         const tmpFile = join(tmpdir(), `dsh-restart-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.cjs`);
         writeFileSync(tmpFile, helper, 'utf8');
-        // detached + unref: 重启助手脱离宿主独立存活, 宿主被杀它继续执行
-        const child = spawn(exe, [tmpFile], { detached: true, stdio: 'ignore', windowsHide: true });
+        logLine(logFile, `[host] helper=${tmpFile} exe=${exe} args=${JSON.stringify(args)}`);
+        const child = spawn(exe, [tmpFile], { detached: true, stdio: 'ignore', windowsHide: true, env });
         child.unref();
-        // 宿主若被杀, 助手自己清理 tmp; 这里再兜底一个延迟删除(助手若已删则忽略)
-        setTimeout(() => { try {
-            rmSync(tmpFile, { force: true });
-        }
-        catch { /* 已删 */ } }, delayMs + killWaitMs + 8000).unref?.();
+        setTimeout(() => { try { rmSync(tmpFile, { force: true }); } catch { /* 已删 */ } }, delayMs + killWaitMs + 20000).unref?.();
         return true;
     }
     catch (err) {
@@ -57,6 +83,7 @@ export function selfRestart(delayMs = 1600, killWaitMs = 2000) {
         return false;
     }
 }
+
 export function botRestartCommand() {
     return {
         name: 'bot-restart',
@@ -69,6 +96,7 @@ export function botRestartCommand() {
         },
     };
 }
+
 /** /bot-exit 旧命令兼容: 同样走自重启(杀+拉一条龙) */
 export function botExitCommand() {
     return {
@@ -82,4 +110,3 @@ export function botExitCommand() {
         },
     };
 }
-//# sourceMappingURL=exit.js.map

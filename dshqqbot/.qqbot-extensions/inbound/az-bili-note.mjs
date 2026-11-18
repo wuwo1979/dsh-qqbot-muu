@@ -10,15 +10,21 @@
  * 注入块在 outbound / 本地代答 / 聊天台账三处都会被剥掉。
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const name = 'zz-bili-note';
 
 function dataRoot() {
+  // 2026-11-18（v0.1.7）：去掉写死的本机路径。优先级：环境变量 → 调用方传入 → 按本文件位置推。
+  const env = String(process.env.QQBOT_DATA_ROOT || '').trim();
+  if (env) return env;
+  const here = dirname(fileURLToPath(import.meta.url)); // <数据根>/.qqbot-extensions/inbound
+  const guessed = join(here, '..', '..');
   try {
-    const cfg = JSON.parse(readFileSync('F:/qqbot/dshqqbot/memory-config.json', 'utf8'));
-    return cfg.dataRoot || 'F:/qqbot/dshqqbot';
-  } catch { return 'F:/qqbot/dshqqbot'; }
+    const cfg = JSON.parse(readFileSync(join(guessed, 'memory-config.json'), 'utf8'));
+    return cfg.dataRoot || guessed;
+  } catch { return guessed; }
 }
 
 function readQueue(file) {

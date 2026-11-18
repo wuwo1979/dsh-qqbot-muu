@@ -25,9 +25,9 @@
  */
 
 import {
-  existsSync, readdirSync, openSync, closeSync, readSync, fstatSync, statSync,
+  existsSync, readdirSync, openSync, closeSync, readSync, fstatSync, statSync, appendFileSync, mkdirSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { getHandle, dbFile, maintainDb } from './memory-db.mjs';
 
@@ -587,20 +587,64 @@ export function chatStats(dataRoot, scope = '') {
   }
 }
 
-/** 删除：按时间保留窗 + 每 scope 条数上限。返回删除条数。 */
+/** 归档目录：{dataRoot}/.qqbot/chat-archive（dataRoot 本身就是 .qqbot 时不重复套一层） */
+function archiveDirOf(dataRoot) {
+  const r = String(dataRoot || '');
+  return basename(r) === '.qqbot' ? join(r, 'chat-archive') : join(r, '.qqbot', 'chat-archive');
+}
+
+/**
+ * 出库前先归档：把要删的行原样写成 NDJSON（按月一个文件，追加）。
+ * 用户口径是「聊天记录都要保管」——热表可以按条数/时间瘦身，但删掉的必须还在，
+ * 将来能重新 ingest，也能给检索当冷备。
+ */
+function archiveRows(h, rows, dataRoot) {
+  if (!rows.length) return 0;
+  const dir = archiveDirOf(dataRoot);
+  mkdirSync(dir, { recursive: true });
+  const buckets = new Map();
+  for (const r of rows) {
+    const d = new Date(Number(r.ts) || Date.now());
+    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    if (!buckets.has(ym)) buckets.set(ym, []);
+    buckets.get(ym).push(JSON.stringify(r));
+  }
+  let n = 0;
+  for (const [ym, lines] of buckets) {
+    appendFileSync(join(dir, `chat-${ym}.ndjson`), lines.join('\n') + '\n', 'utf8');
+    n += lines.length;
+  }
+  return n;
+}
+
+const CHAT_COLS = 'fp, scope, ts, dir, sender_id, sender, kind, text, media, msg_id, src';
+
+/** 删除：按时间保留窗 + 每 scope 条数上限。返回 { deleted, archived }。先归档再删。 */
 export function pruneChat(dataRoot, opts = {}) {
   const cfg = { ...DEFAULTS, ...(opts || {}) };
   try {
     const h = handleOf(dataRoot);
     let deleted = 0;
+    let archived = 0;
     // 保留窗只管"自动采集"的行。src='import' 是用户主动导入的档案，
     // 按 60 天把它删掉等于"导进来就没了"——那是数据丢失，不是清理。
     const keepImported = cfg.pruneImported !== true;
     const guard = keepImported ? " AND src <> 'import'" : '';
+    /** 先选出来归档，再按 fp 删；归档失败就整批不删（宁可热表胖，也不丢记录） */
+    const takeAndDelete = (where, params) => {
+      const rows = h.db.prepare(`SELECT ${CHAT_COLS} FROM chat WHERE ${where}`).all(...params);
+      if (!rows.length) return 0;
+      try { archived += archiveRows(h, rows, dataRoot); } catch { return 0; }
+      const fps = rows.map((r) => r.fp);
+      const stmt = h.db.prepare('DELETE FROM chat WHERE fp = ?');
+      let n = 0;
+      for (const fp of fps) n += Number(stmt.run(fp).changes) || 0;
+      return n;
+    };
     const days = Number(cfg.retentionDays) || 0;
     if (days > 0) {
       const cutoff = Date.now() - days * 86400000;
-      deleted += Number(h.db.prepare(`DELETE FROM chat WHERE ts < ?${guard}`).run(cutoff).changes) || 0;
+      deleted += takeAndDelete(`ts < ?${guard}`, [cutoff]);
     }
     const cap = Number(cfg.capPerScope) || 0;
     if (cap > 0) {
@@ -611,14 +655,17 @@ export function pruneChat(dataRoot, opts = {}) {
       for (const s of scopes) {
         const over = Number(s.n) - cap;
         if (over <= 0) continue;
-        deleted += Number(h.db.prepare(
-          `DELETE FROM chat WHERE fp IN (SELECT fp FROM chat WHERE scope = ?${guard} ORDER BY ts ASC LIMIT ?)`,
-        ).run(s.scope, over).changes) || 0;
+        const rows = h.db.prepare(
+          `SELECT ${CHAT_COLS} FROM chat WHERE scope = ?${guard} ORDER BY ts ASC LIMIT ?`,
+        ).all(s.scope, over);
+        try { archived += archiveRows(h, rows, dataRoot); } catch { continue; }
+        const stmt = h.db.prepare('DELETE FROM chat WHERE fp = ?');
+        for (const r of rows) deleted += Number(stmt.run(r.fp).changes) || 0;
       }
     }
-    return { ok: true, deleted };
+    return { ok: true, deleted, archived };
   } catch (e) {
-    return { ok: false, deleted: 0, reason: e instanceof Error ? e.message : String(e) };
+    return { ok: false, deleted: 0, archived: 0, reason: e instanceof Error ? e.message : String(e) };
   }
 }
 

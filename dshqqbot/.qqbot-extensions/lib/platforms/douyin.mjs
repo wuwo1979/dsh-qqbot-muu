@@ -573,6 +573,96 @@ export async function signedGet(root, path, extra, opts = {}) {
   return { ok: r.httpStatus === 200, httpStatus: r.httpStatus, text: r.text }
 }
 
+/** 带签名的 POST（写操作：发评论）。body 也要参与 a_bogus 计算，UA 必须与请求一致。 */
+export async function signedPost(root, path, body, opts = {}) {
+  const AB = ab()
+  if (!AB) return { ok: false, error: '本地签名库没装上（.qqbot-extensions/vendor/abogus）' }
+  const ck = loadCookie(root)
+  if (!ck || !ck.raw) return { ok: false, needCookie: true, error: '还没保存抖音 Cookie，先在「账号管理」里粘一次' }
+  const url = 'https://www.douyin.com' + path
+  const params = {
+    device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web',
+    version_code: '170400', version_name: '17.4.0',
+    cookie_enabled: 'true', screen_width: '1920', screen_height: '1080',
+    browser_language: 'zh-CN', browser_platform: 'Win32', browser_name: 'Chrome',
+    browser_version: '126.0.0.0', browser_online: 'true', engine_name: 'Blink', engine_version: '126.0.0.0',
+    os_name: 'Windows', os_version: '10', cpu_core_num: '8', device_memory: '8', platform: 'PC',
+    downlink: '10', effective_type: '4g', round_trip_time: '50',
+    webid: webid(), uifid: (ck.map && ck.map.UIFID) || '',
+    msToken: (ck.map && ck.map.msToken) || (await msToken()),
+  }
+  const bodyStr = String(body || '')
+  const { searchParams, aBogus } = AB.signParams(params, { url, body: bodyStr, userAgent: UA })
+  searchParams.set('a_bogus', aBogus)
+  // 写接口还要 secsdk 的 webSign：uifid_timestamp_盐值_query 的 MD5，挂在 URL 上
+  // （只读 GET 不需要；少了它 POST 会被 WAF 直接 403 空 body）
+  let url2 = url + '?' + searchParams.toString()
+  try {
+    const uifid = (ck.map && (ck.map.UIFID || ck.map.uifid)) || ''
+    if (typeof AB.signWebUrl === 'function') url2 = AB.signWebUrl(url2, { uifid })
+  } catch { /* 签名失败就按原 URL 发，让服务端决定 */ }
+  const r = await netText(url2, {
+    method: 'POST',
+    body: bodyStr,
+    headers: {
+      'user-agent': UA,
+      accept: 'application/json, text/plain, */*',
+      'accept-language': 'zh-CN,zh;q=0.9',
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      referer: opts.referer || 'https://www.douyin.com/',
+      origin: 'https://www.douyin.com',
+      'x-requested-with': 'XMLHttpRequest',
+      // 写接口（发评论）还要 BD ticket guard，缺了直接 403 空 body
+      'bd-ticket-guard-client-data': String(AB.bd_ticket_guard_client_data || ''),
+      'bd-ticket-guard-version': '2',
+      'bd-ticket-guard-iteration-version': '1',
+      'bd-ticket-guard-web-version': String(AB.bd_ticket_guard_client_web_domain || '2'),
+      cookie: ck.raw,
+    },
+    timeoutMs: Number(opts.timeoutMs || 12000),
+  })
+  return { ok: r.httpStatus === 200, httpStatus: r.httpStatus, text: r.text }
+}
+
+/**
+ * 发评论（写操作）。replyId 传了就是「回复某条评论」，不传是发顶层评论。
+ * 说明：a_bogus 是前端 JS 算出的一次性签名，这里用本地 vendored abogus 复现；
+ * 抖音对写接口校验更严，失败时把 status_code/status_msg 原样带回来，别自己编成功。
+ */
+export async function publishComment(root, { awemeId, text, replyId = '', replyToReplyId = '' } = {}) {
+  const id = String(awemeId || '').trim()
+  if (!/^\d{15,25}$/.test(id)) return { ok: false, error: '视频 ID 不对：' + id.slice(0, 40) }
+  const t = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!t) return { ok: false, error: '评论内容不能是空的' }
+  if (t.length > 200) return { ok: false, error: '太长了（抖音评论上限 200 字）' }
+  const p = new URLSearchParams()
+  p.set('aweme_id', id)
+  p.set('text', t)
+  p.set('text_extra', JSON.stringify([{ type: 0, text: t }]))
+  p.set('comment_type', replyId ? '1' : '0')
+  if (replyId) {
+    p.set('reply_id', String(replyId))
+    p.set('reply_to_reply_id', String(replyToReplyId || replyId))
+  }
+  try {
+    const r = await signedPost(root, '/aweme/v1/web/comment/publish/', p.toString(), {
+      referer: 'https://www.douyin.com/video/' + id,
+    })
+    if (!r.ok) return { ok: false, error: '抖音返回 HTTP ' + r.httpStatus, needCookie: r.httpStatus === 401 || r.httpStatus === 403 }
+    let j = null
+    try { j = JSON.parse(r.text) } catch { /* 非 JSON 当失败 */ }
+    if (!j) return { ok: false, error: '抖音没返回 JSON（多半是登录失效/被风控）', raw: String(r.text || '').slice(0, 200) }
+    const code = Number(j.status_code ?? 0)
+    if (code !== 0) return { ok: false, error: '抖音拒了（status_code=' + code + (j.status_msg ? '：' + j.status_msg : '') + '）', raw: String(r.text).slice(0, 300) }
+    const cmt = j.comment || {}
+    const cid = String(cmt.cid || cmt.comment_id || '')
+    try { opsLog(root, 'comment-publish', { awemeId: id, cid, replyId: replyId || undefined, text: t }) } catch { /* 记账失败不影响结果 */ }
+    return { ok: true, cid, awemeId: id, text: t, replyTo: replyId || undefined }
+  } catch (e) {
+    return { ok: false, error: (e.cause && e.cause.code) || e.message }
+  }
+}
+
 /**
  * 认视频链接。三种输入都行：
  *  1) 抖音 App 分享短链：https://v.douyin.com/xxxx/（302 跳转里带真实 ID）

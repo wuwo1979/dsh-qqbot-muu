@@ -15,6 +15,7 @@
 import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, renameSync, statSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { findPluginDir } from './plugin-dir.mjs';
+import { isPrivateScope } from './private-guard.mjs';
 
 // ── 参数（可被 memory-config.json 覆盖）────────────────────────────────
 const DEFAULTS = {
@@ -277,6 +278,8 @@ function lexOverlap(qUnits, text) {
  * 给当前消息召回 topK 条记忆。返回 [{ text, score, kind, ts }]。
  */
 export async function recall(dataRoot, scope, queryText, cfg = CONFIG) {
+  // 私聊护城河（2026-11-16）：人和家人的私人对话只在 private-chat.db，不进常规记忆
+  if (isPrivateScope(scope)) return [];
   const q = String(queryText || '').trim();
   if (q.length < 2) return [];
   const items = loadMemories(dataRoot, scope, cfg);

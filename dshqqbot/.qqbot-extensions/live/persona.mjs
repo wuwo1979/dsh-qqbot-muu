@@ -4,8 +4,9 @@
  * 普通聊天由本地模型/主链路处理；直播要求低延迟，因此只在高价值事件上走云端，
  * 输入固定为「人设摘要 + 单条事件」，不拼历史，不拼长规则。
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readSecret } from '../lib/bili-ops.mjs';
 import { cloudChat } from '../lib/script-writer.mjs';
 import { EVENT_TYPES } from './event-model.mjs';
@@ -21,12 +22,17 @@ export function loadPersona(dataRoot) {
   const now = Date.now();
   if (cache.brief && cache.dataRoot === String(dataRoot) && now - cache.at < 300000) return cache.brief;
   const dr = String(dataRoot || '');
+  // 2026-11-18（v0.1.7）：不再写死本机路径。按「环境变量 → 数据根上一级 → 插件自身位置」找，
+  // 找不到就用下面的内置默认人设（新用户也有基本情绪与世界观，不会变成空白人格）。
+  const here = dirname(fileURLToPath(import.meta.url)); // <repo>/dshqqbot/.qqbot-extensions/live
+  const repoFromHere = join(here, '..', '..', '..'); // <repo>
   const candidates = [
     String(process.env.QQBOT_PERSONA_FILE || '').trim(),
     join(dr, '..', 'qqbot-mod', 'persona', 'character.json'),
-    'F:/qqbot/qqbot-mod/persona/character.json',
+    join(repoFromHere, 'qqbot-mod', 'persona', 'character.json'),
     join(dr, 'persona', 'character.json'),
-  ].filter(Boolean);
+    join(dr, '.qqbot-extensions', 'persona', 'character.json'),
+  ].filter((f) => f && existsSync(f));
   let j = null;
   for (const f of candidates) { j = readJson(f); if (j) break; }
   const name = String(j?.name || '小蓝');

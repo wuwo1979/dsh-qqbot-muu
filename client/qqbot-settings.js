@@ -382,8 +382,8 @@ window.__ModuleLoader__.load({
         ],
       },
       {
-        id: 'timers', kw: '定时 提醒 计划 到点 主动 唤醒 闹钟', icon: '⑥', title: '定时唤醒',
-        desc: '已合并到「定时任务」页(顶部 tab)一起编辑——到点主动开口的群/人分组,与她答应你的定时提醒,都在那边管理。',
+        id: 'timers', kw: '定时 提醒 计划 到点 主动 唤醒 闹钟 任务', icon: '⑥', title: '任务管理',
+        desc: '新建任务不在这——在 QQ 里跟她说就行（「每天 21:00 提醒我」「19-22 点之间随机」「我说累的时候来陪我」）。这里只看/开关/删，别往浮窗堆。',
         fields: [],
       },
       {
@@ -422,7 +422,7 @@ window.__ModuleLoader__.load({
     ]
 
     // 分区导航的短名(完整标题太长)
-    var GSHORT = { prompt: '① 守则', rate: '② 回复节奏', sticker: '③ 表情包', rules: '④ 小提醒', diag: '⑤ 诊断日志', timers: '⑥ 定时', approval: '⑦ 审批', ask: '⑧ 提问卡片', group: '⑨ 群管理' }
+    var GSHORT = { prompt: '① 守则', rate: '② 回复节奏', sticker: '③ 表情包', rules: '④ 小提醒', diag: '⑤ 诊断日志', approval: '⑦ 审批', ask: '⑧ 提问卡片', group: '⑨ 群管理' }
 
     // ── 搜索（2026-10-10 主人定）：上栏=精确(字面)，下栏=模糊/语义 ───────────────
     // 语义侧**程序算**、零依赖、离线即时：字符 bigram ＋ IDF 加权余弦；
@@ -1174,7 +1174,7 @@ window.__ModuleLoader__.load({
         imp ? h(ImportPanel, { storeDir: DD || undefined, onClose: function () { setImp(false); load() } }) : null)
     }
 
-    // ── 定时任务页(管理 AI 在 QQ 会话里建的定时任务: 一次性/每天) ──
+    // ── 任务管理页(管理 AI 在 QQ 会话里建的任务: 定时/窗口/事件) ──
     var API_TIMERS = '/api/qqbot-settings/timers'
     function fmtWhen(job) {
       if (job.kind === 'daily') return '每天 ' + (job.atTime || '??:??')
@@ -1182,6 +1182,12 @@ window.__ModuleLoader__.load({
         var d = new Date(job.dueAt)
         var p2 = function (n) { return n < 10 ? '0' + n : '' + n }
         return '一次性 · ' + d.getFullYear() + '/' + p2(d.getMonth() + 1) + '/' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes())
+      }
+      if (job.kind === 'window') return (job.from || '??') + '-' + (job.to || '??') + ' · 每天 ' + (job.perDay || 1) + ' 次'
+      if (job.kind === 'any') return (job.from || '??') + '-' + (job.to || '??') + ' 或事件'
+      if (job.kind === 'event') {
+        var kws = job.event && Array.isArray(job.event.keywords) ? job.event.keywords.join('/') : ''
+        return '等「' + (kws || '?') + '」出现'
       }
       return job.kind === 'once' ? '一次性' : '每天'
     }
@@ -1462,6 +1468,20 @@ window.__ModuleLoader__.load({
           .catch(function (e) { setMsg('操作失败: ' + e.message) })
           .then(function () { setBusyId('') })
       }
+      // 补发：清失败标记 + 把下一次触发提到现在（面板「重试」）
+      function retry(j) {
+        if (busyId) return
+        if (!window.confirm('现在补发这条任务？（下一轮巡检 30 秒内会去发）')) return
+        setBusyId(j.id)
+        fetch('/api/qqbot-settings/timers/retry', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: j.id, schedDir: _tmSD || undefined }) })
+          .then(function (r) { return r.json() })
+          .then(function (d) {
+            if (d && d.error) setMsg('没补成: ' + d.error)
+            else { setMsg('已排上，等下一轮去发 ✓'); load() }
+          })
+          .catch(function (e) { setMsg('补发失败: ' + e.message) })
+          .then(function () { setBusyId('') })
+      }
       function who(job) {
         var scope = job.scope === 'c2c' ? 'c2c' : 'group'
         var nm = nameOf(scope, job.peerId)
@@ -1469,19 +1489,107 @@ window.__ModuleLoader__.load({
         return (scope === 'c2c' ? '私聊 · ' : '群聊 · ') + nm
       }
       function chip(kind) {
-        return h('span', { style: { fontSize: 11, padding: '1px 8px', borderRadius: 999, color: '#fff', background: kind === 'daily' ? '#2f9e44' : '#4d7cfe', whiteSpace: 'nowrap' } },
-          kind === 'daily' ? '每天' : '一次性')
+        var label = kind === 'daily' ? '每天' : kind === 'once' ? '一次性' : kind === 'window' ? '时间窗' : kind === 'event' ? '事件' : '窗口或事件'
+        var color = kind === 'daily' ? '#2f9e44' : kind === 'once' ? '#4d7cfe' : kind === 'event' ? '#e8590c' : '#7048e8'
+        return h('span', { style: { fontSize: 11, padding: '1px 8px', borderRadius: 999, color: '#fff', background: color, whiteSpace: 'nowrap' } }, label)
       }
-      // 左右分栏: 左=定时唤醒(编辑), 右=已安排的定时提醒(开关/删除)——有效利用横向空间
+      // ── 改时间和内容（对话里建的任务，人也能在面板改；只改内容/时间，不改对象和类型）──
+      var [editId, setEditId] = useState('')
+      var [draft, setDraft] = useState(null)
+      var [saving, setSaving] = useState(false)
+      var inpStyle = { font: 'inherit', fontSize: T.fsSm, padding: '3px 6px', borderRadius: 6, border: '1px solid ' + T.border, background: 'var(--qqs-card,#fff)', color: 'var(--qqs-text,#1f2329)', width: 104 }
+      function toLocalInput(ts) {
+        if (!ts) return ''
+        var d = new Date(Number(ts))
+        if (isNaN(d.getTime())) return ''
+        var p2 = function (n) { return n < 10 ? '0' + n : '' + n }
+        return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + 'T' + p2(d.getHours()) + ':' + p2(d.getMinutes())
+      }
+      function openEdit(j) {
+        var ev = j.event || {}
+        setDraft({
+          prompt: j.prompt || '',
+          atTime: j.atTime || '09:00',
+          dueLocal: toLocalInput(j.dueAt),
+          from: j.from || '19:00',
+          to: j.to || '22:00',
+          perDay: j.perDay || 1,
+          minGapMin: j.minGapMin || 0,
+          keywords: (ev.keywords || []).join(','),
+          match: ev.match === 'all' ? 'all' : 'any',
+          withinMin: ev.withinMin || 720,
+          cooldownMin: ev.cooldownMin || 180,
+        })
+        setEditId(j.id)
+      }
+      function put(k, v) { setDraft(function (d) { var n = Object.assign({}, d || {}); n[k] = v; return n }) }
+      function saveEdit(j) {
+        var b = { id: j.id, schedDir: _tmSD || undefined, prompt: draft.prompt }
+        if (j.kind === 'daily') b.atTime = draft.atTime
+        if (j.kind === 'once') {
+          var ts = new Date(draft.dueLocal).getTime()
+          if (!isFinite(ts)) { setMsg('时间填错了，重新选一下'); return }
+          b.dueAt = ts
+        }
+        if (j.kind === 'window' || j.kind === 'any') {
+          b.from = draft.from; b.to = draft.to
+          b.perDay = Number(draft.perDay); b.minGapMin = Number(draft.minGapMin)
+        }
+        if (j.kind === 'event' || j.kind === 'any') {
+          b.keywords = draft.keywords; b.match = draft.match
+          b.withinMin = Number(draft.withinMin); b.cooldownMin = Number(draft.cooldownMin)
+        }
+        setSaving(true)
+        fetch('/api/qqbot-settings/timers/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) })
+          .then(function (r) { return r.json() })
+          .then(function (d) {
+            setSaving(false)
+            if (d && d.error) { setMsg('没改成：' + d.error); return }
+            setMsg('改好了 ✓'); setEditId(''); setDraft(null); load()
+          })
+          .catch(function (e) { setSaving(false); setMsg('没改成：' + e.message) })
+      }
+      function editForm(j) {
+        var d = draft || {}
+        var inp = function (k, props) { return h('input', Object.assign({ value: d[k], style: inpStyle, onChange: function (e) { put(k, e.target.value) } }, props || {})) }
+        var line = function (label, node) {
+          return h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', margin: '5px 0', fontSize: T.fsSm } },
+            h('span', { style: { minWidth: 62, color: T.text3 } }, label), node)
+        }
+        var rows = [
+          h('div', { style: { fontSize: T.fsSm, color: T.text3, margin: '2px 0 3px' } }, '内容（到点她会对你说的话）'),
+          h('textarea', { value: d.prompt || '', rows: 3, style: Object.assign({}, inpStyle, { width: '100%', resize: 'vertical', lineHeight: 1.5 }), onChange: function (e) { put('prompt', e.target.value) } }),
+        ]
+        if (j.kind === 'daily') rows.push(line('每天', inp('atTime', { type: 'time' })))
+        if (j.kind === 'once') rows.push(line('时间', inp('dueLocal', { type: 'datetime-local', style: Object.assign({}, inpStyle, { width: 180 }) })))
+        if (j.kind === 'window' || j.kind === 'any') {
+          rows.push(line('时间窗', h('span', { style: { display: 'flex', gap: 4, alignItems: 'center' } }, inp('from', { type: 'time' }), '→', inp('to', { type: 'time' }))))
+          rows.push(line('次数间隔', h('span', { style: { display: 'flex', gap: 4, alignItems: 'center' } },
+            inp('perDay', { type: 'number', min: 1, max: 6, style: Object.assign({}, inpStyle, { width: 56 }) }), '次/天 · 至少隔',
+            inp('minGapMin', { type: 'number', min: 0, max: 720, style: Object.assign({}, inpStyle, { width: 56 }) }), '分')))
+        }
+        if (j.kind === 'event' || j.kind === 'any') {
+          rows.push(line('触发词', inp('keywords', { style: Object.assign({}, inpStyle, { width: '100%' }) })))
+          rows.push(line('命中冷却', h('span', { style: { display: 'flex', gap: 4, alignItems: 'center' } },
+            h('select', { value: d.match, style: inpStyle, onChange: function (e) { put('match', e.target.value) } },
+              h('option', { value: 'any' }, '任一'), h('option', { value: 'all' }, '全中')),
+            '冷却', inp('cooldownMin', { type: 'number', min: 5, max: 10080, style: Object.assign({}, inpStyle, { width: 64 }) }), '分')))
+        }
+        rows.push(h('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
+          h('button', { className: 'qqs-btn', disabled: saving, style: { padding: '2px 10px', fontSize: T.fsSm }, onClick: function () { saveEdit(j) } }, saving ? '保存中…' : '保存'),
+          h('button', { className: 'qqs-btn', disabled: saving, style: { padding: '2px 10px', fontSize: T.fsSm }, onClick: function () { setEditId(''); setDraft(null) } }, '取消')))
+        return h('div', { style: { border: '1px solid ' + T.border, borderRadius: T.radius, padding: '8px 10px', marginTop: 6, background: 'rgba(127,127,127,.06)' } }, rows)
+      }
+      // 左右分栏: 左=定时唤醒(编辑), 右=她答应你的任务(改时间/内容/开关/删除)——有效利用横向空间
       var leftCol = h('div', { style: { flex: '1 1 44%', minWidth: 280, maxWidth: 560 } },
         h('div', { style: { ...card, padding: '10px 14px' } },
-          h('div', { style: { fontWeight: 700, fontSize: 13 } }, '① 定时唤醒(每天到点,让她主动去群/私聊开口)'),
+          h('div', { style: { fontWeight: 700, fontSize: 13 } }, '① 定时开口（到点/每天，让她主动去群或私聊说一句）'),
           h('p', { style: { fontSize: T.fsSm, color: T.text3 } }, '每个群/人一组,下面可加多个时刻。不用记号码——点「选聊天对象」挑见过的就行(群显示真名/人显示昵称)。改完点「保存」。'),
           h(WakeEditor, { acct: props.acct })))
       var rightCol = h('div', { style: { flex: '1 1 44%', minWidth: 280 } },
         h('div', { style: { ...card, padding: '10px 14px' } },
-          h('div', { style: { fontWeight: 700, fontSize: 13 } }, '② 她答应你的定时提醒(在 QQ 里说一声就能建)'),
-          h('p', { style: { fontSize: T.fsSm, color: T.text3 } }, '这些是她在 QQ 里应你要求安排的提醒。这里只管看/开关/删除;一次性到点自动消失。'),
+          h('div', { style: { fontWeight: 700, fontSize: 13 } }, '② 她答应你的任务（在 QQ 里说一声就能建：定时、时间窗、或聊天里出现某件事）'),
+          h('p', { style: { fontSize: T.fsSm, color: T.text3 } }, '这些是她在 QQ 里应你要求安排的任务。触发方式有三类：到点、时间窗里随机、聊天里出现关键词（可组合成“时间窗或事件，任一触发”）。时间不对、内容想改，点「编辑」直接改，不用再让她重建。'),
           jobs === null ? h('p', { style: { fontSize: T.fsSm, color: T.text3 }, padding: 10 }, '加载中…') : null,
           jobs !== null && jobs.length === 0 ? h('p', { style: { color: 'var(--qqs-text2,#888)', padding: 14, textAlign: 'center', fontSize: T.fsSm } }, '还没有这类提醒。去 QQ 里让她安排一个,就会出现在这里。') : null,
           (jobs || []).map(function (j) {
@@ -1499,8 +1607,19 @@ window.__ModuleLoader__.load({
                 h('label', { style: { fontSize: T.fsSm, whiteSpace: 'nowrap', color: j.enabled ? T.primary : '#ffa94d' } },
                   h('input', { className: 'qqs-cb', type: 'checkbox', checked: !!j.enabled, disabled: disabled, onChange: function (e) { act(j, { enabled: e.target.checked }, e.target.checked ? '已启用' : '已停用') } }),
                   ' ' + (j.enabled ? '启用中' : '已停用')),
-                h('button', { className: 'qqs-btn', disabled: disabled, style: { padding: '2px 8px', fontSize: T.fsSm }, onClick: function () { if (window.confirm('删除这条定时任务?')) act(j, {}, '已删除') } }, '删除')),
-              j.prompt ? h('div', { style: { fontSize: T.fsSm, color: '#cfd3dc', background: '#ffffff0a', border: '1px solid #ffffff14', borderRadius: T.radius, padding: '4px 8px', marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, j.prompt) : null)
+                h('button', { className: 'qqs-btn', disabled: disabled, style: { padding: '2px 8px', fontSize: T.fsSm }, onClick: function () { if (editId === j.id) { setEditId(''); setDraft(null) } else openEdit(j) } }, editId === j.id ? '收起' : '编辑'),
+                h('button', { className: 'qqs-btn', disabled: disabled, style: { padding: '2px 8px', fontSize: T.fsSm }, onClick: function () { if (window.confirm('删除这条定时任务?')) act(j, {}, '已删除') } }, '删除'),
+                (j.lastError || !j.enabled || j.failCount > 0)
+                  ? h('button', { className: 'qqs-btn', disabled: disabled, style: { padding: '2px 8px', fontSize: T.fsSm, color: T.danger }, onClick: function () { retry(j) } }, '重试')
+                  : null),
+              j.prompt ? h('div', { style: { fontSize: T.fsSm, color: 'var(--qqs-text2,#888)', background: 'rgba(127,127,127,.07)', border: '1px solid ' + T.border, borderRadius: T.radius, padding: '4px 8px', marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, j.prompt) : null,
+              (j.lastError || j.firedCount > 0)
+                ? h('div', { style: { fontSize: 11, marginTop: 3, color: j.lastError ? T.danger : T.text3 } },
+                  j.lastError
+                    ? ('上次没发出去：' + j.lastError)
+                    : ('已发 ' + j.firedCount + ' 次' + (j.lastFiredAt ? '（最近 ' + new Date(j.lastFiredAt).toLocaleString() + '）' : '')))
+                : null,
+              editId === j.id ? editForm(j) : null)
           }),
           msg ? h('p', { style: { fontSize: T.fsSm, color: T.success } }, msg) : null))
       return h('div', { style: { width: '100%', color: 'var(--qqs-text,#1f2329)' } },
@@ -1586,9 +1705,9 @@ window.__ModuleLoader__.load({
             : h('span', { style: { fontSize: 13, color: 'var(--qqs-text2,#888)' } }, '无账号… 去「账号与预设」添加'),
           ac ? h('span', { style: { fontSize: 12, color: '#6d28d9', whiteSpace: 'nowrap' } }, ac.dataDir ? '数据目录: ' + ac.dataDir : '') : null,
           h('span', { style: { flex: 1 } }),
-          h('span', { style: { fontSize: 12, color: '#8a97ad' } }, '设置/图库/定时 都跟随上面选的机器人')),
+          h('span', { style: { fontSize: 12, color: '#8a97ad' } }, '设置/图库/任务 都跟随上面选的机器人')),
         h('div', { style: { position: 'sticky', top: 0, zIndex: 30, background: 'transparent', padding: '10px 4px 12px', display: 'flex', gap: 10, flexWrap: 'nowrap', alignItems: 'stretch', marginBottom: 12 } },
-          [['settings', '设置', '#ff5d5d'], ['gallery', '表情包图库', '#ffd97a'], ['timers', '定时任务', '#5b9dff'], ['accounts', '账号与预设', '#b197fc']].map(function (t) {
+          [['settings', '设置', '#ff5d5d'], ['gallery', '表情包图库', '#ffd97a'], ['timers', '任务管理', '#5b9dff'], ['accounts', '账号与预设', '#b197fc']].map(function (t) {
             var on = tab === t[0]
             var n = t[0] === 'gallery' ? badges.untagged : t[0] === 'timers' ? badges.timers : 0
             var col = t[2]
@@ -5276,6 +5395,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
                 + '<div style="font-size:11px;color:#888">回复 ' + esc(x.nickname || '?') + '：' + esc(String(x.comment || '').slice(0, 40)) + (x.videoUrl ? ' · <a href="' + esc(x.videoUrl) + '" target="_blank">去视频页 ↗</a>' : '') + '</div>'
                 + '<textarea data-qid="' + esc(x.id) + '" style="width:100%;min-height:36px;font-size:12px;margin:3px 0">' + esc(x.text || '') + '</textarea>'
                 + '<div style="display:flex;gap:4px;flex-wrap:wrap">'
+                + '<button class="qqs-btn ok" data-qsend="' + esc(x.id) + '">🚀 审批并发送</button>'
                 + '<button class="qqs-btn" data-qcopy="' + esc(x.id) + '">📋 复制去发</button>'
                 + '<button class="qqs-btn" data-qsave="' + esc(x.id) + '">💾 存草稿</button>'
                 + '<button class="qqs-btn" data-qsent="' + esc(x.id) + '">✅ 已发了</button>'
@@ -5298,6 +5418,29 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
                 var ta = q.querySelector('[data-qid="' + id + '"]')
                 var rr = await apiPost('douyin-replies', { action: 'update', id: id, text: ta ? ta.value : '' }).catch(function (e) { return { ok: false, error: e.message } })
                 b.textContent = rr && rr.ok ? '✓ 已存' : '失败'; setTimeout(function () { b.textContent = '💾 存草稿' }, 1600)
+              }
+            })
+            q.querySelectorAll('[data-qsend]').forEach(function (b) {
+              b.onclick = async function () {
+                var id = b.getAttribute('data-qsend')
+                var one = rs.find(function (x) { return x.id === id }) || {}
+                var ta = q.querySelector('[data-qid="' + id + '"]')
+                var t = ta && ta.value.trim()
+                if (!t) return
+                if (!one.videoUrl) { b.textContent = '缺视频链接'; return }
+                if (!confirm('用浏览器直接发到这条评论下面？' + String(t).slice(0, 80))) return
+                b.disabled = true; b.textContent = '发送中…'
+                var rr = await apiPost('douyin-reply-send', { url: one.videoUrl, match: one.comment, text: t }).catch(function (e) { return { ok: false, error: e.message } })
+                b.disabled = false
+                if (rr && rr.ok) {
+                  b.textContent = '✓ 已发'
+                  await apiPost('douyin-replies', { action: 'update', id: id, text: t, status: 'sent' }).catch(function () {})
+                  setTimeout(dyQueueLoad, 900)
+                } else {
+                  b.textContent = '✗ 没发出去'
+                  alert('没发出去：' + ((rr && (rr.error || rr.log)) || '被风控/验证码拦了'))
+                  setTimeout(function () { b.textContent = '🚀 审批并发送' }, 2000)
+                }
               }
             })
             q.querySelectorAll('[data-qsent]').forEach(function (b) {
@@ -5347,7 +5490,7 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           return '<button class="dk-btn" data-ctab="' + tab + '" style="font-size:11.5px;padding:3px 12px;border-radius:14px 14px 0 0;border-bottom:none;'
             + (act ? 'background:#eef4ff;border-color:#1c7ed6;color:#1d4ed8;font-weight:700' : '') + '">' + label + '</button>'
         }
-        var h = '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">💬 评论中心<span style="font-weight:400;font-size:11px;color:#888;margin-left:8px">B站评论后台每 30 分钟自动巡检一轮；抖音不自动跑，点「巡检」才拉。B站能直发（拟人间隔）；抖音写接口必风控 → 小蓝出文案、你复制手发</span></div>'
+        var h = '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">💬 评论中心<span style="font-weight:400;font-size:11px;color:#888;margin-left:8px">B站评论后台每 30 分钟自动巡检一轮；抖音不自动跑，点「巡检」才拉。B站能直发（拟人间隔）；抖音写接口被风控 → 现在改成「审批后用浏览器真发」，失败会照实报</span></div>'
         h += '<div class="dk-row" id="dk-vr-cw-tabs" style="gap:4px;margin:2px 0;align-items:flex-end">'
           + cwTabBtn('feed', '📬 B站收件箱')
           + cwTabBtn('list', '📺 B站视频评论')
@@ -5403,6 +5546,87 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           + '<button class="dk-btn ok" id="dk-dyn-post">📣 发送</button>'
           + '</div>'
           + '<div id="dk-dyn-hint" class="dk-msg" style="font-size:11.5px;color:#2f9e44;margin:2px 0"></div>'
+      }
+      // 私聊归档卡（2026-11-16）：家长/家人的私聊单独存，不进肥鱼常规记忆
+      function privateArchiveHtml() {
+        return '<div class="dk-card" style="padding:10px;border:1px solid #e9ecef;border-radius:10px;background:#fff;margin-top:8px">'
+          + '<div style="font-weight:700;font-size:13px">🔒 私聊归档<span style="font-weight:400;font-size:11px;color:#888;margin-left:8px">家人/朋友的抖音私信、微信与 QQ 私聊，单独存独立库，带 private 标签；肥鱼常规记忆读不到，要读得先问你</span></div>'
+          + '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0">'
+          + '<button class="dk-btn" id="dk-pv-refresh">🔄 看统计</button>'
+          + '<button class="dk-btn ok" id="dk-pv-import">⬇ 增量导入</button>'
+          + '<span style="font-size:10.5px;color:#98a2b3">只写 .qqbot/private/private-chat.db，scope 按 平台:dm:会话ID + 时间戳</span>'
+          + '</div>'
+          + '<div id="dk-pv-out" class="dk-msg" style="font-size:11.5px;line-height:1.6;color:#555;max-height:200px;overflow:auto">点「看统计」看看入库情况</div>'
+          + '</div>'
+      }
+      function bindPrivateArchive(panel) {
+        var q = function (id) { return panel.querySelector('#' + id) }
+        var out = q('dk-pv-out')
+        var fmt = function (ts) { try { return new Date(ts).toLocaleString('zh-CN', { hour12: false }) } catch (e) { return String(ts) } }
+        var paint = function (d) {
+          if (!d || d.ok === false) { out.textContent = '读不到：' + ((d && d.error) || '?'); return }
+          if (!d.exists) { out.textContent = '还没导入过。点「增量导入」把三处私聊收进来。'; return }
+          out.innerHTML = (d.scopes || []).map(function (s) {
+            return '<div>' + esc(s.scope) + ' · ' + esc(s.conv_name || '') + ' · <b>' + s.n + '</b> 条 · ' + fmt(s.a) + ' → ' + fmt(s.b) + '</div>'
+          }).join('') || '（空）'
+        }
+        var rf = q('dk-pv-refresh')
+        if (rf) rf.onclick = async function () { paint(await api('private-archive').catch(function (e) { return { ok: false, error: e.message } })) }
+        var im = q('dk-pv-import')
+        if (im) im.onclick = async function () {
+          im.disabled = true; out.textContent = '导入中…'
+          try {
+            var r = await apiPost('private-archive', { action: 'import' }).catch(function (e) { return { ok: false, error: e.message } })
+            paint(await api('private-archive').catch(function () { return null }))
+            if (r && r.ok && r.result) out.insertAdjacentHTML('afterbegin', '<div style="color:#2f9e44">导入完成：' + esc(JSON.stringify(r.result.douyin || {})) + ' / ' + esc(JSON.stringify(r.result.wechat || {})) + ' / ' + esc(JSON.stringify(r.result.qq || {})) + '</div>')
+            else out.insertAdjacentHTML('afterbegin', '<div style="color:#e03131">导入失败：' + esc((r && (r.error || r.log)) || '?') + '</div>')
+          } finally { im.disabled = false }
+        }
+        rf && rf.click()
+      }
+      // 统一发布卡（2026-11-16）：B站走任务卡「通过并投稿」；抖音走浏览器投稿（creator 打不开时手动）
+      function publishCardHtml() {
+        return '<div class="dk-card" style="padding:10px;border:1px solid #e9ecef;border-radius:10px;background:#fff;margin-top:8px">'
+          + '<div style="font-weight:700;font-size:13px">📤 发布（B站 / 抖音）</div>'
+          + '<div style="font-size:11px;color:#888;margin:2px 0 6px">B站：上面任务卡里「通过并投稿」会自动投；抖音：选好成片和文案点提交，会用浏览器打开投稿页把文件塞进去，最后一下「发布」自己点。</div>'
+          + '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center">'
+          + '<select class="qqs-sel" id="dk-pub-plat" style="font-size:12px"><option value="douyin">抖音</option><option value="bili">B站</option></select>'
+          + '<input class="qqs-txt" id="dk-pub-title" placeholder="标题" style="flex:1;min-width:160px;font-size:12px">'
+          + '</div>'
+          + '<textarea id="dk-pub-desc" rows="2" placeholder="简介 / 话题（#小蓝 #深海）" style="width:100%;font-size:12px;padding:5px;border:1px solid #d0d5dd;border-radius:8px;margin:4px 0;box-sizing:border-box"></textarea>'
+          + '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center">'
+          + '<input class="qqs-txt" id="dk-pub-path" placeholder="成片绝对路径" style="flex:1;min-width:220px;font-size:12px">'
+          + '<button class="dk-btn" id="dk-pub-recent">📂 最近成片</button>'
+          + '<button class="dk-btn ok" id="dk-pub-go">📤 提交发布</button>'
+          + '</div>'
+          + '<div id="dk-pub-hint" class="dk-msg" style="font-size:11.5px;color:#2f9e44;margin:4px 0"></div>'
+          + '</div>'
+      }
+      function bindPublishCard(panel) {
+        var q = function (id) { return panel.querySelector('#' + id) }
+        var hint = q('dk-pub-hint')
+        var say = function (t, bad) { if (hint) { hint.style.color = bad ? '#e03131' : '#2f9e44'; hint.textContent = t } }
+        var recent = q('dk-pub-recent')
+        if (recent) recent.onclick = async function () {
+          say('找最近的成片…')
+          try {
+            var r = await api('video-recent').catch(function (e) { return { ok: false, error: e.message } })
+            if (r && r.ok && r.path) { q('dk-pub-path').value = r.path; say('用这个：' + r.path) } else say('没找到成片：' + ((r && r.error) || ''), true)
+          } catch (e) { say('没找到成片', true) }
+        }
+        var go = q('dk-pub-go')
+        if (go) go.onclick = async function () {
+          var plat = (q('dk-pub-plat') || {}).value || 'douyin'
+          var path = String((q('dk-pub-path') || {}).value || '').trim()
+          if (!path) return say('先填成片路径（或点「最近成片」）', true)
+          say('提交中…')
+          go.disabled = true
+          try {
+            var r = await apiPost('video-publish', { platform: plat, path: path, title: (q('dk-pub-title') || {}).value || '', desc: (q('dk-pub-desc') || {}).value || '' }).catch(function (e) { return { ok: false, error: e.message } })
+            if (r && r.ok) say(r.msg || '已提交（看浏览器窗口，最后一下发布自己点）')
+            else say('没成：' + ((r && (r.error || r.msg)) || '未知原因'), true)
+          } finally { go.disabled = false }
+        }
       }
       function biliCardHtml() {
         return accountsHtml() + '<div class="dk-card" style="padding:10px;border:1px solid #e9ecef;border-radius:10px;background:#fff">'
@@ -8405,13 +8629,19 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
           // [qqbot-mod] contact-move：联系方式 = QQ 侧清单 + B 站学习记录 + 学习心得
           body += contactHtml()
         } else if (state.tab === 'bili') {
-          body += biliCardHtml()
+          // [qqbot-mod] ops-vs-creator 2026-11-16：出图/视频/历史任务/投稿搬去「🎬 创作台」
+          body += accountsHtml()
+          body += '<div class="dk-msg" style="font-size:11.5px;color:#667085;margin:4px 0">🖼 出图 · 🎞 视频 · 📚 历史任务 · 📤 投稿都搬到「🎬 创作台」了；这一页只留账号、评论、动态、直播。</div>'
           // [qqbot-mod] live 2026-11-07：直播（B 站社区长连）卡片
           body += liveCardHtml()
           // [qqbot-mod] ops-center 2026-10-30：评论中心并入运营中心 + 发动态入口
           body += commentCenterHtml()
           body += dynPostHtml()
+          body += privateArchiveHtml()
         } else if (state.tab === 'video') {
+          // [qqbot-mod] ops-vs-creator 2026-11-16：创作台 = 出图/配音/成片/历史任务/发布
+          body += biliCardHtml()
+          body += publishCardHtml()
           // [qqbot-mod] video-radar 2026-10-27：拉视频→生评论→B站可选直发/笔记/分享QQ群
           // [qqbot-mod] ops-center 2026-10-30 改名「创作台」：专注做视频/看视频内容，
           //   运营类（评论/收件箱/互动/发动态）全在「🛰 运营中心」页。
@@ -8789,7 +9019,9 @@ html += '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">�
         // ★ 2026-10-24: B 站 tab 是后渲染的，bindBiliCard 必须在这里绑定（否则一直"加载中…"）
         // [qqbot-mod] tab-lock（主人 2026-10-27）：这三个 bind 任一抛错，后面的 bindBodyEvents 就不执行，
         //   标签按钮就再也点不动（"进了本地模型页切不到别的页"）。逐个兜住，出错只记一笔。
-        if (state.tab === 'bili') { try { bindBiliCard() } catch (eB) { console.warn('[qqbot] bindBiliCard', eB && eB.message) } }
+        if (state.tab === 'bili' || state.tab === 'video') { try { bindBiliCard() } catch (eB) { console.warn('[qqbot] bindBiliCard', eB && eB.message) } }
+        if (state.tab === 'video') { try { bindPublishCard(document) } catch (eP) { console.warn('[qqbot] bindPublishCard', eP && eP.message) } }
+        if (state.tab === 'bili') { try { bindPrivateArchive(document) } catch (ePA) { console.warn('[qqbot] bindPrivateArchive', ePA && ePA.message) } }
         if (state.tab === 'bili') { try { bindLiveCard() } catch (eLv) { console.warn('[qqbot] bindLiveCard', eLv && eLv.message) } }
         if (state.tab === 'bili') { try { bindAccounts() } catch (eAB) {} try { loadAccounts(false) } catch (eAC) {} }
         if (state.tab === 'games') { try { bindGamesCard() } catch (eG) { console.warn('[qqbot] bindGamesCard', eG && eG.message) } }

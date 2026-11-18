@@ -1,0 +1,9 @@
+# dsh-xtc-muu bundle patch（dsh-qqbot-muu 附庸：小天才通道）
+#
+# 安装：dsh plugin --profile web add file:F:/qqbot/dsh-xtc-muu
+# 本包只插入 xtc-muu 插件行；人格/预设/记忆全部从 dsh-qqbot-muu 的设置里读，不干涉它。
+# 与微信通道（wechat-muu）完全隔离：各自独立的桥、人物库、路由前缀（/api/xtc-muu/*）。
+
+- insert:
+    - id: xtc-muu
+      name: 'dsh-xtc-muu'

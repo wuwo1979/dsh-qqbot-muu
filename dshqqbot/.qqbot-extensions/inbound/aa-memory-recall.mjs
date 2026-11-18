@@ -47,6 +47,8 @@ import { getChatState, setChatState } from '../lib/chatlog-db.mjs';
 import { packByBudget, joinKept } from '../lib/context-budget.mjs';
 // [mmtr 2026-10-27]：会遗忘的记忆层——防自增强（刚用过的降权+只记日志）与承诺账本（[约定]块）
 import { promiseBlockFor, applyRecallGuard } from '../lib/memory-mmtr.mjs';
+// 2026-11-11 主人报「消息号跑到 [信条] 前面」→ 稳定块一律置顶，其余垫底
+import { mergeStableFirst } from '../lib/stable-first.mjs';
 
 // 性格倾向 → 一句话（主人 2026-10-26 要求让 belief 层真正被模型看到）。
 // trait 值是小步长缓变量，文本天然轮间稳定，不会破坏 prompt 缓存；
@@ -606,7 +608,9 @@ export async function onInbound(ctx, next) {
   if (dropped.length) ctx?.logger?.debug?.(`[budget] 注入超 ${INJECT_BUDGET} 字，本轮不带：${dropped.join('、')}`);
   if (extra) meterInject(dataRoot, scope, extra.length, dropped);
   if (extra && typeof ctx.rewrite === 'function') {
-    ctx.rewrite({ text: String(ctx.text || '') + extra });
+    // 2026-11-11：稳定块（信条/设定/印象…）置顶，易变块（记忆/状态/世界书…）垫底。
+    //   旧写法 ctx.text + extra 会把 [信条] 塞到 [消息号] 后面（主人实测的 bug）。
+    ctx.rewrite({ text: mergeStableFirst(ctx.text, extra) });
   }
   // ── ② 再沉淀（用"原文本"，不含刚注入的记忆块）──
   //   普通群不沉淀长期记忆：水群只看信息本身，不把闲聊塞进向量库（省本地算力）
