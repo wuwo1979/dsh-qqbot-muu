@@ -1,7 +1,7 @@
 url: https://github.com/wuwo1979/dsh-qqbot-muu
 name: wuwo1979/dsh-qqbot-muu
 category: identity
-tarball: https://github.com/wuwo1979/dsh-qqbot-muu/releases/download/v0.1.8/dsh-qqbot-muu-0.1.8.tgz
+tarball: https://github.com/wuwo1979/dsh-qqbot-muu/releases/download/v0.1.9/dsh-qqbot-muu-0.1.9.tgz
 icon: https://raw.githubusercontent.com/wuwo1979/dsh-qqbot-muu/main/assets/icon.png
 description:
   en: 'QQ-bot extension pack for DeepSeek Harness. Access is deny-by-default: c2c/group both use care mode, and with the shipped empty lists nobody gets answered at all — the owner adds people/groups (by name in the pet panel, or by OpenID in the config) before the bot replies; allowlist/open/disabled modes remain available and the README says exactly where to fill your OpenID. Two-layer SQLite memory with hippocampal recall, a persona that keeps learning from daily chats, group tiers, local-model quick replies with a single-brain arbiter, TTS outbox, sticker library, an approval-gated video studio, and a four-form desktop pet playable over a token invite link. v0.1.8 removes every hard-coded author-machine path (resolved from the module location at runtime); v0.1.7 adds a pre-publish gate (no runtime data, tokens or account ids in the package; entry syntax and profile dependency form checked; built-in default persona keeps emotion and worldview) and fixes three bugs: local scoring model no longer starves the CPU, the watch channel stops duplicating catch-up messages, and /bot-restart keeps env and retries.'
