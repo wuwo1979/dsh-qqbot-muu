@@ -105,6 +105,8 @@
   "scripts": {
     "release:check": "node scripts/release-check.mjs",
     "release:check:strict": "node scripts/release-check.mjs --strict",
-    "prepublishOnly": "node scripts/release-check.mjs --strict"
+    "prepublishOnly": "node scripts/release-check.mjs --strict",
+    "ci": "node scripts/release-all.mjs --check",
+    "release": "node scripts/release-all.mjs"
   }
 }

@@ -1,4 +1,27 @@
-# 发版与更新检查清单（v0.1.7 起强制执行）
+# 发版与更新检查清单（v0.1.9 起一条命令）
+
+> 目的：每次发版，**本地先跑完跟 CI 完全一样的那套检查**，全绿再推；推、打 tag、发 Release、发 npm、同步市场条目都在同一条命令里完成。
+> 不需要你手动跑 CI、不需要点 GitHub Actions、也不需要每次去选 git 账号。
+
+## 0. 记这一条就够了
+
+```bash
+npm run ci        # 只体检：语法 / 市场条目 / 包隐私 / 发版闸门（strict），全绿才继续
+npm run release   # 一条龙：体检 → 提交 → 推 main → tag/Release → npm → 市场条目
+```
+
+- `npm run ci` 就是 `.github/workflows/ci.yml` 的四步 + 发版闸门，**本地跑不过就不会推**，不会再出现「推上去等 GitHub 报红」。
+- `npm run release` 用 REST API 推提交（`github.com:443` 被墙也能用），令牌优先取 `GH_TOKEN` 环境变量，其次读已存的 git 凭据（`credential.https://github.com.helper = manager` 已固定，不会再弹「选择凭据助手」）。
+- 幂等：版本已发过就跳过 npm；tag/Release 已存在就跳过；市场条目只在新版本号时才更新。
+- 想先看它要做什么：`node scripts/release-all.mjs --dry-run`。
+
+## 0.1 出问题时的分工
+
+| 现象 | 处理 |
+|---|---|
+| `npm run ci` 红 | 按它点名的那一项修，别推 |
+| 令牌读不到 | `set GH_TOKEN=ghp_…` 再跑（脚本不会再弹窗） |
+| npm 提示版本已存在 | 说明这次只改了文档/脚本：要么升版本号，要么不发（同版本 npm 不允许覆盖） |
 
 > 目的：每次发新版本前，机器先替你查一遍——**别人装得上、升级不会进安全模式、你的本地隐私不跟着包走**。
 > 一条命令：`npm run release:check:strict`（`npm publish` 会自动先跑它，不通过直接发不出去）。
