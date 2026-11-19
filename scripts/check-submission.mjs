@@ -17,7 +17,7 @@
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -84,17 +84,25 @@ function readJson(p) {
 }
 
 // ── 1) 条目文件 ─────────────────────────────────────────────────────────
+function walkYml(dir, acc = []) {
+  if (!existsSync(dir)) return acc;
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, ent.name);
+    if (ent.isDirectory()) walkYml(full, acc);
+    else if (ent.name.endsWith('.yml') || ent.name.endsWith('.yaml')) acc.push(full);
+  }
+  return acc;
+}
 const subDir = join(ROOT, 'submission');
-const entries = existsSync(subDir)
-  ? readdirSync(subDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
-  : [];
-if (!entries.length) {
+const entryFiles = walkYml(subDir);
+if (!entryFiles.length) {
   bad('submission/ 下没有 .yml 条目');
 } else {
-  for (const f of entries) {
+  for (const fullPath of entryFiles) {
+    const f = fullPath.split(sep).pop();
     if (f.endsWith('.yaml')) bad(`${f}: 市场只收 .yml，.yaml 会被直接跳过`);
-    const rel = `submission/${f}`;
-    const e = parseEntryYaml(readFileSync(join(subDir, f), 'utf8'));
+    const rel = relative(ROOT, fullPath).split(sep).join('/');
+    const e = parseEntryYaml(readFileSync(fullPath, 'utf8'));
 
     if (!e.url || !/^https:\/\/github\.com\/[^/]+\/[^/]+/.test(e.url)) bad(`${rel}: url 必须是 https://github.com/<owner>/<repo>`);
     if (!e.name) bad(`${rel}: 缺 name`);

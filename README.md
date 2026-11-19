@@ -240,9 +240,30 @@ access:
   groupAllow: ['额外放行的群openid']
 ```
 
-> 不知道 openid？试者在群里 @ 她一句，然后 `harness.log` 搜 `not in allowlist`，括号里就是；
+> 不知道 openid？让对方在群里 @ 她一句或私聊发一句，然后 `harness.log` 搜 `not in allowlist`，括号里就是；
 > care/allowlist 名单为空时启动日志会打醒目提示（不会静默）。
 > 拒绝时日志会打醒目提示（不会静默）。
+
+### 默认谁都不会被回（空名单 = 全拒）
+
+**这是刻意的安全默认，不是 bug。** 装完 `care` 模式下两份名单都是空的，
+所以**私聊和群聊默认谁都不理**（只记录、不回复）——先把人加进去，她才会开口。
+
+三个入口，任选一个（改完 5 秒内生效，不用重启）：
+
+1. **浮窗「🧠 记忆」页 → 特别关心**：按**名字**加人/加群（最省事，不用 id）。
+2. **配置 `access` 段填 openid**（要精确控制时用）：
+   ```yaml
+   access:
+     c2cMode: care                 # care = 只认特别关心 + 下面两个白名单
+     c2cAllow: ['对方的 openid']    # 私聊额外放行；"*" = 全放行
+     groupMode: care
+     groupAllow: ['群的 openid']    # 群聊额外放行
+   ```
+3. **临时全开**：把 `c2cMode` / `groupMode` 改成 `open`（任何人可用，公开 bot 才建议）。
+
+**自己的 openid 在哪看**：对方发一条消息后，`harness.log` 里那条入站记录会带完整 openid；
+浮窗「任务管理」新建任务时也要求填同一串完整 openid（不是尾号）。
 
 ## 🚀 新装即用（v0.1.7 · 只缺省才写入的默认值）
 
