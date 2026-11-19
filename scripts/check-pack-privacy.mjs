@@ -77,7 +77,12 @@ function readBlocklist() {
 function scanText(files, label) {
   const hits = { path: [], openid: [], token: [], name: [] };
   for (const f of files) {
-    for (const [re, why] of PATH_BAD) if (re.test(f)) hits.path.push(`${f}（${why}）`);
+    // submission/ 是插件市场的条目目录（上游固定为 submission/data/plugins/<owner>__<repo>.yml），
+    // 只有它能合法包含 /data/，其余路径仍按运行时数据拦截。
+    const isMarketEntry = /^submission\/data\/plugins\/[A-Za-z0-9_.-]+\.yml$/.test(f.split(String.fromCharCode(92)).join('/'));
+    for (const [re, why] of PATH_BAD) {
+      if (re.test(f) && !(isMarketEntry && why === '运行时数据目录')) hits.path.push(`${f}（${why}）`);
+    }
     if (!isText(f)) continue;
     let txt = '';
     try { txt = readFileSync(f, 'utf8'); } catch { continue; }
