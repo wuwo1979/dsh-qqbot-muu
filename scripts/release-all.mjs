@@ -429,7 +429,25 @@ else {
 - 变更详见仓库 CHANGELOG.md`
       })
     })
-    if (!pr.ok) die('开市场 PR 失败', JSON.stringify(pr.j).slice(0, 400))
+    if (!pr.ok) {
+      // 422 = 这个 head 已经有开着的 PR（上一次发布开过）→ 找到它、改成这次的内容，别再开重
+      const exists = /already exists/i.test(JSON.stringify(pr.j || {}))
+      if (exists) {
+        const q = await api('/repos/' + UPSTREAM + '/pulls?state=open&head=' + encodeURIComponent(FORK.split('/')[0] + ':' + MARKET_BRANCH))
+        const found = Array.isArray(q.j) ? q.j[0] : null
+        if (found && found.number) {
+          await api('/repos/' + UPSTREAM + '/pulls/' + found.number, {
+            method: 'PATCH',
+            body: JSON.stringify({ title: 'dsh-qqbot-muu: ' + TAG, body: '市场条目更新到 ' + TAG + '（详见仓库 CHANGELOG.md）。' })
+          })
+          ok('沿用已开的 PR #' + found.number + '，标题/正文已更新到 ' + TAG)
+        } else {
+          die('开市场 PR 失败', '分支已存在 PR 但查不到 open 的（' + JSON.stringify(pr.j).slice(0, 200) + '）')
+        }
+      } else {
+        die('开市场 PR 失败', JSON.stringify(pr.j).slice(0, 400))
+      }
+    }
     ok(`已新开市场 PR #${pr.j.number}：${pr.j.html_url}`)
   }
 }
