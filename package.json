@@ -24,7 +24,7 @@
     "./client": "./client/qqbot-settings.js"
   },
   "bin": {
-    "dsh-qqbot-muu-install": "./install.mjs"
+    "dsh-qqbot-muu-install": "install.mjs"
   },
   "files": [
     "index.js",
@@ -100,7 +100,7 @@
   "author": "wuwo1979",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wuwo1979/dsh-qqbot-muu"
+    "url": "git+https://github.com/wuwo1979/dsh-qqbot-muu.git"
   },
   "scripts": {
     "release:check": "node scripts/release-check.mjs",

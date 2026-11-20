@@ -20,6 +20,7 @@ const REPO = 'wuwo1979/dsh-qqbot-muu'
 const FORK = 'wuwo1979/awesome-dsh-plugin'
 const UPSTREAM = 'awesome-dsh-plugin/awesome-dsh-plugin'
 const MARKET_BRANCH = 'release/dsh-qqbot-muu-v0.1.7'
+let NPM_PENDING = ''
 const MARKET_PR = 17081   // 0 = 每次新开 PR；>0 表示复用该 PR 号
 const MARKET_FILE = 'data/plugins/wuwo1979__dsh-qqbot-muu.yml'
 const LOCAL_MARKET = 'submission/data/plugins/wuwo1979__dsh-qqbot-muu.yml'
@@ -214,8 +215,22 @@ else {
   const AUTH_FLAG = '--//registry.npmjs.org/:' + '_auth' + 'Token=' + nt
   if (!nt) die('没有 npm 令牌', '设置 NPM_TOKEN，或把令牌写进 secrets/npm.txt')
   const r = spawnSync('npm', ['publish', '--access', 'public', '--provenance=false', AUTH_FLAG], { encoding: 'utf8', shell: IS_WIN, stdio: 'pipe' })
-  if (r.status !== 0) die('npm publish 失败', `${r.stdout}\n${r.stderr}`)
-  ok(`已发布 dsh-qqbot-muu@${VERSION}`)
+  // npm 11 起是 staged publishing：PUT 202 只代表进了暂存区，必须 2FA 批准才上线；
+  // 以前只看 exit code → 202 也报成功、其实注册表里没有。这里必须回查注册表。
+  const live = (() => {
+    const v = spawnSync('npm', ['view', `dsh-qqbot-muu@${VERSION}`, 'version'], { encoding: 'utf8', shell: IS_WIN })
+    return String(v.stdout || '').trim().includes(VERSION)
+  })()
+  if (!live) {
+    const outTxt = `${r.stdout}\n${r.stderr}`
+    const staged = /202|staged|E409|previously staged/i.test(outTxt)
+    NPM_PENDING = staged
+      ? `npm 把 ${VERSION} 收进了暂存区（HTTP 202 / E409），没有 2FA 批准不会上线。去 npm 网站上该包的 Staged/Pending 批准，或换一个允许 2FA bypass 的 granular token。`
+      : `npm publish 没成功（exit ${r.status}），注册表里查不到 ${VERSION}。`
+    console.log('  ! ' + NPM_PENDING)
+  } else {
+    ok(`已发布 dsh-qqbot-muu@${VERSION}（注册表已核到）`)
+  }
 }
 
 // ── 7) 市场条目同步（fork 分支 + PR）───────────────────────────────────
@@ -268,5 +283,11 @@ else {
   }
 }
 
-console.log(`\n✅ ${TAG} 全流程完成：本地 CI 全绿 → 已推送 → Release 已出 → npm 已就绪 → 市场条目已同步`)
+if (NPM_PENDING) {
+  console.log(`\n${TAG} 已推 GitHub / Release 已出 / 市场条目已同步。`)
+  console.log(`⚠️  npm 还差一步：${NPM_PENDING}`)
+  process.exitCode = 2
+} else {
+  console.log(`\n✅ ${TAG} 全流程完成：本地 CI 全绿 → 已推送 → Release 已出 → npm 已就绪 → 市场条目已同步`)
+}
 console.log('下一步：到 GitHub Actions 确认这次 push 的 ci 也是绿的（本地跑的是同一套步骤）。')
