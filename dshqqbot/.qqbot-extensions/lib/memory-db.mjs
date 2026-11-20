@@ -95,7 +95,7 @@ export function loadConfig(dataRoot) {
 }
 
 // ── 路径 ────────────────────────────────────────────────────────────────
-const FALLBACK_ROOT = __repoRoot() + "/dshqqbot";
+const FALLBACK_ROOT = (process.env.USERPROFILE || process.env.HOME || ".") + "/.dsh-qqbot/dshqqbot";
 
 function rootOf(dataRoot) {
   // 对象型 dataRoot 会被 String() 串成 '[object Object]'（2026-10-26 就这么生成过一个垃圾库），

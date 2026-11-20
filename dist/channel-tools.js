@@ -377,7 +377,7 @@ async function resolveCtxMemoEnv(exec) {
         return cached;
     try {
         const got = findSessionRec(channelOf(exec), exec);
-        const dataRoot = got?.ch?.manager?.config?.dataRoot;
+        const dataRoot = got?.ch?.manager?.config?.dataRoot || defaultDataRoot();
         const sessionKey = got?.rec?.sessionKey;
         if (!dataRoot || !sessionKey)
             return undefined;
@@ -392,13 +392,21 @@ async function resolveCtxMemoEnv(exec) {
  * pre-step 里 sessionKey 经常是**空**的（实测 [ctxtool-env] sk= 为空），
  * 所以这里不能像备忘那样要求 sessionKey —— 群管理只跟数据目录有关，与会话无关。
  */
+/** 0.1.14：与 dataRootOf 同口径的默认数据根（config.dataRoot 没有默认值，别拿 undefined 当没配置） */
+function defaultDataRoot() {
+    const env = String(process.env.QQBOT_DATA_ROOT || '').trim();
+    if (env)
+        return env;
+    const cwd = process.cwd();
+    return cwd + '/dshqqbot';
+}
 async function resolveCtxDataRoot(exec) {
     const cached = ctxEnvOf(exec);
     if (cached && cached.dataRoot)
         return cached.dataRoot;
     try {
         const got = findSessionRec(channelOf(exec), exec);
-        const dataRoot = got?.ch?.manager?.config?.dataRoot;
+        const dataRoot = got?.ch?.manager?.config?.dataRoot || defaultDataRoot();
         if (dataRoot)
             return String(dataRoot);
     }

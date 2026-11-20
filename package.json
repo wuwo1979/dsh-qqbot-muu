@@ -43,6 +43,7 @@
     "dshqqbot/.qqbot-extensions/**",
     "!dshqqbot/.qqbot-extensions/data/**",
     "!dshqqbot/.qqbot-extensions/*.json",
+    "dshqqbot/.qqbot-extensions/*.example.json",
     "!dshqqbot/.qqbot-extensions/**/*.bak*",
     "!dshqqbot/.qqbot-extensions/**/*.lnk",
     "!scripts/*.bak*",

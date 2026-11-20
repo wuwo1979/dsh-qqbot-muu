@@ -19,8 +19,8 @@
  *
  * ⚠️ 本地手改功能（fork 新增）：维护清单见工作区根《插件改动维护注意事项.md》。
  */
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { dataRootOf } from '../gateway/data-root.js';
 import { handleInbound } from '../transport/inbound.js';
 /** 轮询间隔: 30s(分钟级精度足够, 不会跳整分钟) */
@@ -53,6 +53,7 @@ export function startScheduler(manager, config, logger) {
     const inFlight = new Set();
     function persist() {
         try {
+            mkdirSync(dirname(stateFile), { recursive: true });
             writeFileSync(stateFile, JSON.stringify(state, null, 1), 'utf8');
         }
         catch (err) {
