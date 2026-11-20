@@ -9,13 +9,44 @@
  *
  * 迁移: 首次启动时, 若 cwd 下存在旧数据目录而数据根下还没有, 自动整目录搬移(rename, 同盘瞬时完成), 不覆盖已有目标。
  */
-import { existsSync, mkdirSync, renameSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { absCwdOf } from '../util/abs-path.js';
 /** 旧版数据直接落在 agent cwd 的清单(与数据根对应的相对布局; 目录+散文件) */
 export const DATA_SUBDIRS = ['表情包', '.qqbot', '.qqbot-extensions', 'schedule-state.json', 'botplay-events.json'];
 /** 未配置 dataRoot 时的默认数据子目录名(通用设计: 让工作目录保持干净) */
 export const DEFAULT_DATA_SUBDIR = 'dshqqbot';
+const _writableCache = new Map();
+/**
+ * 0.1.14：数据根落点兜底。
+ * 用户反馈「装上就报路径错误」的根因之一：插件从只读目录/系统目录启动时，
+ * {cwd}/dshqqbot 建不出来（EPERM/EACCES），之后所有读写全炸。
+ * 先试首选目录；建不出来就退到用户主目录下的 .dsh-qqbot，并只 warn 一次。
+ */
+function pickWritableRoot(preferred) {
+    const hit = _writableCache.get(preferred);
+    if (hit)
+        return hit;
+    let chosen = preferred;
+    try {
+        mkdirSync(preferred, { recursive: true });
+        accessSync(preferred, constants.W_OK);
+    }
+    catch {
+        const fallback = join(homedir(), '.dsh-qqbot');
+        try {
+            mkdirSync(fallback, { recursive: true });
+            chosen = fallback;
+            console.warn(`[data-root] ${preferred} 不可写，数据改存 ${fallback}（可用 dataRoot 指定位置）`);
+        }
+        catch {
+            chosen = preferred;
+        }
+    }
+    _writableCache.set(preferred, chosen);
+    return chosen;
+}
 /**
  * 插件数据根: config.dataRoot(绝对化) > `{cwd}/dshqqbot` > 进程 cwd。
  *
@@ -30,7 +61,7 @@ export function dataRootOf(config) {
         return r;
     // ⚠️ cwd 必须绝对化：安卓/设置页可能给出 "storage\emulated\0\大肥鱼" 这种相对路径，
     //    直接 join 会被解析到 process.cwd() 下，凭空多出一套幽灵数据根（issue #18）。
-    return join(absCwdOf(config.cwd) || process.cwd(), DEFAULT_DATA_SUBDIR);
+    return pickWritableRoot(join(absCwdOf(config.cwd) || process.cwd(), DEFAULT_DATA_SUBDIR));
 }
 /** 图库/台账/活性计数等通用数据目录: config.sticker.dataDir 覆盖 > {dataRoot}/表情包 */
 export function stickerDirOf(config) {

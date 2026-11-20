@@ -120,6 +120,36 @@ class OutboundRouter {
     turnAcc = new Map();
     constructor(manager, bot, config, logger, toolsRegistry) {
         this.manager = manager;
+        // 0.1.14：回合看门狗 —— 用户反馈「会话超时后工具调用卡住、日志看不到原因」。
+        //   回合超过 N 分钟没有结束（默认 15 分钟，QQBOT_TURN_TIMEOUT_MS 可调）就：
+        //   写一条明确的 warn（带 sessionKey / 已过时长 / 是否有工具在跑）→ cancel 本回合，
+        //   让会话回到空闲，下一条消息能正常进来；不再出现"消息进来但永远不回应"。
+        const _stuckMs = Number(process.env.QQBOT_TURN_TIMEOUT_MS || 15 * 60_000) || 15 * 60_000;
+        this.stuckWatchdog = setInterval(() => {
+            try {
+                const recs = this.manager?.sessions;
+                if (!recs || typeof recs.values !== 'function')
+                    return;
+                const now = Date.now();
+                for (const rec of recs.values()) {
+                    if (!rec?.turnActive || !rec.turnStartedAt)
+                        continue;
+                    const idle = now - rec.turnStartedAt;
+                    if (idle < _stuckMs)
+                        continue;
+                    this.logger.warn?.(`im-qqbot: 回合卡住 ${Math.round(idle / 60000)} 分钟，已取消 key=${rec.sessionKey}（可用 QQBOT_TURN_TIMEOUT_MS 调整阈值）`);
+                    try {
+                        rec.agent?.cancel?.({ kind: 'user' });
+                    }
+                    catch { /* ignore */ }
+                    rec.turnActive = false;
+                    rec.turnStartedAt = undefined;
+                }
+            }
+            catch { /* 看门狗自身异常不影响出站 */ }
+        }, 60_000);
+        this.stuckWatchdog.unref?.();
+        this.manager = manager;
         this.bot = bot;
         this.config = config;
         this.logger = logger;
@@ -329,6 +359,7 @@ class OutboundRouter {
         // turn/end 复位 false → 攒的消息才批量入站。assistant/tool 事件=回合活跃。
         if (event.type === 'turn/end') {
             record.turnActive = false;
+            record.turnStartedAt = undefined;
             // 插话计数随回合结束清零（2026-10-09）→ 下一回合的第一次插话又用完整提示
             record.interjectSeq = 0;
             // 好感度结算：整个回合算**一次**（放在 silent/nothink 早退之前 —— "照常思考"也包括潜水）
@@ -353,6 +384,7 @@ class OutboundRouter {
         else if (event.type === 'assistant/chunk' || event.type === 'assistant/message'
             || event.type === 'tool/call' || event.type === 'tool/result') {
             record.turnActive = true;
+            record.turnStartedAt = record.turnStartedAt ?? Date.now();
         }
         // 完全不出站(silent)= 照常思考但所有回复不向 QQ 发(静默潜水; dock/web 仍可见思考流);
         // 完全不思考(nothink)= QQ 入站根本不唤醒 LLM(见 inbound), 这里防御性兜底同样吞。
@@ -533,6 +565,20 @@ class OutboundRouter {
             finish();
         }
         const failure = extractTurnError(event.reason);
+        // 0.1.14（用户反馈：上下文过长后开不了新会话）：
+        //   ① 本回合报"上下文超长/token 超限" → 立刻换新档（旧档保留），下一轮从干净上下文开始；
+        //   ② 回合数超过阈值（默认 60，可用 QQBOT_SESSION_MAX_TURNS 调）→ 同样换新档，避免无限堆积。
+        //   人设与记忆不在会话档里（每轮由 persona / recall 重新注入），换档不丢性格和长期记忆。
+        record.turns = (record.turns ?? 0) + 1;
+        const _errText = failure === undefined ? '' : (String(failure.code ?? '') + ' ' + String(failure.message ?? '')).toLowerCase();
+        const _overflow = _errText !== '' && /context|too long|maximum|token limit|413|超长|超出/.test(_errText);
+        const _maxTurns = Number(process.env.QQBOT_SESSION_MAX_TURNS || 60) || 60;
+        const _turnLimit = this.config.sessionRotateByTurns !== false && record.turns >= _maxTurns;
+        if ((_overflow || _turnLimit) && typeof this.manager?.forceRotate === 'function') {
+            const _why = _overflow ? 'context-overflow' : 'turn-limit';
+            this.logger.warn?.(`im-qqbot: 换新档 key=${record.sessionKey} turns=${record.turns} reason=${_why}`);
+            void Promise.resolve(this.manager.forceRotate(record.scope, record.peerId ?? record.targetId, _why)).catch((e) => this.logger.warn?.(`im-qqbot: 换档失败: ${e instanceof Error ? e.message : String(e)}`));
+        }
         // 闸门静默导致的"取消"不是故障 —— 这个回合本来就不该出声（2026-09-14 主人要求）
         if (failure !== undefined && !SILENT_TURN_ERROR_CODES.has(failure.code) && !silenced) {
             void this.send(_record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError');

@@ -72,6 +72,58 @@ const TAG = `v${VERSION}`
 const TGZ = `dsh-qqbot-muu-${VERSION}.tgz`
 console.log(`  ${c.dim}版本 ${VERSION}${c.end}`)
 
+// ── 发布闸门：并发/版本（用户 2026-11-20 要求）─────────────────────────────
+//   ① 同一时间只允许一个发布进程（锁文件 + pid 存活判断，30 分钟视为陈旧锁）；
+//   ② 版本必须严格大于 npm 上的 latest，且不能是已存在过的版本（npm / git tag 任一已存在就停）；
+//   ③ 版本必须有实际内容（CHANGELOG 里要有这一版的一节）。
+{
+  const LOCK = 'tmp/release.lock'
+  const { mkdirSync, rmSync, readFileSync: rf, writeFileSync: wf } = await import('node:fs')
+  if (!CHECK_ONLY) {
+    mkdirSync('tmp', { recursive: true })
+    if (existsSync(LOCK)) {
+      let info = null
+      try { info = JSON.parse(rf(LOCK, 'utf8')) } catch { /* 坏锁当陈旧锁 */ }
+      const age = info?.at ? Date.now() - info.at : Infinity
+      let alive = false
+      if (info?.pid) {
+        try { process.kill(info.pid, 0); alive = true } catch { alive = false }
+      }
+      if (alive && age < 30 * 60_000) die(`另一个发布流程正在跑（pid=${info.pid}），等它结束再来`)
+      rmSync(LOCK, { force: true })
+    }
+    wf(LOCK, JSON.stringify({ pid: process.pid, at: Date.now(), version: VERSION }))
+    process.on('exit', () => { try { rmSync(LOCK, { force: true }) } catch { /* ignore */ } })
+    for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { try { rmSync(LOCK, { force: true }) } catch { /* ignore */ } ; process.exit(130) })
+  }
+
+  // 版本必须比 npm latest 新
+  const view = tryRun('npm', ['view', 'dsh-qqbot-muu', 'version', '--silent'])
+  const latest = String(view.out || '').trim()
+  if (view.ok && latest) {
+    const cmp = (a, b) => {
+      const pa = a.split('.').map(Number), pb = b.split('.').map(Number)
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const d = (pa[i] || 0) - (pb[i] || 0)
+        if (d) return d
+      }
+      return 0
+    }
+    if (cmp(VERSION, latest) <= 0) die(`版本 ${VERSION} 不比 npm 上的 ${latest} 新 —— 每次发布只能是新版本号`)
+  }
+
+  // 同版本已发过（npm 或 tag）→ 停
+  if (tryRun('npm', ['view', `dsh-qqbot-muu@${VERSION}`, 'version', '--silent']).ok) die(`npm 上已经有 ${VERSION} 这个版本了，换个版本号`)
+  if (tryRun('git', ['rev-parse', '-q', '--verify', `refs/tags/${TAG}`]).ok) die(`本地已经打过 tag ${TAG}，换个版本号`)
+
+  // 必须有内容：CHANGELOG 里要有这一版
+  const cl = existsSync('CHANGELOG.md') ? readFileSync('CHANGELOG.md', 'utf8') : ''
+  if (!new RegExp(`^##\\s*` + VERSION.replace(/\./g, '\\.') + `\\b`, 'm').test(cl)) {
+    die(`CHANGELOG.md 里没有 ${VERSION} 这一节 —— 每次发布都要写清这次改了什么`)
+  }
+  if (!CHECK_ONLY) ok('发布闸门：无并发、版本号是新的、CHANGELOG 有内容')
+}
+
 if (CHECK_ONLY) {
   console.log('\n✅ 本地检查全绿（--check 模式，未推送）')
   process.exit(0)

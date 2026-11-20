@@ -1519,6 +1519,34 @@ export class SessionManager {
             return false;
         }
     }
+    /**
+     * 0.1.14：主动换一份新会话档（旧档文件保留在 sessions 目录，可在侧边栏回看）。
+     * 人设/记忆由插件每轮重新注入，换档不影响性格与长期记忆，只是把上下文清零。
+     */
+    async forceRotate(scope, peerId, reason = 'context') {
+        const key = this.sessionKey(scope, peerId);
+        const record = this.sessions.get(key);
+        const fresh = SessionId(randomUUID());
+        try {
+            this.modelResolver.setSessionId(key, fresh);
+        }
+        catch { /* 记不下就算了，下面照样清内存 */ }
+        if (!record) {
+            this.logger.warn(`forceRotate(no-record): key=${key} new=${fresh} reason=${reason}`);
+            return { rotated: true, sessionId: fresh };
+        }
+        this.sessions.delete(key);
+        try {
+            record.agent.cancel({ kind: 'user' });
+        }
+        catch { /* ignore */ }
+        try {
+            await record.handle.dispose();
+        }
+        catch { /* ignore */ }
+        this.logger.warn(`forceRotate: key=${key} old=${record.sessionId} new=${fresh} reason=${reason}`);
+        return { rotated: true, sessionId: fresh };
+    }
     async remove(scope, peerId) {
         const key = this.sessionKey(scope, peerId);
         const record = this.sessions.get(key);
