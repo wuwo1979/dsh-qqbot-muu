@@ -85,12 +85,14 @@ const debounceSchema = Schema.object({
     enabled: Schema.boolean().default(true).description('延迟聚合总开关(防"连发N句只回第一句": 消息先攒窗口, 人停口或攒够条数才一次综合回)'),
     silenceSec: Schema.number().min(0).default(3).description('最近说话者停止发言几秒后开口(默认3; 0=不停顿)'),
     maxMsgs: Schema.number().min(1).default(10).description('窗口攒满几条立即开口(默认10), 不等对方停'),
+    mediaSilenceSec: Schema.number().min(0).default(8).description('窗口里有图片/语音/视频时再多等几秒(默认8)，让「先说一句、再发图」合成一轮'),
     mentionDelayed: Schema.boolean().default(true).description('@bot 消息是否也走延迟(默认是; 不勾=@到秒回)'),
     busySendMode: Schema.union(['queue', 'interject']).default('queue').description('回合进行中(她正在思考/输出)群友新消息怎么办: 排队=攒着等这轮回完再整批看(默认, 现状); 插话=照样先聚合, 但不等回合结束, 直接在回合内的轮次之间插进去(每次插话都带一句"先做完当前任务"的轻提示)'),
 }).default({
     enabled: true,
     silenceSec: 3,
     maxMsgs: 10,
+    mediaSilenceSec: 8,
     mentionDelayed: true,
     busySendMode: 'queue',
 }).description('延迟聚合(独立于冷却的另一套机制)');
@@ -128,6 +130,7 @@ const behaviorSchema = Schema.object({
         enabled: true,
         silenceSec: 3,
         maxMsgs: 10,
+        mediaSilenceSec: 8,
         mentionDelayed: true,
         busySendMode: 'queue',
     },

@@ -281,7 +281,20 @@ export function debounceLayer(config, manager, logger, cooldownAt) {
         const d = config.behavior?.debounce;
         return d ?? DEFAULTS;
     };
-    function clearTimer(w) {
+    function hasMediaEntry(m) {
+    try {
+        const c = String(m?.content ?? '').trim();
+        // 图片/语音/视频/文件：要么内容是空的（只带附件），要么带 [图片] 之类的占位
+        if (!c) return true;
+        if (/\[(图片|语音|视频|文件|image|voice|video|file)\]/i.test(c)) return true;
+        const a = m?.attachments;
+        if (Array.isArray(a) && a.length > 0) return true;
+        const t = Number(m?.msgType ?? 0);
+        if (t && t !== 0) return true;
+    } catch { /* ignore */ }
+    return false;
+}
+function clearTimer(w) {
         if (w.timer) {
             clearTimeout(w.timer);
             w.timer = null;
@@ -666,8 +679,12 @@ export function debounceLayer(config, manager, logger, cooldownAt) {
         dbg(`  win=${w.entries.length} new=${isNewer} order=[${w.entries.map(e => JSON.stringify(String(e.msg.content ?? '').slice(0, 16))).join(',')}]`);
         if (isNewer) {
             // 最近说话者(按服务器时间)刚又开口 → 重新等 ta 停口 silenceMs
+            // 2026-11-20：窗口里有图片/语音/视频时等更久（默认 8s），避免"先说一句、再发图"被拆成两轮
             clearTimer(w);
-            w.timer = setTimeout(() => void flush(key, w), silenceMs);
+            const mediaMs = Math.max(0, num(c.mediaSilenceSec, 8)) * 1000;
+            const anyMedia = w.entries.some((e) => hasMediaEntry(e && e.msg));
+            const waitMs = anyMedia && mediaMs > silenceMs ? mediaMs : silenceMs;
+            w.timer = setTimeout(() => void flush(key, w), waitMs);
             w.timer.unref?.();
         }
         // 攒满上限立即发, 不等对方停

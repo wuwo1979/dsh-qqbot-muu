@@ -13,8 +13,10 @@
  *   - 幂等：版本已发过就跳过 npm；tag/Release 已存在就跳过创建；
  *   - github.com:443 被墙时自动走 REST API 推提交（配置正常时也走 API，避免 git push 触发凭据弹窗）。
  */
+import { createHash } from 'node:crypto'
 import { execSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { existsSync, rmSync, readFileSync, statSync } from 'node:fs'
 
 const REPO = 'wuwo1979/dsh-qqbot-muu'
 const FORK = 'wuwo1979/awesome-dsh-plugin'
@@ -245,7 +247,8 @@ else {
   const rel = await api(`/repos/${REPO}/releases`, { method: 'POST', body: JSON.stringify({ tag_name: TAG, name: TAG, body: `npm: \`dsh-qqbot-muu@${VERSION}\`\n\n详见 CHANGELOG.md。`, draft: false, prerelease: false }) })
   if (!rel.ok) die('建 Release 失败', JSON.stringify(rel.j).slice(0, 200))
   ok(`Release ${rel.j.html_url}`)
-  if (!existsSync(TGZ)) run('npm', ['pack'])
+  rmSync(TGZ, { force: true })
+  run('npm', ['pack'])
   const buf = readFileSync(TGZ)
   const up = await fetch(`https://uploads.github.com/repos/${REPO}/releases/${rel.j.id}/assets?name=${TGZ}`, {
     method: 'POST',
@@ -273,19 +276,98 @@ else {
     const v = spawnSync('npm', ['view', `dsh-qqbot-muu@${VERSION}`, 'version'], { encoding: 'utf8', shell: IS_WIN })
     return String(v.stdout || '').trim().includes(VERSION)
   })()
-  if (!live) {
+  let isLive = live
+  if (!isLive) {
     const outTxt = `${r.stdout}\n${r.stderr}`
-    const staged = /202|staged|E409|previously staged/i.test(outTxt)
-    NPM_PENDING = staged
-      ? `npm 把 ${VERSION} 收进了暂存区（HTTP 202 / E409），没有 2FA 批准不会上线。去 npm 网站上该包的 Staged/Pending 批准，或换一个允许 2FA bypass 的 granular token。`
-      : `npm publish 没成功（exit ${r.status}），注册表里查不到 ${VERSION}。`
-    console.log('  ! ' + NPM_PENDING)
-  } else {
-    ok(`已发布 dsh-qqbot-muu@${VERSION}（注册表已核到）`)
+    // 「Cannot publish over the previously published versions」= 其实已经上线了（前一次 202 已落）
+    const alreadyLive = /previously published versions/i.test(outTxt)
+    const staged = /previously staged|\b202\b/i.test(outTxt)
+    if (alreadyLive || staged) {
+      // 注册表有传播延迟：等一会儿再核一次，别把已上线的版本误报成暂存
+      for (let i = 0; i < 4 && !isLive; i += 1) {
+        await new Promise((res) => setTimeout(res, 5000))
+        const v2 = spawnSync('npm', ['view', `dsh-qqbot-muu@${VERSION}`, 'version'], { encoding: 'utf8', shell: IS_WIN })
+        isLive = String(v2.stdout || '').trim().includes(VERSION)
+      }
+    }
+    if (!isLive) {
+      NPM_PENDING = staged && !alreadyLive
+        ? `npm 把 ${VERSION} 收进了暂存区（未上线）。去 npm 网页批准暂存版本，或 ` +
+          `npm stage approve <stage-id>（需要 2FA 动态码）。`
+        : `npm publish 没成功（exit ${r.status}），注册表里查不到 ${VERSION}。`
+      console.log('  ! ' + NPM_PENDING)
+    }
   }
+  if (isLive) {
+    // 同一版本号可能来自更早一次构建（0.1.14 的教训）：必须确认注册表里就是这次的产物。
+    // 只比 sha1 会误判（npm 自己重新打包，gzip 头不同 → sha1 不同但内容一样），
+    // 所以先比 sha1，不等再比「文件清单 + 每个文件大小」。
+    const want = (() => {
+      try {
+        return createHash('sha1').update(readFileSync(TGZ)).digest('hex')
+      } catch {
+        return ''
+      }
+    })()
+    const got = tryRun('npm', ['view', 'dsh-qqbot-muu@' + VERSION, 'dist.shasum']).out.trim()
+    if (want && got && want === got) {
+      ok('已发布 dsh-qqbot-muu@' + VERSION + '（注册表已核到，tarball 完全一致）')
+    } else {
+      const same = compareRegistryTarball()
+      if (same === true) ok('已发布 dsh-qqbot-muu@' + VERSION + '（sha1 不同但文件清单一致，属 npm 重打包）')
+      else {
+        NPM_PENDING = 'npm 上 ' + VERSION + ' 的产物与本地产物不一致（' + (same || '无法核对') + '）：注册表里可能是旧构建，请升一个版本重发。'
+        console.log('  ! ' + NPM_PENDING)
+      }
+    }
+  }
+
   // 202/staged 路径不会自动挪 latest：显式把 latest 指到本版本，否则用户 npm i 还拿旧版
   const tag = spawnSync('npm', ['dist-tag', 'add', `dsh-qqbot-muu@${VERSION}`, 'latest', AUTH_FLAG], { encoding: 'utf8', shell: IS_WIN })
   if (tag.status === 0) ok(`latest → ${VERSION}`)
+}
+
+// 比对「本地 TGZ」与「npm 上该版本真实 tarball」的文件清单（名称 + 字节数）。
+// 返回 true=内容一致；false=不一致；字符串=无法核对的原因。
+function compareRegistryTarball() {
+  try {
+    const dir = join(TMP, 'verify-npm')
+    try { mkdirSync(dir, { recursive: true }) } catch { /* noop */ }
+    try {
+      for (const f of readdirSync(dir)) {
+        try { rmSync(join(dir, f), { force: true }) } catch { /* noop */ }
+      }
+    } catch { /* noop */ }
+    const r = spawnSync('npm', ['pack', 'dsh-qqbot-muu@' + VERSION, '--pack-destination', dir, AUTH_FLAG], { encoding: 'utf8', shell: IS_WIN })
+    if (r.status !== 0) return '拉取注册表 tarball 失败'
+    const files = readdirSync(dir).filter((f) => f.endsWith('.tgz'))
+    if (!files.length) return '注册表 tarball 没下载到'
+    const theirs = join(dir, files[0])
+    const a = tarEntries(TGZ)
+    const b = tarEntries(theirs)
+    if (!a.length || !b.length) return '读不出 tarball 清单'
+    if (a.length !== b.length) return '文件数不同（本地 ' + a.length + ' / npm ' + b.length + '）'
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return '文件不一致：本地 ' + a[i] + ' / npm ' + b[i]
+    }
+    return true
+  } catch (e) {
+    return '比对异常：' + (e instanceof Error ? e.message : String(e))
+  }
+}
+
+function tarEntries(file) {
+  const r = spawnSync('tar', ['-tvzf', file], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  if (r.status !== 0) return []
+  const rows = []
+  for (const line of String(r.stdout || '').split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const m = line.match(/^(\S+)\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+(.+)$/)
+    if (!m) continue
+    rows.push(m[3].trim() + '|' + m[2])
+  }
+  rows.sort()
+  return rows
 }
 
 // ── 7) 市场条目同步（fork 分支 + PR）───────────────────────────────────
