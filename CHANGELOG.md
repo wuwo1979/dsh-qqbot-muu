@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.1.10
+
+- 面板 HTTP 接口加上 DSH 官方接入闸门：所有 `/api/qqbot-settings/*`（含 SSE）先过
+  `ctx.connection.requestRejection(req)` —— Host/Origin fence + 必须已登录的桌面端会话，
+  其它网页躺在浏览器里也调不动这些接口（此前只做了同源回环判断，挡不住同源页面里的 CSRF）。
+- 发版流水线补上「市场 PR 已合并时自动新开 PR」，不再因旧 PR 关闭而静默失败。
+
 ## 0.1.9
 
 ### 文档

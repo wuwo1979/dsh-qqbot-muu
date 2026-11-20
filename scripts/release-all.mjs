@@ -20,7 +20,7 @@ const REPO = 'wuwo1979/dsh-qqbot-muu'
 const FORK = 'wuwo1979/awesome-dsh-plugin'
 const UPSTREAM = 'awesome-dsh-plugin/awesome-dsh-plugin'
 const MARKET_BRANCH = 'release/dsh-qqbot-muu-v0.1.7'
-const MARKET_PR = 16510
+const MARKET_PR = 0   // 0 = 每次新开 PR；>0 表示复用该 PR 号
 const MARKET_FILE = 'data/plugins/wuwo1979__dsh-qqbot-muu.yml'
 const LOCAL_MARKET = 'submission/data/plugins/wuwo1979__dsh-qqbot-muu.yml'
 
@@ -237,13 +237,34 @@ else {
   })
   if (!put.ok) die('同步市场条目失败', JSON.stringify(put.j).slice(0, 300))
   ok(`市场条目已更新到 ${TAG}`)
-  const same = Buffer.from(String(prHead.j?.content || ''), 'base64').toString('utf8') === localYml
-  if (!same) {
-    await api(`/repos/${UPSTREAM}/pulls/${MARKET_PR}`, {
+  // 复用还是新开：旧 PR 已合并/关闭时必须新开，否则 PATCH 会 422
+  let reuse = 0
+  if (MARKET_PR) {
+    const pr = await api(`/repos/${UPSTREAM}/pulls/${MARKET_PR}`)
+    if (pr.ok && pr.j?.state === 'open') reuse = MARKET_PR
+  }
+  if (reuse) {
+    await api(`/repos/${UPSTREAM}/pulls/${reuse}`, {
       method: 'PATCH',
       body: JSON.stringify({ title: `dsh-qqbot-muu: ${TAG}`, body: `市场条目更新到 ${TAG}（详见仓库 CHANGELOG.md）。` })
     })
-    ok('PR 标题/正文已更新')
+    ok(`PR #${reuse} 标题/正文已更新`)
+  } else {
+    const pr = await api(`/repos/${UPSTREAM}/pulls`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title: `dsh-qqbot-muu: ${TAG}`,
+        head: `${FORK.split('/')[0]}:${MARKET_BRANCH}`,
+        base: 'main',
+        body: `市场条目更新到 ${TAG}。
+
+- 条目路径：\`${MARKET_FILE}\`
+- tarball：\`${TAG}\` 的 GitHub Release 资产
+- 变更详见仓库 CHANGELOG.md`
+      })
+    })
+    if (!pr.ok) die('开市场 PR 失败', JSON.stringify(pr.j).slice(0, 400))
+    ok(`已新开市场 PR #${pr.j.number}：${pr.j.html_url}`)
   }
 }
 
