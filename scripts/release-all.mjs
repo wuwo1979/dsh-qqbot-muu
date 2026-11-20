@@ -20,7 +20,7 @@ const REPO = 'wuwo1979/dsh-qqbot-muu'
 const FORK = 'wuwo1979/awesome-dsh-plugin'
 const UPSTREAM = 'awesome-dsh-plugin/awesome-dsh-plugin'
 const MARKET_BRANCH = 'release/dsh-qqbot-muu-v0.1.7'
-const MARKET_PR = 0   // 0 = 每次新开 PR；>0 表示复用该 PR 号
+const MARKET_PR = 17081   // 0 = 每次新开 PR；>0 表示复用该 PR 号
 const MARKET_FILE = 'data/plugins/wuwo1979__dsh-qqbot-muu.yml'
 const LOCAL_MARKET = 'submission/data/plugins/wuwo1979__dsh-qqbot-muu.yml'
 
