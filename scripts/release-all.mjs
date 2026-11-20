@@ -231,6 +231,9 @@ else {
   } else {
     ok(`已发布 dsh-qqbot-muu@${VERSION}（注册表已核到）`)
   }
+  // 202/staged 路径不会自动挪 latest：显式把 latest 指到本版本，否则用户 npm i 还拿旧版
+  const tag = spawnSync('npm', ['dist-tag', 'add', `dsh-qqbot-muu@${VERSION}`, 'latest', AUTH_FLAG], { encoding: 'utf8', shell: IS_WIN })
+  if (tag.status === 0) ok(`latest → ${VERSION}`)
 }
 
 // ── 7) 市场条目同步（fork 分支 + PR）───────────────────────────────────
