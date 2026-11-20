@@ -372,6 +372,20 @@ function tarEntries(file) {
 
 // ── 7) 市场条目同步（fork 分支 + PR）───────────────────────────────────
 step('7/7 插件市场条目同步')
+// 0.1.15 起：条目里的 tarball 版本由发布脚本自己对齐，免得每次都要人手改 submission 才能发
+try {
+  const rawYml = readFileSync(LOCAL_MARKET, 'utf8')
+  const fixedYml = rawYml
+    .replace(/releases\/download\/v[0-9.]+\//g, `releases/download/${TAG}/`)
+    .replace(/dsh-qqbot-muu-[0-9.]+\.tgz/g, `dsh-qqbot-muu-${VERSION}.tgz`)
+  if (fixedYml !== rawYml) {
+    writeFileSync(LOCAL_MARKET, fixedYml)
+    ok(`市场条目 tarball 已对齐 ${TAG}`)
+  }
+} catch (e) {
+  die('改市场条目失败', e instanceof Error ? e.message : String(e))
+}
+
 const localYml = readFileSync(LOCAL_MARKET, 'utf8')
 const ymlVersion = (/releases\/download\/v([0-9.]+)\//.exec(localYml) || [])[1] || ''
 if (ymlVersion && ymlVersion !== VERSION) die(`市场条目 tarball 指向 v${ymlVersion}，与 ${VERSION} 不一致`, '先改 submission/ 下的条目再发布')
